@@ -44,10 +44,10 @@
   const BURST_ENABLED_KEY = 'IAA_BURST_ENABLED';
   const BURST_COUNT_KEY = 'IAA_BURST_COUNT';
   const BURST_CONFIDENCE_KEY = 'IAA_BURST_CONFIDENCE';
-  const SNIPER_SETTINGS_KEY = 'IAA_SNIPER_SETTINGS_V1';
 
   // persisted mouse mapping keys
   const COORDS_KEY = 'IAA_COORDS_V1';
+  const MANUAL_SELECTORS_KEY = 'IAA_MANUAL_SELECTORS_V1';
   const BUY_SELL_METHOD_KEY = 'IAA_BUY_SELL_METHOD_V1';
   const XPATH_SELECTORS_KEY = 'IAA_XPATH_SELECTORS_V1';
 
@@ -136,13 +136,7 @@
       busy = true; btnLogin.disabled = true; btnLogin.textContent = 'Checking…';
       try {
         const ok = await checkCredentialsText(pass, acct);
-        if (ok) {
-          await setSession(true);
-          shell.classList.add('iaa-hidden');
-          await window.InfinityBot?.boot?.();
-          await window.InfinityBot?.logBootChecks?.();
-          window.InfinityBot?.logConsole?.(window.InfinityBot?.formatStatus?.('login_accepted') || 'Login accepted.');
-        }
+        if (ok) { await setSession(true); shell.classList.add('iaa-hidden'); window.InfinityBot?.boot(); window.InfinityBot?.logConsole?.(window.InfinityBot?.formatStatus?.('login_accepted') || 'Login accepted.'); }
         else { await clearSession(); elErr.textContent = 'Access denied. Check your credentials.'; window.InfinityBot?.logConsole?.(window.InfinityBot?.formatStatus?.('login_denied') || 'Login denied.'); }
       } finally { busy = false; btnLogin.disabled = false; btnLogin.textContent = 'Log in'; }
     });
@@ -381,6 +375,12 @@
         SELL_COORD: null
       },
 
+      // Manual selectors
+      manualSelectors: {
+        buy: '',
+        sell: ''
+      },
+
       // XPath selectors
       xpathSelectors: C.XPATH_SELECTORS,
 
@@ -396,21 +396,7 @@
       trades: [],
       tradeStats: { total: 0, wins: 0, losses: 0, evens: 0 },
       botStartAt: null,
-      tradeMode: 'sniper',
-      sniper: {
-        thresholdPct: 70,
-        entryWindowSec: 6,
-        vwapDeviation: 0.0006,
-        rsiOverbought: 70,
-        rsiOversold: 30,
-        minPayout: 0,
-        execTimeframe: '15s',
-        tradeIntervalMin: 1,
-        tf15s: true,
-        tf1m: true,
-        tf5m: false,
-        tf15m: false
-      },
+      tradeMode: 'test',
 
       // risk controls
       maxSessionLossCents: 0,
@@ -422,6 +408,14 @@
       analysisEnabled: false,
       analysisConfidenceThreshold: 0.65,
       tradeIntervalMin: 9,
+      singleAssetIntervalMin: 10,
+      singleAssetIntervalMax: 15,
+      singleAssetPayoutMin: 82,
+      singleAssetVolatilityMin: 0.00005,
+      singleAssetVolatilityMax: 0.003,
+      singleAssetGlitchMultiplier: 6,
+      singleAssetLtfConfidence: 0.35,
+      singleAssetHtfConfidence: 0.45,
       payoutMin: 80,
       payoutMax: 92,
       payoutRequired: false,
@@ -461,11 +455,11 @@
       lastConsoleMessage: '',
       lastConsoleAt: 0,
       lastSelfTradeHintAt: 0,
-      lastSniperAssetCheckAt: 0,
+      lastSingleAssetCheckAt: 0,
+      lastSingleAssetSkipAt: 0,
       lastDiagnosticsAt: 0,
       lastSignalLogAt: new Map(),
       signalSourceEnabled: { '1m': true, '5m': true },
-      sniperPanelOpen: false,
 
       /* ---------- Signal deduplication ---------- */
       signalCooldownUntil: 0,
@@ -483,13 +477,12 @@
       analysisReason: '',
       lastSignalLagSec: null,
       clockDriftSec: null,
+      skipNextTrade: false,
       cooldownUntil: 0,
       lastSkipReason: '',
       lastSkipAt: 0,
-      sniperLastConfidence: null,
-      sniperLastScore: null,
-      sniperLastDirection: null,
-      bootChecksLogged: false,
+      testQualityScore: null,
+      testQualityLabel: null,
 
       /* ---------- ENHANCED: Countdown and UI states ---------- */
       countdownActive: false,
@@ -545,8 +538,10 @@
         force_asset_selection: 'Force Asset Selection',
         force_asset_selection_hint: 'Verifies asset selection and retries if failed',
         trade_mode_label: 'Trade Mode',
+        trade_mode_signals: 'All assets + signals',
+        trade_mode_single: 'Single asset (EUR/USD OTC)',
         trade_mode_signals_only: 'Signals only (1m/5m)',
-        trade_mode_sniper: 'SNIPER (precision)',
+        trade_mode_test: 'TEST (experimental)',
         signal_source_1m: 'Enable 1m signals',
         signal_source_5m: 'Enable 5m signals'
       },
@@ -592,8 +587,10 @@
         force_asset_selection: 'Принудителен избор на актив',
         force_asset_selection_hint: 'Проверява избора на актив и повтаря при неуспех',
         trade_mode_label: 'Режим на търговия',
+        trade_mode_signals: 'Всички валути + сигнали',
+        trade_mode_single: 'Една валута (EUR/USD OTC)',
         trade_mode_signals_only: 'Само сигнали (1м/5м)',
-        trade_mode_sniper: 'SNIPER (прецизен)',
+        trade_mode_test: 'TEST (експериментален)',
         signal_source_1m: 'Сигнали 1м',
         signal_source_5m: 'Сигнали 5м'
       }
@@ -612,6 +609,7 @@
         bot_stopped: 'Bot stopped.',
         auto_on: 'Auto-trade enabled.',
         auto_off: 'Auto-trade disabled.',
+        next_trade_skipped: '⏭️ NEXT TRADE SKIPPED',
         skip_reason: 'SKIP: {reason}',
         signal_received: 'Signal received ({source}): {asset} {direction} {expiry}',
         signal_scheduled: 'Signal scheduled: {time} ({expiry})',
@@ -661,6 +659,7 @@
         bot_stopped: 'Ботът е спрян.',
         auto_on: 'Авто‑търговия: включена.',
         auto_off: 'Авто‑търговия: изключена.',
+        next_trade_skipped: '⏭️ СЛЕДВАЩАТА СДЕЛКА Е ПРОПУСНАТА',
         skip_reason: 'ПРОПУСК: {reason}',
         signal_received: 'Получен сигнал ({source}): {asset} {direction} {expiry}',
         signal_scheduled: 'Планиран сигнал: {time} ({expiry})',
@@ -711,12 +710,17 @@
         Payout: 'Payout',
         Reversal: 'Reversal',
         MaxAmount: 'Max amount',
+        LowVol: 'Low volatility',
+        HighVol: 'High volatility',
+        Glitch: 'Price jump',
         Chop: 'Choppy market',
         Spike: 'Spike move',
         Level: 'At key level',
         Timing: 'Bad timing',
+        OTCOnly: 'OTC only',
         Momentum: 'Weak momentum',
-        NoFeed: 'No feed'
+        NoFeed: 'No feed',
+        Quality: 'Low quality'
       },
       bg: {
         Cooldown: 'Пауза',
@@ -728,12 +732,17 @@
         Payout: 'Изплащане',
         Reversal: 'Обръщане',
         MaxAmount: 'Макс. сума',
+        LowVol: 'Ниска волатилност',
+        HighVol: 'Висока волатилност',
+        Glitch: 'Скок в цената',
         Chop: 'Накъсан пазар',
         Spike: 'Рязък шип',
         Level: 'На ключово ниво',
         Timing: 'Лош тайминг',
+        OTCOnly: 'Само OTC',
         Momentum: 'Слаб импулс',
-        NoFeed: 'Няма цена'
+        NoFeed: 'Няма цена',
+        Quality: 'Ниско качество'
       }
     };
 
@@ -764,30 +773,43 @@
       return dict[reason] || reason;
     }
 
-    function applySniperDefaults() {
+    function applySingleAssetDefaults() {
       S.analysisEnabled = true;
+      S.selfTradeEnabled = true;
       S.multiTimeframeEnabled = true;
-      S.selfTradeEnabled = false;
+      S.analysisConfidenceThreshold = 0.45;
+      S.analysisWindowSec = 600;
+      S.analysisWarmupMin = 5;
+      S.singleAssetIntervalMin = 10;
+      S.singleAssetIntervalMax = 15;
+      S.singleAssetPayoutMin = 82;
+      S.singleAssetVolatilityMin = 0.00005;
+      S.singleAssetVolatilityMax = 0.003;
+      S.singleAssetGlitchMultiplier = 6;
+      S.singleAssetLtfConfidence = 0.35;
+      S.singleAssetHtfConfidence = 0.45;
+    }
+
+    function applyTestDefaults() {
+      S.analysisEnabled = true;
+      S.selfTradeEnabled = true;
+      S.multiTimeframeEnabled = true;
       S.signalOverrideEnabled = false;
+      S.analysisConfidenceThreshold = 0.4;
+      S.analysisWindowSec = 300;
+      S.analysisWarmupMin = 3;
+      S.tradeIntervalMin = 20;
+      S.payoutMin = 80;
+      S.payoutRequired = true;
+      S.cooldownLosses = 3;
+      S.cooldownMin = 10;
+      S.reversalWindowSec = 5;
+      S.reversalOppositeRatio = 0.6;
       S.burstEnabled = false;
-      const defaults = {
-        thresholdPct: 70,
-        entryWindowSec: 6,
-        vwapDeviation: 0.0006,
-        rsiOverbought: 70,
-        rsiOversold: 30,
-        minPayout: 0,
-        execTimeframe: '15s',
-        tradeIntervalMin: 1,
-        tf15s: true,
-        tf1m: true,
-        tf5m: false,
-        tf15m: false
-      };
-      S.sniper = Object.assign({}, defaults, S.sniper || {});
-      S.sniperLastConfidence = null;
-      S.sniperLastScore = null;
-      S.sniperLastDirection = null;
+      S.signalSourceEnabled['1m'] = true;
+      S.signalSourceEnabled['5m'] = true;
+      S.testQualityScore = null;
+      S.testQualityLabel = null;
     }
 
     function applyStatusLabels() {
@@ -797,38 +819,63 @@
       });
     }
 
-    const SNIPER_ASSET = {
+    const SINGLE_ASSET = {
       asset: 'EUR/USD (OTC)',
       assetSearch: 'EURUSD',
       isOTC: true
     };
 
+    function isSingleAssetMode() {
+      return S.tradeMode === 'single_asset';
+    }
+
     function isSignalOnlyMode() {
       return S.tradeMode === 'signals_only';
     }
 
-
-    function isSniperMode() {
-      return S.tradeMode === 'sniper';
+    function isTestMode() {
+      return S.tradeMode === 'test';
     }
 
     function getSelfTradeAllowed() {
-      return !isSignalOnlyMode() && !isSniperMode() && S.selfTradeEnabled;
+      return !isSignalOnlyMode() && (S.selfTradeEnabled || isSingleAssetMode());
     }
 
-    async function ensureSniperAssetSelected() {
-      if (!isSniperMode() || S.assetSelecting || S.activeTrade || S.tradeSequenceActive || S.currentSignal) return;
+    async function ensureSingleAssetSelected() {
+      if (!isSingleAssetMode() || S.assetSelecting || S.activeTrade || S.tradeSequenceActive) return;
       const now = Date.now();
-      if (now - S.lastSniperAssetCheckAt < 30000) return;
-      S.lastSniperAssetCheckAt = now;
+      if (now - S.lastSingleAssetCheckAt < 30000) return;
+      S.lastSingleAssetCheckAt = now;
       const current = getCurrentAssetLabel();
       if (current && current.includes('EUR/USD') && /OTC/i.test(current)) {
         return;
       }
       const sig = {
-        asset: SNIPER_ASSET.asset,
-        assetSearch: SNIPER_ASSET.assetSearch,
-        isOTC: SNIPER_ASSET.isOTC
+        asset: SINGLE_ASSET.asset,
+        assetSearch: SINGLE_ASSET.assetSearch,
+        isOTC: SINGLE_ASSET.isOTC
+      };
+      try {
+        S.assetSelecting = true;
+        await selectAssetWithVerification(sig);
+      } finally {
+        S.assetSelecting = false;
+      }
+    }
+
+    async function ensureTestAssetSelected() {
+      if (!isTestMode() || S.assetSelecting || S.activeTrade || S.tradeSequenceActive || S.currentSignal) return;
+      const now = Date.now();
+      if (now - S.lastSingleAssetCheckAt < 30000) return;
+      S.lastSingleAssetCheckAt = now;
+      const current = getCurrentAssetLabel();
+      if (current && /OTC/i.test(current)) {
+        return;
+      }
+      const sig = {
+        asset: SINGLE_ASSET.asset,
+        assetSearch: SINGLE_ASSET.assetSearch,
+        isOTC: SINGLE_ASSET.isOTC
       };
       try {
         S.assetSelecting = true;
@@ -878,50 +925,14 @@
       renderConsole();
     }
 
-    async function copyConsoleToClipboard(){
-      const text = S.consoleLines.join('\n');
-      if (!text) return false;
-      try {
-        if (navigator?.clipboard?.writeText) {
-          await navigator.clipboard.writeText(text);
-          return true;
-        }
-      } catch {}
-      const area = document.createElement('textarea');
-      area.value = text;
-      area.setAttribute('readonly', '');
-      area.style.position = 'absolute';
-      area.style.left = '-9999px';
-      document.body.appendChild(area);
-      area.select();
-      let ok = false;
-      try {
-        ok = document.execCommand('copy');
-      } catch {
-        ok = false;
-      }
-      document.body.removeChild(area);
-      return ok;
-    }
-
-    async function logBootChecks(){
-      if (S.bootChecksLogged) return;
-      logConsoleLine(formatStatus('bot_loaded'));
-      const sess = await getSession();
-      if (sess && sess.ok) {
-        logConsoleLine(formatStatus('session_ok'));
-      }
-      S.bootChecksLogged = true;
-    }
-
     function logDiagnostics() {
       if (isSignalOnlyMode()) return;
       const now = Date.now();
       if (now - S.lastDiagnosticsAt < 60000) return;
       S.lastDiagnosticsAt = now;
-      const mode = S.tradeMode === 'signals_only'
-        ? 'signals_only'
-        : (S.tradeMode === 'sniper' ? 'sniper' : 'signals');
+      const mode = S.tradeMode === 'single_asset'
+        ? 'single'
+        : (S.tradeMode === 'signals_only' ? 'signals_only' : (S.tradeMode === 'test' ? 'test' : 'signals'));
       const auto = S.autoTrade ? 'on' : 'off';
       const analysis = S.analysisEnabled ? 'on' : 'off';
       const dir = S.analysisDirection || '-';
@@ -1039,8 +1050,9 @@
       const confidence = Number.isFinite(S.analysisConfidence) ? S.analysisConfidence : 0;
       const threshold = typeof S.analysisConfidenceThreshold === 'number' ? S.analysisConfidenceThreshold : null;
       const lowConfidence = threshold == null ? confidence <= 0 : confidence < threshold;
-      const sniperConfidence = Number.isFinite(S.sniperLastConfidence) ? `${S.sniperLastConfidence}%` : '—';
-      const sniperThreshold = Number.isFinite(S.sniper?.thresholdPct) ? `${S.sniper.thresholdPct}%` : '—';
+      const testQuality = S.testQualityLabel && Number.isFinite(S.testQualityScore)
+        ? `${S.testQualityLabel} (${S.testQualityScore}/5)`
+        : '—';
 
       const driftSeverity = driftValue == null ? '' : (Math.abs(driftValue) >= 2 ? 'bad' : (Math.abs(driftValue) >= 1 ? 'warn' : ''));
       const lagSeverity = lagValue == null ? '' : (lagValue >= 5 ? 'bad' : (lagValue >= 2 ? 'warn' : ''));
@@ -1049,9 +1061,7 @@
       const analysisUpdatedSeverity = analysisUpdatedSec != null && analysisUpdatedSec > 15 ? 'warn' : '';
       const lastSkipSeverity = S.lastSkipReason ? 'warn' : '';
       const confidenceSeverity = lowConfidence ? 'warn' : '';
-      const sniperSeverity = Number.isFinite(S.sniperLastConfidence) && Number.isFinite(S.sniper?.thresholdPct)
-        ? (S.sniperLastConfidence < S.sniper.thresholdPct ? 'warn' : '')
-        : '';
+      const qualitySeverity = S.testQualityLabel === 'BAD' ? 'bad' : (S.testQualityLabel === 'MID' ? 'warn' : '');
 
       const lines = [
         { key: 'mode', value: S.tradeMode, severity: '' },
@@ -1060,8 +1070,7 @@
         { key: 'direction', value: S.analysisDirection || '-', severity: '' },
         { key: 'confidence', value: confidence.toFixed(2), severity: confidenceSeverity },
         { key: 'threshold', value: threshold != null ? threshold.toFixed(2) : '-', severity: '' },
-        ...(isSniperMode() ? [{ key: 'sniperConfidence', value: sniperConfidence, severity: sniperSeverity }] : []),
-        ...(isSniperMode() ? [{ key: 'sniperThreshold', value: sniperThreshold, severity: '' }] : []),
+        ...(isTestMode() ? [{ key: 'testQuality', value: testQuality, severity: qualitySeverity }] : []),
         { key: 'lag', value: lagLabel, severity: lagSeverity },
         { key: 'priceFeed', value: feedOk ? 'OK' : '—', severity: feedSeverity },
         { key: 'priceHistory', value: String(S.priceHistory?.length || 0), severity: '' },
@@ -1126,6 +1135,39 @@
       S.clockDriftSec = Math.round(driftSec * 10) / 10;
     }
 
+    function renderManualSignal() {
+      const manualEl = $id('iaa-manual-signal');
+      if (!manualEl) return;
+      if (!isSingleAssetMode() || !S.analysisEnabled) {
+        manualEl.textContent = '—';
+        return;
+      }
+      if (S.currentAssetPrice == null) {
+        manualEl.textContent = 'No feed';
+        return;
+      }
+      if ((S.priceHistory?.length || 0) < 6) {
+        manualEl.textContent = 'Waiting data';
+        return;
+      }
+      const dir = S.analysisDirection;
+      const confidence = Number.isFinite(S.analysisConfidence) ? S.analysisConfidence : 0;
+      const pct = Math.round(confidence * 100);
+      const threshold = Number.isFinite(S.analysisConfidenceThreshold) ? S.analysisConfidenceThreshold : null;
+      const lowConfidence = threshold == null ? confidence <= 0 : confidence < threshold;
+      if (!dir) {
+        manualEl.textContent = '—';
+        return;
+      }
+      const etaMs = getNextEtaMs();
+      const eta = etaMs != null ? formatCountdown(Math.max(0, etaMs)) : '';
+      const reason = lowConfidence ? 'Low conf' : (S.lastSkipReason === 'Confidence' ? 'Low conf' : '');
+      if (lowConfidence && confidence <= 0) {
+        manualEl.textContent = reason;
+        return;
+      }
+      manualEl.textContent = `${pct}% ${dir}${eta ? ` in ${eta}` : ''}${reason ? ` • ${reason}` : ''}`;
+    }
 
     function renderLiveInfo() {
       const feedEl = $id('iaa-live-feed');
@@ -1314,14 +1356,21 @@
     function secsFromTF(tf){ return normalizeExpiry(tf)==='5M' ? 300 : 60; }
 
     function getActiveTradeIntervalMin() {
-      if (isSniperMode()) {
-        return Math.max(1, Number(S.sniper?.tradeIntervalMin) || 1);
+      if (!isSingleAssetMode()) {
+        return Math.max(1, S.tradeIntervalMin || 1);
       }
-      return Math.max(1, S.tradeIntervalMin || 1);
+      const min = Math.max(1, S.singleAssetIntervalMin || 10);
+      const max = Math.max(min, S.singleAssetIntervalMax || min);
+      return min + Math.floor(Math.random() * (max - min + 1));
     }
 
     function getCurrentUTCMinus3Time(){ return new Date(Date.now() - 3*60*60*1000); }
     function getCurrentMinute(){ const n=getCurrentUTCMinus3Time(); return n.getUTCHours()*60 + n.getUTCMinutes(); }
+
+    function getSingleAssetWindow(label) {
+      if (!S.analysisWindows || !S.analysisWindows.length) return null;
+      return S.analysisWindows.find(w => w.label === label) || null;
+    }
 
     function getRecentPriceSamples(windowMs = 30000) {
       const now = Date.now();
@@ -1383,110 +1432,106 @@
       return false;
     }
 
-    function calculateRsiFromSamples(samples, period = 14) {
-      if (!samples || samples.length < period + 1) return null;
-      let gains = 0;
-      let losses = 0;
-      for (let i = 1; i <= period; i++) {
-        const diff = samples[i].price - samples[i - 1].price;
-        if (diff >= 0) gains += diff;
-        else losses -= diff;
-      }
-      const rs = gains / (losses || 1e-6);
-      return 100 - (100 / (1 + rs));
-    }
-
-    function getSniperTimeInCandle(intervalSec = 15) {
+    function getSecondsToCandleClose(expiry) {
       const now = getCurrentUTCMinus3Time();
-      return now.getUTCSeconds() % intervalSec;
+      const seconds = now.getUTCSeconds();
+      const minutes = now.getUTCMinutes();
+      const interval = normalizeExpiry(expiry) === '5M' ? 5 : 1;
+      const secondsInto = (minutes % interval) * 60 + seconds;
+      return interval * 60 - secondsInto;
     }
 
-    function getSniperExecExpiry() {
-      const tf = S.sniper?.execTimeframe || '15s';
-      if (tf === '5m' || tf === '15m') return '5M';
-      return '1M';
-    }
+    function evaluateTestTrade(signal) {
+      const direction = signal.direction?.toUpperCase?.() || '';
+      if (!direction) return { ok: false, reason: 'NoTrend', score: 0, label: 'BAD' };
+      if (!signal.isOTC) return { ok: false, reason: 'OTCOnly', score: 0, label: 'BAD' };
 
-    function evaluateSniperDecision() {
-      const sniper = S.sniper || {};
-      const baseWindowMs = sniper.tf15s ? 15000 : 60000;
-      const samples = getRecentPriceSamples(baseWindowMs);
-      if (samples.length < 10) {
-        return { ok: false, reason: 'NoFeed', confidence: 0, direction: null };
-      }
-
-      const current = samples[samples.length - 1]?.price;
-      const vwap = samples.reduce((sum, p) => sum + p.price, 0) / samples.length;
-      const deviation = (current - vwap) / (vwap || 1);
-      const direction = deviation >= 0 ? 'BUY' : 'SELL';
+      const samples = getRecentPriceSamples(30000);
+      if (samples.length < 6) return { ok: false, reason: 'NoFeed', score: 0, label: 'BAD' };
 
       const deltas = getRecentDeltas(samples);
       const choppy = isChoppyMarket(deltas);
-      const momentum = hasMomentumAlignment(deltas, direction);
+      const spike = hasSpikeMove(deltas);
       const nearLevel = isNearKeyLevel(samples, direction);
-      const rsi = calculateRsiFromSamples(samples.slice(-20));
+      const momentum = hasMomentumAlignment(deltas, direction);
 
-      const entryWindowSec = Math.max(1, Number(sniper.entryWindowSec) || 6);
-      const timeInCandle = getSniperTimeInCandle(sniper.tf15s ? 15 : 60);
-      if (timeInCandle > entryWindowSec) {
-        return { ok: false, reason: 'Timing', confidence: 0, direction };
-      }
+      const secondsToClose = getSecondsToCandleClose(signal.expiry || S.expirySetting);
+      const badTiming = secondsToClose > 8 || secondsToClose < 2;
 
-      const absDeviation = Math.abs(deviation);
       let score = 0;
-      const vwapThreshold = Math.max(0.0001, sniper.vwapDeviation || 0.0006);
-      const vwapRatio = Math.min(2, absDeviation / vwapThreshold);
-      score += Math.round(15 * vwapRatio);
-      if (absDeviation >= vwapThreshold) score += 10;
-      if (momentum) {
-        score += 20;
-      } else {
-        const recent = deltas.slice(-3);
-        const avgMagnitude = deltas.map(d => Math.abs(d)).reduce((a, b) => a + b, 0) / deltas.length;
-        const recentMagnitude = recent.reduce((a, b) => a + Math.abs(b), 0) / Math.max(1, recent.length);
-        if (recentMagnitude >= avgMagnitude * 0.9) score += 10;
+      if (!choppy) score++;
+      if (!spike) score++;
+      if (momentum) score++;
+      if (!nearLevel) score++;
+      if (S.analysisConfidence >= Math.min(1, (S.analysisConfidenceThreshold || 0) + 0.05)) score++;
+
+      let reason = '';
+      if (choppy) reason = 'Chop';
+      else if (spike) reason = 'Spike';
+      else if (nearLevel) reason = 'Level';
+      else if (!momentum) reason = 'Momentum';
+      else if (badTiming) reason = 'Timing';
+      else if (score < 3) reason = 'Quality';
+
+      const label = score >= 4 ? 'GOOD' : (score >= 3 ? 'MID' : 'BAD');
+      return { ok: !reason, reason, score, label, secondsToClose };
+    }
+
+    function hasExecutionGlitch() {
+      if (!S.priceHistory || S.priceHistory.length < 6) return false;
+      const recent = S.priceHistory.slice(-6);
+      const deltas = [];
+      for (let i = 1; i < recent.length; i++) {
+        deltas.push(Math.abs(recent[i].price - recent[i - 1].price));
+      }
+      const avg = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+      const last = deltas[deltas.length - 1] || 0;
+      if (!avg) return false;
+      return last > avg * S.singleAssetGlitchMultiplier;
+    }
+
+    function getVolatilityRatio(volatility) {
+      if (!volatility || !S.priceHistory?.length) return 0;
+      const last = S.priceHistory[S.priceHistory.length - 1]?.price || 1;
+      return Math.abs(volatility) / Math.max(Math.abs(last), 1e-6);
+    }
+
+    function evaluateSingleAssetOpportunity() {
+      const ltf = getSingleAssetWindow('15s') || getSingleAssetWindow('30s');
+      const htf = getSingleAssetWindow('5m') || getSingleAssetWindow('1m');
+      const payout = getCurrentPayoutPercent();
+      if (payout !== null && payout < S.singleAssetPayoutMin) {
+        return { ok: false, reason: 'Payout' };
+      }
+      if (hasExecutionGlitch()) {
+        return { ok: false, reason: 'Glitch' };
+      }
+      const volatility = htf?.volatility ?? ltf?.volatility ?? 0;
+      const volRatio = getVolatilityRatio(volatility);
+      if (volRatio > 0 && volRatio < S.singleAssetVolatilityMin) {
+        return { ok: false, reason: 'LowVol' };
+      }
+      if (volRatio > S.singleAssetVolatilityMax) {
+        return { ok: false, reason: 'HighVol' };
       }
 
-      const tf1m = analyzeMarketTrend(60 * 1000);
-      if (sniper.tf1m && tf1m.direction) {
-        score += tf1m.direction === direction ? 20 : -15;
-      }
-      if (sniper.tf5m) {
-        const tf5m = analyzeMarketTrend(5 * 60 * 1000);
-        if (tf5m.direction) {
-          score += tf5m.direction === direction ? 10 : -5;
-        }
-      }
-      if (sniper.tf15m) {
-        const tf15m = analyzeMarketTrend(15 * 60 * 1000);
-        if (tf15m.direction) {
-          score += tf15m.direction === direction ? 8 : -5;
-        }
+      const htfDir = htf?.direction || S.analysisDirection;
+      const ltfDir = ltf?.direction || htfDir;
+      if (!htfDir || !ltfDir || htfDir !== ltfDir) {
+        return { ok: false, reason: 'Mismatch' };
       }
 
-      if (rsi != null) {
-        if (direction === 'BUY' && rsi <= (sniper.rsiOversold ?? 30)) score += 10;
-        if (direction === 'SELL' && rsi >= (sniper.rsiOverbought ?? 70)) score += 10;
+      const htfConf = htf?.confidence ?? S.analysisConfidence;
+      const ltfConf = ltf?.confidence ?? 0;
+      if (htfConf < S.singleAssetHtfConfidence || ltfConf < S.singleAssetLtfConfidence) {
+        return { ok: false, reason: 'Confidence' };
       }
 
-      if (choppy) score -= 20;
-      if (nearLevel) score -= 5;
+      const impulse = (ltf?.steady && ltfConf >= 0.7 && volRatio >= S.singleAssetVolatilityMin);
+      const expiry = impulse ? '1M' : '5M';
+      const burstCount = impulse && ltfConf >= 0.85 ? 3 : (ltfConf >= 0.7 ? 2 : 1);
 
-      const confidence = Math.max(0, Math.min(100, Math.round(score)));
-      const threshold = Math.max(1, Math.min(100, Number(sniper.thresholdPct) || 70));
-      const ok = confidence >= threshold;
-      let reason = ok ? '' : 'Confidence';
-      if (!ok && choppy) reason = 'Chop';
-      if (!ok && nearLevel) reason = 'Level';
-      if (!ok && !momentum) reason = 'Momentum';
-
-      return {
-        ok,
-        reason,
-        confidence,
-        direction,
-        score
-      };
+      return { ok: true, direction: htfDir, expiry, burstCount };
     }
 
     /* ========================= FIXED TIME CALCULATION ========================= */
@@ -2249,13 +2294,18 @@
       const execKey = signalExecKey(signal);
       if (S.lastExecutedKey === execKey && Date.now() < S.tradeLockUntil) return false;
       if (!S.baseAmount) return false;
+      if (S.skipNextTrade) {
+        S.skipNextTrade = false;
+        endCycle();
+        return false;
+      }
       if (S.cooldownUntil && Date.now() < S.cooldownUntil) {
         setSkipReason('Cooldown');
         return false;
       }
-      const enforceAnalysis = S.analysisEnabled && !isSignalOnlyMode() && !isSniperMode();
+      const enforceAnalysis = S.analysisEnabled && !isSignalOnlyMode() && !(isTestMode() && signal.isSignalSource);
       const enforceInterval = !isSignalOnlyMode();
-      const enforcePayout = !isSignalOnlyMode() && !isSniperMode();
+      const enforcePayout = !isSignalOnlyMode();
       const enforceReversal = !isSignalOnlyMode();
       if (enforceAnalysis && S.analysisReadyAt && Date.now() < S.analysisReadyAt) {
         setSkipReason('Warmup');
@@ -2302,6 +2352,16 @@
         setSkipReason('Reversal');
         return false;
       }
+      if (isTestMode()) {
+        const testEval = evaluateTestTrade(signal);
+        S.testQualityScore = testEval.score;
+        S.testQualityLabel = testEval.label;
+        if (!testEval.ok) {
+          setSkipReason(testEval.reason || 'Quality');
+          return false;
+        }
+      }
+
       S.executing = true;
       S.executionAttempts = 1;
       S.executionStartTime = Date.now();
@@ -2775,6 +2835,28 @@
         }
       }
 
+      if (S.buySellMethod === 'selectors') {
+        let up = null, dn = null;
+
+        if (S.manualSelectors.buy && S.manualSelectors.buy.trim()) {
+          up = $(S.manualSelectors.buy.trim());
+          if (up && visible(up)) {
+          } else {
+            up = null;
+          }
+        }
+
+        if (S.manualSelectors.sell && S.manualSelectors.sell.trim()) {
+          dn = $(S.manualSelectors.sell.trim());
+          if (dn && visible(dn)) {
+          } else {
+            dn = null;
+          }
+        }
+
+        if (up && dn) return { up, dn };
+      }
+
       if (S.buySellMethod === 'coordinates') {
         let up = null, dn = null;
 
@@ -3183,7 +3265,7 @@
         logDiagnostics();
       }
 
-      if (S.analysisEnabled && !isSignalOnlyMode() && !isSniperMode() && S.analysisReadyAt && Date.now() < S.analysisReadyAt) {
+      if (S.analysisEnabled && !isSignalOnlyMode() && S.analysisReadyAt && Date.now() < S.analysisReadyAt) {
         setStatusOverlay(formatStatus('warming_up', { seconds: Math.ceil((S.analysisReadyAt - Date.now()) / 1000) }), '', false);
       }
 
@@ -3212,15 +3294,35 @@
         return;
       }
 
-      if (isSniperMode()) {
-        await ensureSniperAssetSelected();
+      if (isSingleAssetMode()) {
+        await ensureSingleAssetSelected();
+      }
+      if (isTestMode()) {
+        await ensureTestAssetSelected();
       }
 
-      if (!isSniperMode() && S.autoTrade && !S.cycleActive && !S.tradeSequenceActive && !S.activeTrade && !S.hasLiveSignal && Date.now() >= S.signalCooldownUntil) {
+      if (isSingleAssetMode() && S.analysisEnabled) {
+        const now = Date.now();
+        if (now - S.lastSingleAssetSkipAt > 60000) {
+          if (!S.analysisDirection) {
+            S.lastSingleAssetSkipAt = now;
+            setSkipReason('NoTrend');
+          } else if (S.analysisConfidence < S.analysisConfidenceThreshold) {
+            S.lastSingleAssetSkipAt = now;
+            setSkipReason('Confidence');
+          }
+        }
+      }
+
+      if (!isSingleAssetMode() && S.autoTrade && !S.cycleActive && !S.tradeSequenceActive && !S.activeTrade && !S.hasLiveSignal && Date.now() >= S.signalCooldownUntil) {
         const incoming = await fetchAPISignals();
 
         if (incoming.length) {
           for (const sig of incoming) {
+            if (isTestMode() && !sig.isOTC) {
+              setSkipReason('OTCOnly');
+              continue;
+            }
             const delayMs = calculateDelay(sig.minute);
 
             if (delayMs < 0) {
@@ -3236,7 +3338,7 @@
               if (S.signalBuffer.length > C.MAX_QUEUE) S.signalBuffer.shift();
             }
           }
-        } else if (!S.selfTradeEnabled && S.analysisDirection && S.analysisConfidence >= S.analysisConfidenceThreshold) {
+        } else if (!S.selfTradeEnabled && !isSingleAssetMode() && S.analysisDirection && S.analysisConfidence >= S.analysisConfidenceThreshold) {
           const now = Date.now();
           if (now - S.lastSelfTradeHintAt > 60000) {
             S.lastSelfTradeHintAt = now;
@@ -3245,8 +3347,8 @@
         }
       }
 
-      if (!isSniperMode() && !S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !S.activeTrade && S.signalBuffer.length) {
-        S.signalBuffer = S.signalBuffer.filter(s => calculateDelay(s.minute) >= 0);
+      if (!isSingleAssetMode() && !S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !S.activeTrade && S.signalBuffer.length) {
+        S.signalBuffer = S.signalBuffer.filter(s => calculateDelay(s.minute) >= 0 && (!isTestMode() || s.isOTC));
         if (S.signalBuffer.length) {
           S.signalBuffer.sort((a, b) => a.targetTsMs - b.targetTsMs);
           const next = S.signalBuffer.shift();
@@ -3254,71 +3356,59 @@
         }
       }
 
-      if (isSniperMode() && S.autoTrade && !S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !S.activeTrade) {
-        if (S.nextTradeAllowedAt && Date.now() < S.nextTradeAllowedAt) {
-          setSkipReason('Interval');
-        } else {
-          const payout = getCurrentPayoutPercent();
-          if (Number.isFinite(S.sniper?.minPayout) && S.sniper.minPayout > 0) {
-            if (payout === null || payout < S.sniper.minPayout) {
-              setSkipReason('Payout');
-              return;
-            }
+      const selfTradeAllowed = getSelfTradeAllowed();
+      if (selfTradeAllowed && !S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !S.activeTrade) {
+        if ((!S.analysisReadyAt || Date.now() >= S.analysisReadyAt) && S.analysisDirection && S.analysisConfidence >= S.analysisConfidenceThreshold) {
+          let assetLabel = getCurrentAssetLabel();
+          if (isSingleAssetMode()) {
+            assetLabel = SINGLE_ASSET.asset;
           }
-          {
-            const decision = evaluateSniperDecision();
-            S.sniperLastConfidence = decision.confidence;
-            S.sniperLastScore = decision.score;
-            S.sniperLastDirection = decision.direction;
-            if (!decision.ok) {
-              if (decision.reason) {
+          const assetSearch = assetLabel ? assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim() : '';
+          const isOTC = isSingleAssetMode() ? true : /OTC/i.test(assetLabel || '');
+          if (isTestMode() && !isOTC) {
+            setSkipReason('OTCOnly');
+            return;
+          }
+          if (assetLabel) {
+            if (isSingleAssetMode()) {
+              const decision = evaluateSingleAssetOpportunity();
+              if (!decision.ok) {
                 setSkipReason(decision.reason);
+              } else {
+                const minute = getCurrentMinute();
+                const sig = {
+                  asset: assetLabel,
+                  assetSearch,
+                  isOTC,
+                  direction: decision.direction,
+                  expiry: decision.expiry,
+                  burstCount: decision.burstCount,
+                  minute,
+                  time: fmtHHMMSSUTCm3(new Date()),
+                  targetTsMs: Date.now(),
+                  rawText: '[analysis-only]'
+                };
+                startCycle(sig);
+                S.assetSelectedForSignal = true;
+                S.assetSelectionAttempted = true;
               }
             } else {
               const minute = getCurrentMinute();
               const sig = {
-                asset: SNIPER_ASSET.asset,
-                assetSearch: SNIPER_ASSET.assetSearch,
-                isOTC: true,
-                direction: decision.direction,
-                expiry: getSniperExecExpiry(),
+                asset: assetLabel,
+                assetSearch,
+                isOTC,
+                direction: S.analysisDirection,
+                expiry: S.expirySetting,
                 minute,
                 time: fmtHHMMSSUTCm3(new Date()),
                 targetTsMs: Date.now(),
-                rawText: '[sniper]'
+                rawText: '[analysis-only]'
               };
               startCycle(sig);
               S.assetSelectedForSignal = true;
               S.assetSelectionAttempted = true;
             }
-          }
-        }
-      }
-
-      const selfTradeAllowed = getSelfTradeAllowed();
-      if (selfTradeAllowed && !S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !S.activeTrade) {
-        if ((!S.analysisReadyAt || Date.now() >= S.analysisReadyAt) && S.analysisDirection && S.analysisConfidence >= S.analysisConfidenceThreshold) {
-          const assetLabel = getCurrentAssetLabel();
-          const assetSearch = assetLabel ? assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim() : '';
-          const isOTC = /OTC/i.test(assetLabel || '');
-          if (assetLabel) {
-            const minute = getCurrentMinute();
-            const sig = {
-              asset: assetLabel,
-              assetSearch,
-              isOTC,
-              direction: S.analysisDirection,
-              expiry: normalizeExpiry(S.expirySetting) || '1M',
-              minute,
-              time: fmtHHMMSSUTCm3(new Date()),
-              targetTsMs: Date.now(),
-              rawText: '[analysis-only]'
-            };
-            startCycle(sig);
-            S.assetSelectedForSignal = true;
-            S.assetSelectionAttempted = true;
-          } else {
-            setSkipReason('Asset');
           }
         }
       }
@@ -3649,7 +3739,7 @@
 
         .iaa-signal{ position:relative; display:block; width:100%; }
         .loader-wrapper{ position:relative; width:100%; background:#000; border-radius:12px; overflow:hidden; height:260px; display:flex; align-items:center; justify-content:center; }
-        .iaa-console{ position:relative; width:100%; height:100%; padding:8px; display:flex; flex-direction:column; gap:6px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:11px; color:#e5e7eb; background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.08); border-radius:10px; }
+        .iaa-console{ width:100%; height:100%; padding:8px; display:flex; flex-direction:column; gap:6px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:11px; color:#e5e7eb; background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.08); border-radius:10px; }
         #iaa-console-lines{ flex:1; overflow-y:auto; }
         .iaa-console-line{ margin-bottom:4px; display:flex; gap:6px; align-items:baseline; }
         .iaa-console-time{ color:#94a3b8; font-size:10px; white-space:nowrap; }
@@ -3658,8 +3748,6 @@
         .iaa-console-msg--signal{ color:#22c55e; }
         .iaa-console-msg--skip{ color:#f87171; }
         .iaa-console-msg--warn{ color:#fbbf24; }
-        .iaa-console-copy{ position:absolute; top:6px; right:6px; display:none; align-items:center; gap:6px; padding:4px 8px; border-radius:999px; border:1px solid rgba(255,255,255,.2); background:rgba(15,23,42,.85); color:#e2e8f0; font-size:10px; cursor:pointer; }
-        .iaa-console-copy.is-visible{ display:flex; }
         #iaa-status-overlay{ font-weight:700; color:#fbbf24; text-shadow:none; pointer-events:none; }
         #iaa-countdown{ font-weight:700; color:#60a5fa; text-align:right; text-shadow:none; pointer-events:none; }
         #iaa-chip-wrap{ display:none; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; }
@@ -3687,6 +3775,9 @@
         .iaa-lag{ display:flex; align-items:center; gap:6px; margin-top:4px; }
         .iaa-live{ display:flex; flex-wrap:wrap; gap:6px 10px; margin-top:6px; }
         .iaa-live-item{ display:flex; align-items:center; gap:4px; }
+        .iaa-manual{ margin-top:6px; padding:6px 8px; border-radius:8px; border:1px dashed rgba(255,255,255,.08); background:rgba(0,0,0,.25); font-size:11px; display:flex; justify-content:space-between; gap:8px; align-items:center; }
+        .iaa-manual-label{ color:#9ca3af; }
+        .iaa-manual-value{ color:#e5e7eb; font-weight:600; }
         .k{ font-size:11px; color:#9ca3af } .v{ font-size:12px; text-align:right } .blue{ color:#60a5fa } .strong{ font-weight:bold; color:#fff } .wr{ color:#e88565 }
         #iaa-warm{ font-size:10px; text-align:center; margin-top:6px } .red{ color:#f87171 }
 
@@ -3734,26 +3825,6 @@
         .iaa-debug-value{ color:#e5e7eb; font-weight:600; }
         .iaa-debug-value--warn{ color:#fbbf24; }
         .iaa-debug-value--bad{ color:#f87171; }
-        #iaa-sniper-panel{
-          display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%);
-          width:360px; background:#000; border:1px solid rgba(255,255,255,.15);
-          border-radius:14px; padding:16px; z-index:2147483648;
-          box-shadow:0 12px 40px rgba(0,0,0,.8); max-height:80vh; overflow-y:auto;
-          font-family:system-ui, Arial !important; color:#fff;
-        }
-        #iaa-sniper-close{ position:absolute; top:8px; right:8px; background:none; border:none; color:#fff; font-size:16px; cursor:pointer; }
-        .iaa-sniper-title{ font-weight:700; font-size:12px; margin-bottom:8px; color:#e5e7eb; }
-        .iaa-sniper-field{ display:flex; flex-direction:column; gap:4px; margin:8px 0; font-size:11px; }
-        .iaa-sniper-field label{ color:#9ca3af; }
-        .iaa-sniper-field input,
-        .iaa-sniper-field select{
-          width:100%; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.1);
-          background:rgba(0,0,0,.3); color:#fff; font-size:11px;
-        }
-        .iaa-sniper-row{ display:flex; gap:8px; }
-        .iaa-sniper-row .iaa-sniper-field{ flex:1; }
-        .iaa-sniper-checks{ display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
-        .iaa-sniper-checks label{ font-size:11px; color:#9ca3af; display:flex; align-items:center; gap:4px; }
       `;
       const style = document.createElement('style');
       style.textContent = css;
@@ -3782,7 +3853,6 @@
           <div id="iaa-loader-wrapper" class="loader-wrapper">
             <div id="iaa-console" class="iaa-console">
               <div id="iaa-console-lines"></div>
-              <button id="iaa-console-copy" class="iaa-console-copy" type="button">Copy</button>
               <div id="iaa-status-overlay"></div>
               <div id="iaa-countdown"></div>
             </div>
@@ -3807,6 +3877,10 @@
           <div class="iaa-live-item"><span class="iaa-stat-label" data-status-key="lag_label">Lag</span><span id="iaa-live-lag" class="iaa-stat-value">—</span></div>
           <div class="iaa-live-item"><span class="iaa-stat-label" data-status-key="feed_label">Feed</span><span id="iaa-live-feed" class="iaa-stat-value">—</span></div>
         </div>
+        <div class="iaa-manual">
+          <span class="iaa-manual-label">Manual</span>
+          <span id="iaa-manual-signal" class="iaa-manual-value">—</span>
+        </div>
         <div class="iaa-stats">
           <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="start_label">Start</span><span id="iaa-start-time" class="iaa-stat-value">—</span></div>
           <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="total_label">Total</span><span id="iaa-total-trades" class="iaa-stat-value">0</span></div>
@@ -3819,8 +3893,8 @@
         <div class="iaa-controls">
           <button id="iaa-mouse-toggle" class="iaa-control-btn" title="Mouse Mapping">🖱</button>
           <button id="iaa-settings-toggle" class="iaa-control-btn" title="Settings">⚙</button>
+          <button id="iaa-skip-trade" class="iaa-control-btn" title="Skip Next Trade">⏭️</button>
           <button id="iaa-debug-toggle" class="iaa-control-btn" title="Debug Info">🧪</button>
-          <button id="iaa-sniper-toggle" class="iaa-control-btn" title="Sniper Settings">🎯</button>
         </div>
 
         <div id="iaa-debug-panel">
@@ -3834,71 +3908,16 @@
           <div id="iaa-debug-content"></div>
         </div>
 
-        <div id="iaa-sniper-panel">
-          <button id="iaa-sniper-close" title="Close sniper settings">×</button>
-          <div class="iaa-sniper-title">SNIPER Settings</div>
-          <div class="iaa-sniper-field">
-            <label for="iaa-sniper-threshold">Threshold %</label>
-            <input type="number" id="iaa-sniper-threshold" min="1" max="100" step="1">
-          </div>
-          <div class="iaa-sniper-row">
-            <div class="iaa-sniper-field">
-              <label for="iaa-sniper-entry-window">Entry Window (sec)</label>
-              <input type="number" id="iaa-sniper-entry-window" min="1" max="15" step="1">
-            </div>
-            <div class="iaa-sniper-field">
-              <label for="iaa-sniper-vwap-deviation">VWAP Deviation</label>
-              <input type="number" id="iaa-sniper-vwap-deviation" step="0.0001">
-            </div>
-          </div>
-          <div class="iaa-sniper-row">
-            <div class="iaa-sniper-field">
-              <label for="iaa-sniper-rsi-overbought">RSI Overbought</label>
-              <input type="number" id="iaa-sniper-rsi-overbought" min="50" max="90" step="1">
-            </div>
-            <div class="iaa-sniper-field">
-              <label for="iaa-sniper-rsi-oversold">RSI Oversold</label>
-              <input type="number" id="iaa-sniper-rsi-oversold" min="10" max="50" step="1">
-            </div>
-          </div>
-          <div class="iaa-sniper-row">
-            <div class="iaa-sniper-field">
-              <label for="iaa-sniper-min-payout">Min Payout %</label>
-              <input type="number" id="iaa-sniper-min-payout" min="0" max="100" step="1">
-            </div>
-            <div class="iaa-sniper-field">
-              <label for="iaa-sniper-interval">Trade Interval (min)</label>
-              <input type="number" id="iaa-sniper-interval" min="1" max="30" step="1">
-            </div>
-          </div>
-          <div class="iaa-sniper-field">
-            <label for="iaa-sniper-exec-tf">Execution Timeframe</label>
-            <select id="iaa-sniper-exec-tf">
-              <option value="15s">15s</option>
-              <option value="1m">1m</option>
-              <option value="5m">5m</option>
-              <option value="15m">15m</option>
-            </select>
-          </div>
-          <div class="iaa-sniper-field">
-            <label>Analysis Timeframes</label>
-            <div class="iaa-sniper-checks">
-              <label><input type="checkbox" id="iaa-sniper-tf-15s">15s</label>
-              <label><input type="checkbox" id="iaa-sniper-tf-1m">1m</label>
-              <label><input type="checkbox" id="iaa-sniper-tf-5m">5m</label>
-              <label><input type="checkbox" id="iaa-sniper-tf-15m">15m</label>
-            </div>
-          </div>
-        </div>
-
         <div id="iaa-settings-panel">
           <button id="iaa-settings-close">×</button>
           <div style="margin-bottom:12px;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
               <span style="color:#9ca3af; font-size:11px;" data-i18n="trade_mode_label">Trade Mode</span>
               <select id="iaa-trade-mode" style="width:170px; padding:4px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:rgba(0,0,0,.3); color:#fff; font-size:11px;">
+                <option value="signals" data-i18n="trade_mode_signals">All assets + signals</option>
+                <option value="single_asset" data-i18n="trade_mode_single">Single asset (EUR/USD OTC)</option>
                 <option value="signals_only" data-i18n="trade_mode_signals_only">Signals only (1m/5m)</option>
-                <option value="sniper" data-i18n="trade_mode_sniper">SNIPER (precision)</option>
+                <option value="test" data-i18n="trade_mode_test">TEST (experimental)</option>
               </select>
             </div>
             <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;font-size:12px"><input type="checkbox" id="iaa-signal-source-1m"> <span data-i18n="signal_source_1m">Enable 1m signals</span></label>
@@ -4040,6 +4059,7 @@
             <button id="iaa-method-xpath" style="flex:1; padding:8px 12px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:#374151; color:#60a5fa; cursor:pointer; font-size:11px; text-align:center;">XPath (Recommended)</button>
             <button id="iaa-method-auto" style="flex:1; padding:8px 12px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:#191919; color:#fff; cursor:pointer; font-size:11px; text-align:center;">Auto Detection</button>
             <button id="iaa-method-coords" style="flex:1; padding:8px 12px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:#191919; color:#fff; cursor:pointer; font-size:11px; text-align:center;">Coordinates</button>
+            <button id="iaa-method-selectors" style="flex:1; padding:8px 12px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:#191919; color:#fff; cursor:pointer; font-size:11px; text-align:center;">CSS Selectors</button>
           </div>
 
           <div id="iaa-xpath-status" style="margin:12px 0; padding:8px; background:rgba(34,197,94,0.1); border-radius:6px; border:1px solid rgba(34,197,94,0.3);">
@@ -4057,6 +4077,16 @@
             </div>
             <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin:6px 0;"><span style="font-size:11px; color:#9ca3af">Next Step:</span><span id="iaa-mouse-step" style="font-size:12px; text-align:right; font-weight:bold; color:#fbbf24">—</span></div>
             <div id="iaa-mouse-list"></div>
+          </div>
+
+          <div id="iaa-selectors-section" style="display:none;">
+            <div style="margin:12px 0; padding:8px; background:rgba(255,255,255,.03); border-radius:8px;">
+              <div style="font-size:11px; color:#9ca3af; margin-bottom:4px;">Manual Buy Selector (CSS):</div>
+              <input type="text" id="iaa-manual-buy-selector" placeholder="e.g., #call-button, .buy-btn, [data-test='call']" style="width:100%; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:rgba(0,0,0,.3); color:#fff; font-size:11px; margin:4px 0;">
+              <div style="font-size:11px; color:#9ca3af; margin-bottom:4px;">Manual Sell Selector (CSS):</div>
+              <input type="text" id="iaa-manual-sell-selector" placeholder="e.g., #put-button, .sell-btn, [data-test='put']" style="width:100%; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:rgba(0,0,0,.3); color:#fff; font-size:11px; margin:4px 0;">
+              <div style="font-size:10px; color:#6b7280; margin-top:4px;">Enter CSS selectors for buy/sell buttons</div>
+            </div>
           </div>
 
           <div style="max-height:120px; overflow:auto; border:1px dashed rgba(255,255,255,.08); border-radius:6px; padding:8px; color:#9ca3af; font-size:11px; margin:8px 0;" id="iaa-mouse-log"></div>
@@ -4086,48 +4116,6 @@
       setStatusOverlay(formatStatus('looking_for_opportunity'), '', false);
       applyStatusLabels();
       renderTradeStats();
-
-      const consoleWrap = $id('iaa-console');
-      const consoleCopy = $id('iaa-console-copy');
-      let consolePressTimer = null;
-      let consoleHideTimer = null;
-      const showConsoleCopy = () => {
-        if (!consoleCopy) return;
-        consoleCopy.classList.add('is-visible');
-        if (consoleHideTimer) clearTimeout(consoleHideTimer);
-        consoleHideTimer = setTimeout(() => {
-          consoleCopy.classList.remove('is-visible');
-        }, 2500);
-      };
-      const scheduleConsoleCopy = () => {
-        if (consolePressTimer) clearTimeout(consolePressTimer);
-        consolePressTimer = setTimeout(showConsoleCopy, 550);
-      };
-      const cancelConsoleCopy = () => {
-        if (consolePressTimer) clearTimeout(consolePressTimer);
-      };
-
-      if (consoleWrap) {
-        consoleWrap.addEventListener('pointerdown', (event) => {
-          if (event.button !== 0) return;
-          scheduleConsoleCopy();
-        });
-        consoleWrap.addEventListener('pointerup', cancelConsoleCopy);
-        consoleWrap.addEventListener('pointerleave', cancelConsoleCopy);
-        consoleWrap.addEventListener('pointercancel', cancelConsoleCopy);
-      }
-      if (consoleCopy) {
-        consoleCopy.addEventListener('click', async (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          const ok = await copyConsoleToClipboard();
-          if (ok) {
-            consoleCopy.textContent = 'Copied';
-            setTimeout(() => { consoleCopy.textContent = 'Copy'; }, 1200);
-          }
-          consoleCopy.classList.remove('is-visible');
-        });
-      }
 
       let dragging = false, off = {x:0, y:0};
       const dragHandle = $id('iaa-panel');
@@ -4186,37 +4174,21 @@
         const settings = $id('iaa-settings-panel');
         const mouse = $id('iaa-mouse-panel');
         const debug = $id('iaa-debug-panel');
-        const sniper = $id('iaa-sniper-panel');
         if (settings) settings.style.display = 'none';
         if (mouse) mouse.style.display = 'none';
         if (debug) debug.style.display = 'none';
-        if (sniper) sniper.style.display = 'none';
         S.settingsPanelOpen = false;
         S.mousePanelOpen = false;
-        S.sniperPanelOpen = false;
       }
 
       const settingsToggle = $id('iaa-settings-toggle');
       const mouseToggle = $id('iaa-mouse-toggle');
       const settingsClose = $id('iaa-settings-close');
       const mouseClose = $id('iaa-mouse-close');
+      const skipTrade = $id('iaa-skip-trade');
       const debugToggle = $id('iaa-debug-toggle');
       const debugClose = $id('iaa-debug-close');
       const debugCopy = $id('iaa-debug-copy');
-      const sniperToggle = $id('iaa-sniper-toggle');
-      const sniperClose = $id('iaa-sniper-close');
-      const sniperThreshold = $id('iaa-sniper-threshold');
-      const sniperEntryWindow = $id('iaa-sniper-entry-window');
-      const sniperVwapDeviation = $id('iaa-sniper-vwap-deviation');
-      const sniperRsiOverbought = $id('iaa-sniper-rsi-overbought');
-      const sniperRsiOversold = $id('iaa-sniper-rsi-oversold');
-      const sniperMinPayout = $id('iaa-sniper-min-payout');
-      const sniperExecTf = $id('iaa-sniper-exec-tf');
-      const sniperTradeInterval = $id('iaa-sniper-interval');
-      const sniperTf15s = $id('iaa-sniper-tf-15s');
-      const sniperTf1m = $id('iaa-sniper-tf-1m');
-      const sniperTf5m = $id('iaa-sniper-tf-5m');
-      const sniperTf15m = $id('iaa-sniper-tf-15m');
 
       if (settingsToggle) {
         settingsToggle.addEventListener('click', () => {
@@ -4245,25 +4217,10 @@
           }
         });
       }
-      if (sniperToggle) {
-        sniperToggle.addEventListener('click', () => {
-          const sniper = $id('iaa-sniper-panel');
-          if (!sniper) return;
-          renderSniperPanel();
-          if (sniper.style.display === 'block') {
-            hidePopups();
-          } else {
-            hidePopups();
-            sniper.style.display = 'block';
-            S.sniperPanelOpen = true;
-          }
-        });
-      }
 
       if (settingsClose) settingsClose.addEventListener('click', hidePopups);
       if (mouseClose) mouseClose.addEventListener('click', hidePopups);
       if (debugClose) debugClose.addEventListener('click', hidePopups);
-      if (sniperClose) sniperClose.addEventListener('click', hidePopups);
       if (debugCopy) {
         debugCopy.addEventListener('click', async () => {
           const ok = await copyDebugInfo();
@@ -4271,6 +4228,12 @@
           const original = debugCopy.textContent;
           debugCopy.textContent = 'COPIED';
           setTimeout(() => { debugCopy.textContent = original; }, 1200);
+        });
+      }
+      if (skipTrade) {
+        skipTrade.addEventListener('click', () => {
+          S.skipNextTrade = true;
+          setStatusOverlay(formatStatus('next_trade_skipped'));
         });
       }
     }
@@ -4329,9 +4292,17 @@
         confEl.textContent = `${pct}%${dir}`;
       }
 
+      if (!S.currentSignal && isSingleAssetMode()) {
+        const assetEl = $id('iaa-asset');
+        const expEl = $id('iaa-exp');
+        if (assetEl) assetEl.textContent = SINGLE_ASSET.asset;
+        if (expEl) expEl.textContent = S.expirySetting || '1M';
+      }
+
       const etaEl = $id('iaa-next-trade');
       if (etaEl) etaEl.textContent = getNextEtaLabel();
       renderLiveInfo();
+      renderManualSignal();
     }
 
     async function restoreSettings(){
@@ -4377,16 +4348,14 @@
       const signal5m = await storage.get(SIGNAL_SOURCE_5M_KEY);
       if (typeof signal5m === 'boolean') S.signalSourceEnabled['5m'] = signal5m;
       const tradeMode = await storage.get(TRADE_MODE_KEY);
-      if (typeof tradeMode === 'string' && ['signals_only', 'sniper'].includes(tradeMode)) {
+      if (typeof tradeMode === 'string' && ['signals', 'single_asset', 'signals_only', 'test'].includes(tradeMode)) {
         S.tradeMode = tradeMode;
       }
-      if (isSniperMode()) {
-        applySniperDefaults();
+      if (isSingleAssetMode()) {
+        applySingleAssetDefaults();
       }
-
-      const sniperSettings = await storage.get(SNIPER_SETTINGS_KEY);
-      if (sniperSettings && typeof sniperSettings === 'object') {
-        S.sniper = Object.assign({}, S.sniper, sniperSettings);
+      if (isTestMode()) {
+        applyTestDefaults();
       }
 
       const savedCoords = await storage.get(COORDS_KEY);
@@ -4401,8 +4370,13 @@
         if (S.coords.SELL_COORD) C.COORD_SELL = S.coords.SELL_COORD;
       }
 
+      const savedSelectors = await storage.get(MANUAL_SELECTORS_KEY);
+      if (savedSelectors && typeof savedSelectors === 'object') {
+        S.manualSelectors = Object.assign({}, S.manualSelectors, savedSelectors);
+      }
+
       const savedMethod = await storage.get(BUY_SELL_METHOD_KEY);
-      if (savedMethod && ['auto', 'coordinates', 'xpath'].includes(savedMethod)) {
+      if (savedMethod && ['auto', 'coordinates', 'selectors', 'xpath'].includes(savedMethod)) {
         S.buySellMethod = savedMethod;
       }
 
@@ -4449,9 +4423,9 @@
       storage.set(SIGNAL_SOURCE_1M_KEY, S.signalSourceEnabled['1m']);
       storage.set(SIGNAL_SOURCE_5M_KEY, S.signalSourceEnabled['5m']);
       storage.set(TRADE_MODE_KEY, S.tradeMode);
+      storage.set(MANUAL_SELECTORS_KEY, S.manualSelectors);
       storage.set(BUY_SELL_METHOD_KEY, S.buySellMethod);
       storage.set(XPATH_SELECTORS_KEY, S.xpathSelectors);
-      storage.set(SNIPER_SETTINGS_KEY, S.sniper);
     }
 
     function renderSettingsPanel(){
@@ -4536,34 +4510,6 @@
       renderTradeStats();
     }
 
-    function renderSniperPanel() {
-      const threshold = $id('iaa-sniper-threshold');
-      const entryWindow = $id('iaa-sniper-entry-window');
-      const vwapDev = $id('iaa-sniper-vwap-deviation');
-      const rsiOb = $id('iaa-sniper-rsi-overbought');
-      const rsiOs = $id('iaa-sniper-rsi-oversold');
-      const minPayout = $id('iaa-sniper-min-payout');
-      const execTf = $id('iaa-sniper-exec-tf');
-      const tradeInterval = $id('iaa-sniper-interval');
-      const tf15s = $id('iaa-sniper-tf-15s');
-      const tf1m = $id('iaa-sniper-tf-1m');
-      const tf5m = $id('iaa-sniper-tf-5m');
-      const tf15m = $id('iaa-sniper-tf-15m');
-
-      if (threshold) threshold.value = String(S.sniper?.thresholdPct ?? 70);
-      if (entryWindow) entryWindow.value = String(S.sniper?.entryWindowSec ?? 5);
-      if (vwapDev) vwapDev.value = String(S.sniper?.vwapDeviation ?? 0.0006);
-      if (rsiOb) rsiOb.value = String(S.sniper?.rsiOverbought ?? 70);
-      if (rsiOs) rsiOs.value = String(S.sniper?.rsiOversold ?? 30);
-      if (minPayout) minPayout.value = String(S.sniper?.minPayout ?? 80);
-      if (execTf) execTf.value = String(S.sniper?.execTimeframe ?? '15s');
-      if (tradeInterval) tradeInterval.value = String(S.sniper?.tradeIntervalMin ?? 1);
-      if (tf15s) tf15s.checked = !!S.sniper?.tf15s;
-      if (tf1m) tf1m.checked = !!S.sniper?.tf1m;
-      if (tf5m) tf5m.checked = !!S.sniper?.tf5m;
-      if (tf15m) tf15m.checked = !!S.sniper?.tf15m;
-    }
-
     function ensurePanelHandlers(){
       const toggleBtn = $id('iaa-toggle');
       const autoBtn = $id('iaa-auto');
@@ -4637,7 +4583,7 @@
         });
       }
 
-      const L1=$id('iaa-l1'), L2=$id('iaa-l2'), L1M=$id('iaa-l1-multiplier'), L2M=$id('iaa-l2-multiplier'), EXP=$id('iaa-expiry-setting'), BASE=$id('iaa-base-amount'), KEEP_ALIVE=$id('iaa-keep-alive'), FORCE_ASSET=$id('iaa-force-asset'), MAX_SESSION_LOSS=$id('iaa-max-session-loss'), MAX_LOSS_STREAK=$id('iaa-max-loss-streak'), ANALYSIS_ENABLED=$id('iaa-analysis-enabled'), ANALYSIS_CONFIDENCE=$id('iaa-analysis-confidence'), TRADE_INTERVAL_MIN=$id('iaa-trade-interval-min'), PAYOUT_MIN=$id('iaa-payout-min'), PAYOUT_MAX=$id('iaa-payout-max'), PAYOUT_REQUIRED=$id('iaa-payout-required'), MAX_TRADE_AMOUNT=$id('iaa-max-trade-amount'), MAX_TRADE_MULTIPLIER=$id('iaa-max-trade-multiplier'), ANALYSIS_WINDOW=$id('iaa-analysis-window'), ANALYSIS_WARMUP=$id('iaa-analysis-warmup'), SELF_TRADE_ENABLED=$id('iaa-self-trade-enabled'), SIGNAL_OVERRIDE=$id('iaa-signal-override'), MULTI_TF=$id('iaa-multi-tf'), BURST_ENABLED=$id('iaa-burst-enabled'), BURST_COUNT=$id('iaa-burst-count'), BURST_CONFIDENCE=$id('iaa-burst-confidence'), COOLDOWN_LOSSES=$id('iaa-cooldown-losses'), COOLDOWN_MIN=$id('iaa-cooldown-min'), REVERSAL_WINDOW=$id('iaa-reversal-window'), REVERSAL_RATIO=$id('iaa-reversal-ratio'), PANEL_OPACITY=$id('iaa-panel-opacity'), COUNTDOWN_BEEP=$id('iaa-countdown-beep'), SETTINGS_LANGUAGE=$id('iaa-settings-language'), TRADE_MODE=$id('iaa-trade-mode'), SIGNAL_SOURCE_1M=$id('iaa-signal-source-1m'), SIGNAL_SOURCE_5M=$id('iaa-signal-source-5m'), sniperThreshold=$id('iaa-sniper-threshold'), sniperEntryWindow=$id('iaa-sniper-entry-window'), sniperVwapDeviation=$id('iaa-sniper-vwap-deviation'), sniperRsiOverbought=$id('iaa-sniper-rsi-overbought'), sniperRsiOversold=$id('iaa-sniper-rsi-oversold'), sniperMinPayout=$id('iaa-sniper-min-payout'), sniperExecTf=$id('iaa-sniper-exec-tf'), sniperTradeInterval=$id('iaa-sniper-interval'), sniperTf15s=$id('iaa-sniper-tf-15s'), sniperTf1m=$id('iaa-sniper-tf-1m'), sniperTf5m=$id('iaa-sniper-tf-5m'), sniperTf15m=$id('iaa-sniper-tf-15m');
+      const L1=$id('iaa-l1'), L2=$id('iaa-l2'), L1M=$id('iaa-l1-multiplier'), L2M=$id('iaa-l2-multiplier'), EXP=$id('iaa-expiry-setting'), BASE=$id('iaa-base-amount'), KEEP_ALIVE=$id('iaa-keep-alive'), FORCE_ASSET=$id('iaa-force-asset'), MAX_SESSION_LOSS=$id('iaa-max-session-loss'), MAX_LOSS_STREAK=$id('iaa-max-loss-streak'), ANALYSIS_ENABLED=$id('iaa-analysis-enabled'), ANALYSIS_CONFIDENCE=$id('iaa-analysis-confidence'), TRADE_INTERVAL_MIN=$id('iaa-trade-interval-min'), PAYOUT_MIN=$id('iaa-payout-min'), PAYOUT_MAX=$id('iaa-payout-max'), PAYOUT_REQUIRED=$id('iaa-payout-required'), MAX_TRADE_AMOUNT=$id('iaa-max-trade-amount'), MAX_TRADE_MULTIPLIER=$id('iaa-max-trade-multiplier'), ANALYSIS_WINDOW=$id('iaa-analysis-window'), ANALYSIS_WARMUP=$id('iaa-analysis-warmup'), SELF_TRADE_ENABLED=$id('iaa-self-trade-enabled'), SIGNAL_OVERRIDE=$id('iaa-signal-override'), MULTI_TF=$id('iaa-multi-tf'), BURST_ENABLED=$id('iaa-burst-enabled'), BURST_COUNT=$id('iaa-burst-count'), BURST_CONFIDENCE=$id('iaa-burst-confidence'), COOLDOWN_LOSSES=$id('iaa-cooldown-losses'), COOLDOWN_MIN=$id('iaa-cooldown-min'), REVERSAL_WINDOW=$id('iaa-reversal-window'), REVERSAL_RATIO=$id('iaa-reversal-ratio'), PANEL_OPACITY=$id('iaa-panel-opacity'), COUNTDOWN_BEEP=$id('iaa-countdown-beep'), SETTINGS_LANGUAGE=$id('iaa-settings-language'), TRADE_MODE=$id('iaa-trade-mode'), SIGNAL_SOURCE_1M=$id('iaa-signal-source-1m'), SIGNAL_SOURCE_5M=$id('iaa-signal-source-5m');
 
       if (L1) L1.addEventListener('change',()=>{ S.l1Active=L1.checked; persistSettings(); });
       if (L2) L2.addEventListener('change',()=>{ S.l2Active=L2.checked; if (S.l2Active && !S.l1Active){ L1.checked=true; S.l1Active=true; } persistSettings(); });
@@ -4843,18 +4789,21 @@
       if (TRADE_MODE) {
         TRADE_MODE.addEventListener('change',()=>{ 
           const next = TRADE_MODE.value;
-          if (['signals_only', 'sniper'].includes(next)) {
+          if (['signals', 'single_asset', 'signals_only', 'test'].includes(next)) {
             S.tradeMode = next;
-            if (isSniperMode()) {
-              applySniperDefaults();
+            if (isSingleAssetMode()) {
+              applySingleAssetDefaults();
+            }
+            if (isTestMode()) {
+              applyTestDefaults();
             }
             persistSettings();
-            if (isSniperMode()) {
+            if (isSingleAssetMode()) {
               S.signalBuffer.length = 0;
               S.currentSignal = null;
               S.tradeSequenceActive = false;
               S.hasLiveSignal = false;
-              ensureSniperAssetSelected();
+              ensureSingleAssetSelected();
             }
           }
         });
@@ -4868,88 +4817,6 @@
       if (SIGNAL_SOURCE_5M) {
         SIGNAL_SOURCE_5M.addEventListener('change', () => {
           S.signalSourceEnabled['5m'] = SIGNAL_SOURCE_5M.checked;
-          persistSettings();
-        });
-      }
-      if (sniperThreshold) {
-        sniperThreshold.addEventListener('input', () => {
-          const d = parseNumberFlexible(sniperThreshold.value) || 70;
-          S.sniper.thresholdPct = Math.max(1, Math.min(100, Math.round(d)));
-          persistSettings();
-        });
-      }
-      if (sniperEntryWindow) {
-        sniperEntryWindow.addEventListener('input', () => {
-          const d = parseNumberFlexible(sniperEntryWindow.value) || 5;
-          S.sniper.entryWindowSec = Math.max(1, Math.min(15, Math.round(d)));
-          persistSettings();
-        });
-      }
-      if (sniperVwapDeviation) {
-        sniperVwapDeviation.addEventListener('input', () => {
-          const d = parseNumberFlexible(sniperVwapDeviation.value) || 0.0006;
-          S.sniper.vwapDeviation = Math.max(0.0001, d);
-          persistSettings();
-        });
-      }
-      if (sniperRsiOverbought) {
-        sniperRsiOverbought.addEventListener('input', () => {
-          const d = parseNumberFlexible(sniperRsiOverbought.value) || 70;
-          S.sniper.rsiOverbought = Math.max(50, Math.min(90, Math.round(d)));
-          persistSettings();
-        });
-      }
-      if (sniperRsiOversold) {
-        sniperRsiOversold.addEventListener('input', () => {
-          const d = parseNumberFlexible(sniperRsiOversold.value) || 30;
-          S.sniper.rsiOversold = Math.max(10, Math.min(50, Math.round(d)));
-          persistSettings();
-        });
-      }
-      if (sniperMinPayout) {
-        sniperMinPayout.addEventListener('input', () => {
-          const d = parseNumberFlexible(sniperMinPayout.value) || 0;
-          S.sniper.minPayout = Math.max(0, Math.min(100, Math.round(d)));
-          persistSettings();
-        });
-      }
-      if (sniperExecTf) {
-        sniperExecTf.addEventListener('change', () => {
-          const next = sniperExecTf.value;
-          if (['15s', '1m', '5m', '15m'].includes(next)) {
-            S.sniper.execTimeframe = next;
-            persistSettings();
-          }
-        });
-      }
-      if (sniperTradeInterval) {
-        sniperTradeInterval.addEventListener('input', () => {
-          const d = parseNumberFlexible(sniperTradeInterval.value) || 1;
-          S.sniper.tradeIntervalMin = Math.max(1, Math.min(30, Math.round(d)));
-          persistSettings();
-        });
-      }
-      if (sniperTf15s) {
-        sniperTf15s.addEventListener('change', () => {
-          S.sniper.tf15s = sniperTf15s.checked;
-          persistSettings();
-        });
-      }
-      if (sniperTf1m) {
-        sniperTf1m.addEventListener('change', () => {
-          S.sniper.tf1m = sniperTf1m.checked;
-          persistSettings();
-        });
-      }
-      if (sniperTf5m) {
-        sniperTf5m.addEventListener('change', () => {
-          S.sniper.tf5m = sniperTf5m.checked;
-          persistSettings();
-        });
-      }
-      if (sniperTf15m) {
-        sniperTf15m.addEventListener('change', () => {
-          S.sniper.tf15m = sniperTf15m.checked;
           persistSettings();
         });
       }
@@ -5036,7 +4903,7 @@
     }
 
     function renderMousePanel(){
-      const methodButtons = ['iaa-method-xpath', 'iaa-method-auto', 'iaa-method-coords'];
+      const methodButtons = ['iaa-method-xpath', 'iaa-method-auto', 'iaa-method-coords', 'iaa-method-selectors'];
       methodButtons.forEach(id => {
         const btn = $id(id);
         if (btn) {
@@ -5049,6 +4916,7 @@
       const xpathBtn = $id('iaa-method-xpath');
       const autoBtn = $id('iaa-method-auto');
       const coordsBtn = $id('iaa-method-coords');
+      const selectorsBtn = $id('iaa-method-selectors');
 
       if (S.buySellMethod === 'xpath' && xpathBtn) {
         xpathBtn.style.background = '#374151';
@@ -5062,13 +4930,24 @@
         coordsBtn.style.background = '#374151';
         coordsBtn.style.color = '#60a5fa';
         coordsBtn.style.borderColor = '#60a5fa';
+      } else if (S.buySellMethod === 'selectors' && selectorsBtn) {
+        selectorsBtn.style.background = '#374151';
+        selectorsBtn.style.color = '#60a5fa';
+        selectorsBtn.style.borderColor = '#60a5fa';
       }
 
+      const selectorsSection = $id('iaa-selectors-section');
       const xpathStatus = $id('iaa-xpath-status');
+      if (selectorsSection) selectorsSection.style.display = S.buySellMethod === 'selectors' ? 'block' : 'none';
       if (xpathStatus) xpathStatus.style.display = S.buySellMethod === 'xpath' ? 'block' : 'none';
 
       renderMouseList();
       renderMouseStep();
+
+      const buyInput = $id('iaa-manual-buy-selector');
+      const sellInput = $id('iaa-manual-sell-selector');
+      if (buyInput) buyInput.value = S.manualSelectors.buy || '';
+      if (sellInput) sellInput.value = S.manualSelectors.sell || '';
 
       logMouse(`Buy/Sell method: ${S.buySellMethod}`);
     }
@@ -5104,16 +4983,24 @@
       if (S.coords.BUY_COORD) C.COORD_BUY = S.coords.BUY_COORD;
       if (S.coords.SELL_COORD) C.COORD_SELL = S.coords.SELL_COORD;
 
-      logMouse('✅ All coordinates saved & applied successfully!');
+      const buyInput = $id('iaa-manual-buy-selector');
+      const sellInput = $id('iaa-manual-sell-selector');
+      if (buyInput) S.manualSelectors.buy = buyInput.value.trim();
+      if (sellInput) S.manualSelectors.sell = sellInput.value.trim();
+      await storage.set(MANUAL_SELECTORS_KEY, S.manualSelectors);
+
+      logMouse('✅ All coordinates and selectors saved & applied successfully!');
       renderMouseList();
     }
 
     async function resetCalibration(){
       try { await storage.del(COORDS_KEY); } catch {}
+      try { await storage.del(MANUAL_SELECTORS_KEY); } catch {}
       S.coords = {
         DD_COORD: null, SEARCH_COORD: null, ROW_OTC_COORD: null,
         ROW_SPOT_COORD: null, CLOSE_COORD: null, BUY_COORD: null, SELL_COORD: null
       };
+      S.manualSelectors = { buy: '', sell: '' };
       C.COORD_ROW_OTC = { x: 445, y: 300 };
       C.COORD_ROW_SPOT = { x: 445, y: 300 };
       C.COORD_CLOSE    = { x: 760, y:  20 };
@@ -5121,6 +5008,11 @@
       C.COORD_SELL     = { x: 800, y: 500 };
       C.DD_COORD       = null;
       C.SEARCH_COORD   = null;
+
+      const buyInput = $id('iaa-manual-buy-selector');
+      const sellInput = $id('iaa-manual-sell-selector');
+      if (buyInput) buyInput.value = '';
+      if (sellInput) sellInput.value = '';
 
       logMouse('🔄 All calibration reset to defaults.');
       renderMousePanel();
@@ -5130,9 +5022,12 @@
       const xpathBtn = $id('iaa-method-xpath');
       const autoBtn = $id('iaa-method-auto');
       const coordsBtn = $id('iaa-method-coords');
+      const selectorsBtn = $id('iaa-method-selectors');
+
       if (xpathBtn) xpathBtn.addEventListener('click', () => setBuySellMethod('xpath'));
       if (autoBtn) autoBtn.addEventListener('click', () => setBuySellMethod('auto'));
       if (coordsBtn) coordsBtn.addEventListener('click', () => setBuySellMethod('coordinates'));
+      if (selectorsBtn) selectorsBtn.addEventListener('click', () => setBuySellMethod('selectors'));
 
       document.addEventListener('mousemove', (e)=>{
         S.lastMousePos.x = e.clientX;
@@ -5184,7 +5079,11 @@
       await restoreSettings();
       ensurePanelInit();
       ensureMouseHandlers();
-      await logBootChecks();
+      logConsoleLine(formatStatus('bot_loaded'));
+      const sess = await getSession();
+      if (sess && sess.ok) {
+        logConsoleLine(formatStatus('session_ok'));
+      }
 
       if (S.keepAliveEnabled && S.running) {
         startKeepAlive();
@@ -5205,7 +5104,6 @@
     api.fetchAPISignals = fetchAPISignals;
     api.debugLog = debugLog;
     api.logConsole = logConsoleLine;
-    api.logBootChecks = logBootChecks;
     api.formatStatus = formatStatus;
 
     return api;
