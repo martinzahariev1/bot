@@ -105,7 +105,7 @@
     const card = document.createElement('div'); card.className = 'iaa-login-card';
     card.innerHTML = `
       <div class="iaa-login-logo-wrap"><img id="iaa-login-logo" class="iaa-login-logo" alt="∞ Infinity AI"/></div>
-      <div id="heading">Sign In</div>
+      <div id="heading">Sign in to Infinity AI Agent</div>
       <div class="form">
         <div class="field"><input id="iaa-pass" class="input-field" type="password" placeholder="Password" autocomplete="current-password"></div>
         <div class="field"><input id="iaa-uid" class="input-field" type="text" placeholder="PocketOption ID" autocomplete="username"></div>
@@ -396,7 +396,7 @@
       trades: [],
       tradeStats: { total: 0, wins: 0, losses: 0, evens: 0 },
       botStartAt: null,
-      tradeMode: 'test',
+      tradeMode: 'signals',
 
       // risk controls
       maxSessionLossCents: 0,
@@ -408,14 +408,6 @@
       analysisEnabled: false,
       analysisConfidenceThreshold: 0.65,
       tradeIntervalMin: 9,
-      singleAssetIntervalMin: 10,
-      singleAssetIntervalMax: 15,
-      singleAssetPayoutMin: 82,
-      singleAssetVolatilityMin: 0.00005,
-      singleAssetVolatilityMax: 0.003,
-      singleAssetGlitchMultiplier: 6,
-      singleAssetLtfConfidence: 0.35,
-      singleAssetHtfConfidence: 0.45,
       payoutMin: 80,
       payoutMax: 92,
       payoutRequired: false,
@@ -475,14 +467,10 @@
       analysisWindows: [],
       analysisReadyAt: 0,
       analysisReason: '',
-      lastSignalLagSec: null,
-      clockDriftSec: null,
       skipNextTrade: false,
       cooldownUntil: 0,
       lastSkipReason: '',
       lastSkipAt: 0,
-      testQualityScore: null,
-      testQualityLabel: null,
 
       /* ---------- ENHANCED: Countdown and UI states ---------- */
       countdownActive: false,
@@ -541,7 +529,6 @@
         trade_mode_signals: 'All assets + signals',
         trade_mode_single: 'Single asset (EUR/USD OTC)',
         trade_mode_signals_only: 'Signals only (1m/5m)',
-        trade_mode_test: 'TEST (experimental)',
         signal_source_1m: 'Enable 1m signals',
         signal_source_5m: 'Enable 5m signals'
       },
@@ -590,7 +577,6 @@
         trade_mode_signals: 'Всички валути + сигнали',
         trade_mode_single: 'Една валута (EUR/USD OTC)',
         trade_mode_signals_only: 'Само сигнали (1м/5м)',
-        trade_mode_test: 'TEST (експериментален)',
         signal_source_1m: 'Сигнали 1м',
         signal_source_5m: 'Сигнали 5м'
       }
@@ -643,9 +629,7 @@
         total_label: 'Total',
         win_label: 'Win',
         loss_label: 'Loss',
-        win_rate_label: '%',
-        lag_label: 'Lag',
-        feed_label: 'Feed'
+        win_rate_label: '%'
       },
       bg: {
         console_ready: 'Конзолата е готова.',
@@ -693,9 +677,7 @@
         total_label: 'Общо',
         win_label: 'Печалби',
         loss_label: 'Загуби',
-        win_rate_label: '%',
-        lag_label: 'Лаг',
-        feed_label: 'Цена'
+        win_rate_label: '%'
       }
     };
 
@@ -709,18 +691,7 @@
         Mismatch: 'Direction mismatch',
         Payout: 'Payout',
         Reversal: 'Reversal',
-        MaxAmount: 'Max amount',
-        LowVol: 'Low volatility',
-        HighVol: 'High volatility',
-        Glitch: 'Price jump',
-        Chop: 'Choppy market',
-        Spike: 'Spike move',
-        Level: 'At key level',
-        Timing: 'Bad timing',
-        OTCOnly: 'OTC only',
-        Momentum: 'Weak momentum',
-        NoFeed: 'No feed',
-        Quality: 'Low quality'
+        MaxAmount: 'Max amount'
       },
       bg: {
         Cooldown: 'Пауза',
@@ -731,18 +702,7 @@
         Mismatch: 'Несъответствие на посока',
         Payout: 'Изплащане',
         Reversal: 'Обръщане',
-        MaxAmount: 'Макс. сума',
-        LowVol: 'Ниска волатилност',
-        HighVol: 'Висока волатилност',
-        Glitch: 'Скок в цената',
-        Chop: 'Накъсан пазар',
-        Spike: 'Рязък шип',
-        Level: 'На ключово ниво',
-        Timing: 'Лош тайминг',
-        OTCOnly: 'Само OTC',
-        Momentum: 'Слаб импулс',
-        NoFeed: 'Няма цена',
-        Quality: 'Ниско качество'
+        MaxAmount: 'Макс. сума'
       }
     };
 
@@ -773,45 +733,6 @@
       return dict[reason] || reason;
     }
 
-    function applySingleAssetDefaults() {
-      S.analysisEnabled = true;
-      S.selfTradeEnabled = true;
-      S.multiTimeframeEnabled = true;
-      S.analysisConfidenceThreshold = 0.45;
-      S.analysisWindowSec = 600;
-      S.analysisWarmupMin = 5;
-      S.singleAssetIntervalMin = 10;
-      S.singleAssetIntervalMax = 15;
-      S.singleAssetPayoutMin = 82;
-      S.singleAssetVolatilityMin = 0.00005;
-      S.singleAssetVolatilityMax = 0.003;
-      S.singleAssetGlitchMultiplier = 6;
-      S.singleAssetLtfConfidence = 0.35;
-      S.singleAssetHtfConfidence = 0.45;
-    }
-
-    function applyTestDefaults() {
-      S.analysisEnabled = true;
-      S.selfTradeEnabled = true;
-      S.multiTimeframeEnabled = true;
-      S.signalOverrideEnabled = false;
-      S.analysisConfidenceThreshold = 0.4;
-      S.analysisWindowSec = 300;
-      S.analysisWarmupMin = 3;
-      S.tradeIntervalMin = 20;
-      S.payoutMin = 80;
-      S.payoutRequired = true;
-      S.cooldownLosses = 3;
-      S.cooldownMin = 10;
-      S.reversalWindowSec = 5;
-      S.reversalOppositeRatio = 0.6;
-      S.burstEnabled = false;
-      S.signalSourceEnabled['1m'] = true;
-      S.signalSourceEnabled['5m'] = true;
-      S.testQualityScore = null;
-      S.testQualityLabel = null;
-    }
-
     function applyStatusLabels() {
       document.querySelectorAll('[data-status-key]').forEach(el => {
         const key = el.getAttribute('data-status-key');
@@ -833,10 +754,6 @@
       return S.tradeMode === 'signals_only';
     }
 
-    function isTestMode() {
-      return S.tradeMode === 'test';
-    }
-
     function getSelfTradeAllowed() {
       return !isSignalOnlyMode() && (S.selfTradeEnabled || isSingleAssetMode());
     }
@@ -848,28 +765,6 @@
       S.lastSingleAssetCheckAt = now;
       const current = getCurrentAssetLabel();
       if (current && current.includes('EUR/USD') && /OTC/i.test(current)) {
-        return;
-      }
-      const sig = {
-        asset: SINGLE_ASSET.asset,
-        assetSearch: SINGLE_ASSET.assetSearch,
-        isOTC: SINGLE_ASSET.isOTC
-      };
-      try {
-        S.assetSelecting = true;
-        await selectAssetWithVerification(sig);
-      } finally {
-        S.assetSelecting = false;
-      }
-    }
-
-    async function ensureTestAssetSelected() {
-      if (!isTestMode() || S.assetSelecting || S.activeTrade || S.tradeSequenceActive || S.currentSignal) return;
-      const now = Date.now();
-      if (now - S.lastSingleAssetCheckAt < 30000) return;
-      S.lastSingleAssetCheckAt = now;
-      const current = getCurrentAssetLabel();
-      if (current && /OTC/i.test(current)) {
         return;
       }
       const sig = {
@@ -930,9 +825,7 @@
       const now = Date.now();
       if (now - S.lastDiagnosticsAt < 60000) return;
       S.lastDiagnosticsAt = now;
-      const mode = S.tradeMode === 'single_asset'
-        ? 'single'
-        : (S.tradeMode === 'signals_only' ? 'signals_only' : (S.tradeMode === 'test' ? 'test' : 'signals'));
+      const mode = S.tradeMode === 'single_asset' ? 'single' : (S.tradeMode === 'signals_only' ? 'signals_only' : 'signals');
       const auto = S.autoTrade ? 'on' : 'off';
       const analysis = S.analysisEnabled ? 'on' : 'off';
       const dir = S.analysisDirection || '-';
@@ -981,16 +874,6 @@
       renderTradeStats();
     }
 
-    function renderLagStatus() {
-      const lagEl = $id('iaa-live-lag');
-      if (!lagEl) return;
-      if (S.lastSignalLagSec === null || typeof S.lastSignalLagSec !== 'number') {
-        lagEl.textContent = '—';
-        return;
-      }
-      lagEl.textContent = `${S.lastSignalLagSec}s`;
-    }
-
     function renderTradeStats() {
       const totalEl = $id('iaa-total-trades');
       const winEl = $id('iaa-win-trades');
@@ -1007,175 +890,8 @@
         rateEl.textContent = `${rate}%`;
       }
       if (startEl) {
-        startEl.textContent = S.botStartAt
-          ? new Date(S.botStartAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          : '—';
+        startEl.textContent = S.botStartAt ? new Date(S.botStartAt).toLocaleTimeString() : '—';
       }
-      renderLagStatus();
-    }
-
-    function getNextEtaMs() {
-      const now = Date.now();
-      let etaMs = null;
-      if (S.analysisReadyAt && S.analysisReadyAt > now) etaMs = S.analysisReadyAt - now;
-      if (S.nextTradeAllowedAt && S.nextTradeAllowedAt > now) {
-        etaMs = etaMs ? Math.max(etaMs, S.nextTradeAllowedAt - now) : (S.nextTradeAllowedAt - now);
-      }
-      if (etaMs == null && S.countdownActive && S.countdownTargetTime) {
-        etaMs = Math.max(0, S.countdownTargetTime - now);
-      }
-      return etaMs;
-    }
-
-    function getNextEtaLabel() {
-      const etaMs = getNextEtaMs();
-      if (etaMs != null) {
-        const totalSeconds = Math.ceil(etaMs / 1000);
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-        return `${minutes}:${String(seconds).padStart(2, '0')}`;
-      }
-      return formatStatus('ready');
-    }
-
-    function getDebugInfoLines() {
-      const now = new Date();
-      const utc3 = new Date(Date.now() - 3 * 60 * 60 * 1000);
-      const driftValue = typeof S.clockDriftSec === 'number' ? S.clockDriftSec : null;
-      const driftLabel = driftValue != null ? `${driftValue}s` : '—';
-      const lagValue = typeof S.lastSignalLagSec === 'number' ? S.lastSignalLagSec : null;
-      const lagLabel = lagValue != null ? `${lagValue}s` : '—';
-      const analysisUpdatedSec = S.analysisUpdatedAt ? Math.round((Date.now() - S.analysisUpdatedAt) / 1000) : null;
-      const analysisUpdatedLabel = analysisUpdatedSec != null ? `${analysisUpdatedSec}s` : '—';
-      const confidence = Number.isFinite(S.analysisConfidence) ? S.analysisConfidence : 0;
-      const threshold = typeof S.analysisConfidenceThreshold === 'number' ? S.analysisConfidenceThreshold : null;
-      const lowConfidence = threshold == null ? confidence <= 0 : confidence < threshold;
-      const testQuality = S.testQualityLabel && Number.isFinite(S.testQualityScore)
-        ? `${S.testQualityLabel} (${S.testQualityScore}/5)`
-        : '—';
-
-      const driftSeverity = driftValue == null ? '' : (Math.abs(driftValue) >= 2 ? 'bad' : (Math.abs(driftValue) >= 1 ? 'warn' : ''));
-      const lagSeverity = lagValue == null ? '' : (lagValue >= 5 ? 'bad' : (lagValue >= 2 ? 'warn' : ''));
-      const feedOk = S.currentAssetPrice != null;
-      const feedSeverity = feedOk ? '' : 'bad';
-      const analysisUpdatedSeverity = analysisUpdatedSec != null && analysisUpdatedSec > 15 ? 'warn' : '';
-      const lastSkipSeverity = S.lastSkipReason ? 'warn' : '';
-      const confidenceSeverity = lowConfidence ? 'warn' : '';
-      const qualitySeverity = S.testQualityLabel === 'BAD' ? 'bad' : (S.testQualityLabel === 'MID' ? 'warn' : '');
-
-      const lines = [
-        { key: 'mode', value: S.tradeMode, severity: '' },
-        { key: 'auto', value: String(S.autoTrade), severity: '' },
-        { key: 'analysis', value: String(S.analysisEnabled), severity: '' },
-        { key: 'direction', value: S.analysisDirection || '-', severity: '' },
-        { key: 'confidence', value: confidence.toFixed(2), severity: confidenceSeverity },
-        { key: 'threshold', value: threshold != null ? threshold.toFixed(2) : '-', severity: '' },
-        ...(isTestMode() ? [{ key: 'testQuality', value: testQuality, severity: qualitySeverity }] : []),
-        { key: 'lag', value: lagLabel, severity: lagSeverity },
-        { key: 'priceFeed', value: feedOk ? 'OK' : '—', severity: feedSeverity },
-        { key: 'priceHistory', value: String(S.priceHistory?.length || 0), severity: '' },
-        { key: 'analysisUpdated', value: analysisUpdatedLabel, severity: analysisUpdatedSeverity },
-        { key: 'cooldown', value: S.cooldownUntil && S.cooldownUntil > Date.now() ? `${Math.ceil((S.cooldownUntil - Date.now()) / 1000)}s` : '—', severity: '' },
-        { key: 'nextTrade', value: getNextEtaLabel(), severity: '' },
-        { key: 'lastSkip', value: S.lastSkipReason || '—', severity: lastSkipSeverity },
-        { key: 'clockDrift', value: driftLabel, severity: driftSeverity },
-        { key: 'local', value: now.toLocaleTimeString(), severity: '' },
-        { key: 'utc-3', value: utc3.toUTCString().split(' ')[4], severity: '' }
-      ];
-      return lines;
-    }
-
-    function formatDebugInfo() {
-      return getDebugInfoLines()
-        .map((line) => `${line.key}: ${line.value}`)
-        .join('\n');
-    }
-
-    function renderDebugInfo() {
-      const content = $id('iaa-debug-content');
-      if (!content) return;
-      const lines = getDebugInfoLines();
-      content.innerHTML = lines.map((line) => {
-        const severityClass = line.severity ? ` iaa-debug-value--${line.severity}` : '';
-        return `<div class="iaa-debug-line"><span class="iaa-debug-key">${line.key}:</span><span class="iaa-debug-value${severityClass}">${line.value}</span></div>`;
-      }).join('');
-    }
-
-    async function copyDebugInfo() {
-      const text = formatDebugInfo();
-      if (!text) return false;
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(text);
-          return true;
-        }
-      } catch {}
-      try {
-        const temp = document.createElement('textarea');
-        temp.value = text;
-        temp.setAttribute('readonly', 'readonly');
-        temp.style.position = 'fixed';
-        temp.style.top = '-1000px';
-        document.body.appendChild(temp);
-        temp.select();
-        document.execCommand('copy');
-        temp.remove();
-        return true;
-      } catch {
-        return false;
-      }
-    }
-
-    function updateClockDriftFromResponse(response) {
-      const serverDate = response?.headers?.get?.('Date') || response?.headers?.get?.('date');
-      if (!serverDate) return;
-      const serverTs = Date.parse(serverDate);
-      if (Number.isNaN(serverTs)) return;
-      const driftSec = (Date.now() - serverTs) / 1000;
-      S.clockDriftSec = Math.round(driftSec * 10) / 10;
-    }
-
-    function renderManualSignal() {
-      const manualEl = $id('iaa-manual-signal');
-      if (!manualEl) return;
-      if (!isSingleAssetMode() || !S.analysisEnabled) {
-        manualEl.textContent = '—';
-        return;
-      }
-      if (S.currentAssetPrice == null) {
-        manualEl.textContent = 'No feed';
-        return;
-      }
-      if ((S.priceHistory?.length || 0) < 6) {
-        manualEl.textContent = 'Waiting data';
-        return;
-      }
-      const dir = S.analysisDirection;
-      const confidence = Number.isFinite(S.analysisConfidence) ? S.analysisConfidence : 0;
-      const pct = Math.round(confidence * 100);
-      const threshold = Number.isFinite(S.analysisConfidenceThreshold) ? S.analysisConfidenceThreshold : null;
-      const lowConfidence = threshold == null ? confidence <= 0 : confidence < threshold;
-      if (!dir) {
-        manualEl.textContent = '—';
-        return;
-      }
-      const etaMs = getNextEtaMs();
-      const eta = etaMs != null ? formatCountdown(Math.max(0, etaMs)) : '';
-      const reason = lowConfidence ? 'Low conf' : (S.lastSkipReason === 'Confidence' ? 'Low conf' : '');
-      if (lowConfidence && confidence <= 0) {
-        manualEl.textContent = reason;
-        return;
-      }
-      manualEl.textContent = `${pct}% ${dir}${eta ? ` in ${eta}` : ''}${reason ? ` • ${reason}` : ''}`;
-    }
-
-    function renderLiveInfo() {
-      const feedEl = $id('iaa-live-feed');
-
-      if (feedEl) {
-        feedEl.textContent = S.currentAssetPrice != null ? 'OK' : '—';
-      }
-      renderLagStatus();
     }
 
     /* ------------------------------ HELPERS ----------------------------- */
@@ -1355,184 +1071,8 @@
 
     function secsFromTF(tf){ return normalizeExpiry(tf)==='5M' ? 300 : 60; }
 
-    function getActiveTradeIntervalMin() {
-      if (!isSingleAssetMode()) {
-        return Math.max(1, S.tradeIntervalMin || 1);
-      }
-      const min = Math.max(1, S.singleAssetIntervalMin || 10);
-      const max = Math.max(min, S.singleAssetIntervalMax || min);
-      return min + Math.floor(Math.random() * (max - min + 1));
-    }
-
     function getCurrentUTCMinus3Time(){ return new Date(Date.now() - 3*60*60*1000); }
     function getCurrentMinute(){ const n=getCurrentUTCMinus3Time(); return n.getUTCHours()*60 + n.getUTCMinutes(); }
-
-    function getSingleAssetWindow(label) {
-      if (!S.analysisWindows || !S.analysisWindows.length) return null;
-      return S.analysisWindows.find(w => w.label === label) || null;
-    }
-
-    function getRecentPriceSamples(windowMs = 30000) {
-      const now = Date.now();
-      return (S.priceHistory || []).filter(p => now - p.timestamp <= windowMs);
-    }
-
-    function getRecentDeltas(samples) {
-      const deltas = [];
-      for (let i = 1; i < samples.length; i++) {
-        deltas.push(samples[i].price - samples[i - 1].price);
-      }
-      return deltas;
-    }
-
-    function isChoppyMarket(deltas) {
-      if (deltas.length < 6) return false;
-      let flips = 0;
-      let lastSign = Math.sign(deltas[0]);
-      for (let i = 1; i < deltas.length; i++) {
-        const sign = Math.sign(deltas[i]);
-        if (sign === 0) continue;
-        if (lastSign !== 0 && sign !== lastSign) flips++;
-        lastSign = sign;
-      }
-      const flipRatio = flips / Math.max(1, deltas.length - 1);
-      return flipRatio >= 0.6;
-    }
-
-    function hasSpikeMove(deltas) {
-      if (deltas.length < 4) return false;
-      const magnitudes = deltas.map(d => Math.abs(d));
-      const avg = magnitudes.reduce((a, b) => a + b, 0) / magnitudes.length;
-      const last = magnitudes[magnitudes.length - 1] || 0;
-      return avg > 0 && last > avg * 3.2;
-    }
-
-    function hasMomentumAlignment(deltas, direction) {
-      if (deltas.length < 4) return false;
-      const recent = deltas.slice(-3);
-      const avgMagnitude = deltas.map(d => Math.abs(d)).reduce((a, b) => a + b, 0) / deltas.length;
-      const sameDirection = recent.every(d => (direction === 'BUY' ? d > 0 : d < 0));
-      const recentMagnitude = recent.reduce((a, b) => a + Math.abs(b), 0) / recent.length;
-      return sameDirection && recentMagnitude > avgMagnitude * 1.1;
-    }
-
-    function isNearKeyLevel(samples, direction) {
-      if (samples.length < 6) return false;
-      const prices = samples.map(p => p.price);
-      const max = Math.max(...prices);
-      const min = Math.min(...prices);
-      const range = max - min;
-      if (!range) return false;
-      const current = prices[prices.length - 1];
-      const distToHigh = (max - current) / range;
-      const distToLow = (current - min) / range;
-      const threshold = 0.15;
-      if (direction === 'BUY') return distToHigh <= threshold;
-      if (direction === 'SELL') return distToLow <= threshold;
-      return false;
-    }
-
-    function getSecondsToCandleClose(expiry) {
-      const now = getCurrentUTCMinus3Time();
-      const seconds = now.getUTCSeconds();
-      const minutes = now.getUTCMinutes();
-      const interval = normalizeExpiry(expiry) === '5M' ? 5 : 1;
-      const secondsInto = (minutes % interval) * 60 + seconds;
-      return interval * 60 - secondsInto;
-    }
-
-    function evaluateTestTrade(signal) {
-      const direction = signal.direction?.toUpperCase?.() || '';
-      if (!direction) return { ok: false, reason: 'NoTrend', score: 0, label: 'BAD' };
-      if (!signal.isOTC) return { ok: false, reason: 'OTCOnly', score: 0, label: 'BAD' };
-
-      const samples = getRecentPriceSamples(30000);
-      if (samples.length < 6) return { ok: false, reason: 'NoFeed', score: 0, label: 'BAD' };
-
-      const deltas = getRecentDeltas(samples);
-      const choppy = isChoppyMarket(deltas);
-      const spike = hasSpikeMove(deltas);
-      const nearLevel = isNearKeyLevel(samples, direction);
-      const momentum = hasMomentumAlignment(deltas, direction);
-
-      const secondsToClose = getSecondsToCandleClose(signal.expiry || S.expirySetting);
-      const badTiming = secondsToClose > 8 || secondsToClose < 2;
-
-      let score = 0;
-      if (!choppy) score++;
-      if (!spike) score++;
-      if (momentum) score++;
-      if (!nearLevel) score++;
-      if (S.analysisConfidence >= Math.min(1, (S.analysisConfidenceThreshold || 0) + 0.05)) score++;
-
-      let reason = '';
-      if (choppy) reason = 'Chop';
-      else if (spike) reason = 'Spike';
-      else if (nearLevel) reason = 'Level';
-      else if (!momentum) reason = 'Momentum';
-      else if (badTiming) reason = 'Timing';
-      else if (score < 3) reason = 'Quality';
-
-      const label = score >= 4 ? 'GOOD' : (score >= 3 ? 'MID' : 'BAD');
-      return { ok: !reason, reason, score, label, secondsToClose };
-    }
-
-    function hasExecutionGlitch() {
-      if (!S.priceHistory || S.priceHistory.length < 6) return false;
-      const recent = S.priceHistory.slice(-6);
-      const deltas = [];
-      for (let i = 1; i < recent.length; i++) {
-        deltas.push(Math.abs(recent[i].price - recent[i - 1].price));
-      }
-      const avg = deltas.reduce((a, b) => a + b, 0) / deltas.length;
-      const last = deltas[deltas.length - 1] || 0;
-      if (!avg) return false;
-      return last > avg * S.singleAssetGlitchMultiplier;
-    }
-
-    function getVolatilityRatio(volatility) {
-      if (!volatility || !S.priceHistory?.length) return 0;
-      const last = S.priceHistory[S.priceHistory.length - 1]?.price || 1;
-      return Math.abs(volatility) / Math.max(Math.abs(last), 1e-6);
-    }
-
-    function evaluateSingleAssetOpportunity() {
-      const ltf = getSingleAssetWindow('15s') || getSingleAssetWindow('30s');
-      const htf = getSingleAssetWindow('5m') || getSingleAssetWindow('1m');
-      const payout = getCurrentPayoutPercent();
-      if (payout !== null && payout < S.singleAssetPayoutMin) {
-        return { ok: false, reason: 'Payout' };
-      }
-      if (hasExecutionGlitch()) {
-        return { ok: false, reason: 'Glitch' };
-      }
-      const volatility = htf?.volatility ?? ltf?.volatility ?? 0;
-      const volRatio = getVolatilityRatio(volatility);
-      if (volRatio > 0 && volRatio < S.singleAssetVolatilityMin) {
-        return { ok: false, reason: 'LowVol' };
-      }
-      if (volRatio > S.singleAssetVolatilityMax) {
-        return { ok: false, reason: 'HighVol' };
-      }
-
-      const htfDir = htf?.direction || S.analysisDirection;
-      const ltfDir = ltf?.direction || htfDir;
-      if (!htfDir || !ltfDir || htfDir !== ltfDir) {
-        return { ok: false, reason: 'Mismatch' };
-      }
-
-      const htfConf = htf?.confidence ?? S.analysisConfidence;
-      const ltfConf = ltf?.confidence ?? 0;
-      if (htfConf < S.singleAssetHtfConfidence || ltfConf < S.singleAssetLtfConfidence) {
-        return { ok: false, reason: 'Confidence' };
-      }
-
-      const impulse = (ltf?.steady && ltfConf >= 0.7 && volRatio >= S.singleAssetVolatilityMin);
-      const expiry = impulse ? '1M' : '5M';
-      const burstCount = impulse && ltfConf >= 0.85 ? 3 : (ltfConf >= 0.7 ? 2 : 1);
-
-      return { ok: true, direction: htfDir, expiry, burstCount };
-    }
 
     /* ========================= FIXED TIME CALCULATION ========================= */
     function calculateDelay(signalOrMinute) {
@@ -1807,7 +1347,7 @@
       const windowPrices = S.priceHistory.filter(p => now - p.timestamp <= effectiveWindowMs);
 
       if (windowPrices.length < 6) {
-        return { direction: null, confidence: 0, steady: false, volatility: 0, trend: 0, consistency: 0 };
+        return { direction: null, confidence: 0, steady: false };
       }
 
       const prices = windowPrices.map(p => p.price);
@@ -1832,7 +1372,7 @@
       const confidence = clamp01(consistency * strength);
       const steady = consistency >= 0.85 && volatility <= Math.abs(meanDelta) * 3 + 1e-6;
 
-      return { direction, confidence, steady, volatility, trend, consistency };
+      return { direction, confidence, steady };
     }
 
     function updateAnalysisState() {
@@ -1995,13 +1535,6 @@
     }
 
     /* ========================= START REAL-TIME PRICE MONITORING ========================= */
-    function getPriceHistoryWindowMs() {
-      const baseWindowMs = Math.max(60, S.analysisWindowSec || 60) * 1000;
-      const multiTfWindowMs = S.multiTimeframeEnabled ? 5 * 60 * 1000 : 0;
-      const reversalWindowMs = Math.max(2, S.reversalWindowSec || 2) * 1000;
-      return Math.max(baseWindowMs, multiTfWindowMs, reversalWindowMs);
-    }
-
     function startPriceMonitoring() {
       if (S.priceMonitorInterval) {
         clearInterval(S.priceMonitorInterval);
@@ -2017,9 +1550,8 @@
             timestamp: Date.now()
           });
 
-          const windowMs = getPriceHistoryWindowMs();
-          const cutoff = Date.now() - windowMs;
-          S.priceHistory = S.priceHistory.filter(p => p.timestamp > cutoff);
+          const thirtySecondsAgo = Date.now() - 30000;
+          S.priceHistory = S.priceHistory.filter(p => p.timestamp > thirtySecondsAgo);
         }
       }, C.PRICE_MONITOR_INTERVAL_MS);
     }
@@ -2303,7 +1835,7 @@
         setSkipReason('Cooldown');
         return false;
       }
-      const enforceAnalysis = S.analysisEnabled && !isSignalOnlyMode() && !(isTestMode() && signal.isSignalSource);
+      const enforceAnalysis = S.analysisEnabled && !isSignalOnlyMode();
       const enforceInterval = !isSignalOnlyMode();
       const enforcePayout = !isSignalOnlyMode();
       const enforceReversal = !isSignalOnlyMode();
@@ -2352,15 +1884,6 @@
         setSkipReason('Reversal');
         return false;
       }
-      if (isTestMode()) {
-        const testEval = evaluateTestTrade(signal);
-        S.testQualityScore = testEval.score;
-        S.testQualityLabel = testEval.label;
-        if (!testEval.ok) {
-          setSkipReason(testEval.reason || 'Quality');
-          return false;
-        }
-      }
 
       S.executing = true;
       S.executionAttempts = 1;
@@ -2405,8 +1928,7 @@
         const dir = signal.direction.toLowerCase();
         let clicked = false;
         const shouldBurst = S.burstEnabled && S.analysisSteadyTrend && S.analysisConfidence >= S.burstConfidenceThreshold;
-        const baseBurst = shouldBurst ? Math.max(1, Math.min(S.burstTradeCount, 5)) : 1;
-        const burstCount = Math.max(1, Number.isFinite(signal?.burstCount) ? signal.burstCount : baseBurst);
+        const burstCount = shouldBurst ? Math.max(1, Math.min(S.burstTradeCount, 5)) : 1;
 
         if ((dir === 'buy' || dir === 'call' || dir === 'up') && up) {
           for (let i = 0; i < burstCount; i++) {
@@ -2447,8 +1969,7 @@
         };
 
         S.tradeLockUntil = Date.now() + 1000;
-        const intervalMin = getActiveTradeIntervalMin();
-        S.nextTradeAllowedAt = Date.now() + intervalMin * 60 * 1000;
+        S.nextTradeAllowedAt = Date.now() + Math.max(1, S.tradeIntervalMin) * 60 * 1000;
         S.lastTradeTime = Date.now();
         S.tradeCount++;
         S.lastExecutedKey = execKey;
@@ -2701,10 +2222,6 @@
 
       // Start countdown from 60 seconds before execution
       const delayMs = calculateDelay(sig.minute);
-      if (typeof delayMs === 'number') {
-        S.lastSignalLagSec = delayMs < 0 ? Math.round(Math.abs(delayMs) / 1000) : 0;
-        renderLagStatus();
-      }
       const countdownStartMs = Math.min(delayMs, 60000);
 
       if (countdownStartMs > 0) {
@@ -3023,8 +2540,6 @@
             continue;
           }
 
-          updateClockDriftFromResponse(response);
-
           const rawText = await response.text();
           const text = extractSignalTextFromResponse(rawText);
 
@@ -3049,7 +2564,6 @@
               if (source.expiryOverride) {
                 signal.expiry = source.expiryOverride;
               }
-              signal.isSignalSource = true;
               S.lastProcessedSignalHashes.set(source.url, signalHash);
               S.signalCooldownUntil = Date.now() + 30000;
               logConsoleLine(formatStatus('signal_received', {
@@ -3297,9 +2811,6 @@
       if (isSingleAssetMode()) {
         await ensureSingleAssetSelected();
       }
-      if (isTestMode()) {
-        await ensureTestAssetSelected();
-      }
 
       if (isSingleAssetMode() && S.analysisEnabled) {
         const now = Date.now();
@@ -3319,10 +2830,6 @@
 
         if (incoming.length) {
           for (const sig of incoming) {
-            if (isTestMode() && !sig.isOTC) {
-              setSkipReason('OTCOnly');
-              continue;
-            }
             const delayMs = calculateDelay(sig.minute);
 
             if (delayMs < 0) {
@@ -3348,7 +2855,7 @@
       }
 
       if (!isSingleAssetMode() && !S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !S.activeTrade && S.signalBuffer.length) {
-        S.signalBuffer = S.signalBuffer.filter(s => calculateDelay(s.minute) >= 0 && (!isTestMode() || s.isOTC));
+        S.signalBuffer = S.signalBuffer.filter(s => calculateDelay(s.minute) >= 0);
         if (S.signalBuffer.length) {
           S.signalBuffer.sort((a, b) => a.targetTsMs - b.targetTsMs);
           const next = S.signalBuffer.shift();
@@ -3365,50 +2872,22 @@
           }
           const assetSearch = assetLabel ? assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim() : '';
           const isOTC = isSingleAssetMode() ? true : /OTC/i.test(assetLabel || '');
-          if (isTestMode() && !isOTC) {
-            setSkipReason('OTCOnly');
-            return;
-          }
           if (assetLabel) {
-            if (isSingleAssetMode()) {
-              const decision = evaluateSingleAssetOpportunity();
-              if (!decision.ok) {
-                setSkipReason(decision.reason);
-              } else {
-                const minute = getCurrentMinute();
-                const sig = {
-                  asset: assetLabel,
-                  assetSearch,
-                  isOTC,
-                  direction: decision.direction,
-                  expiry: decision.expiry,
-                  burstCount: decision.burstCount,
-                  minute,
-                  time: fmtHHMMSSUTCm3(new Date()),
-                  targetTsMs: Date.now(),
-                  rawText: '[analysis-only]'
-                };
-                startCycle(sig);
-                S.assetSelectedForSignal = true;
-                S.assetSelectionAttempted = true;
-              }
-            } else {
-              const minute = getCurrentMinute();
-              const sig = {
-                asset: assetLabel,
-                assetSearch,
-                isOTC,
-                direction: S.analysisDirection,
-                expiry: S.expirySetting,
-                minute,
-                time: fmtHHMMSSUTCm3(new Date()),
-                targetTsMs: Date.now(),
-                rawText: '[analysis-only]'
-              };
-              startCycle(sig);
-              S.assetSelectedForSignal = true;
-              S.assetSelectionAttempted = true;
-            }
+            const minute = getCurrentMinute();
+            const sig = {
+              asset: assetLabel,
+              assetSearch,
+              isOTC,
+              direction: S.analysisDirection,
+              expiry: S.expirySetting,
+              minute,
+              time: fmtHHMMSSUTCm3(new Date()),
+              targetTsMs: Date.now(),
+              rawText: '[analysis-only]'
+            };
+            startCycle(sig);
+            S.assetSelectedForSignal = true;
+            S.assetSelectionAttempted = true;
           }
         }
       }
@@ -3765,19 +3244,10 @@
           100% { transform: scale(1); }
         }
 
-        .iaa-grid{ display:flex; flex-direction:column; gap:6px; margin-top:8px; position:relative; }
-        .iaa-grid-row{ display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; position:relative; }
-        .iaa-grid-row::after{ content:""; position:absolute; top:2px; bottom:2px; left:50%; width:1px; background:rgba(255,255,255,.06); pointer-events:none; }
-        .iaa-stats{ display:flex; flex-wrap:nowrap; gap:8px; margin-top:6px; padding-top:6px; border-top:1px solid rgba(255,255,255,.05); }
-        .iaa-stat-row{ display:flex; align-items:center; gap:4px; }
-        .iaa-stat-label{ color:#9ca3af; font-size:11px; }
-        .iaa-stat-value{ color:#e5e7eb; font-size:12px; font-weight:600; }
-        .iaa-lag{ display:flex; align-items:center; gap:6px; margin-top:4px; }
-        .iaa-live{ display:flex; flex-wrap:wrap; gap:6px 10px; margin-top:6px; }
-        .iaa-live-item{ display:flex; align-items:center; gap:4px; }
-        .iaa-manual{ margin-top:6px; padding:6px 8px; border-radius:8px; border:1px dashed rgba(255,255,255,.08); background:rgba(0,0,0,.25); font-size:11px; display:flex; justify-content:space-between; gap:8px; align-items:center; }
-        .iaa-manual-label{ color:#9ca3af; }
-        .iaa-manual-value{ color:#e5e7eb; font-weight:600; }
+        .iaa-grid{ display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; position:relative; }
+        .iaa-stats{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:6px; padding-top:6px; border-top:1px solid rgba(255,255,255,.05); }
+        .iaa-stat-row{ display:flex; align-items:center; justify-content:space-between; }
+        .iaa-stat-spacer{ visibility:hidden; }
         .k{ font-size:11px; color:#9ca3af } .v{ font-size:12px; text-align:right } .blue{ color:#60a5fa } .strong{ font-weight:bold; color:#fff } .wr{ color:#e88565 }
         #iaa-warm{ font-size:10px; text-align:center; margin-top:6px } .red{ color:#f87171 }
 
@@ -3805,26 +3275,6 @@
         .iaa-controls{ display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,.05);}
         .iaa-control-btn{ width:36px; height:36px; border-radius:50%; background:#252525; color:#fff; font-size:14px; border:1px solid rgba(255,255,255,.1); cursor:pointer; display:flex; align-items:center; justify-content:center; }
         .iaa-control-btn:hover{ background:#333; }
-
-        #iaa-debug-panel{
-          display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%);
-          width:360px; background:#000; border:1px solid rgba(255,255,255,.15);
-          border-radius:14px; padding:16px; z-index:2147483648;
-          box-shadow:0 12px 40px rgba(0,0,0,.8); max-height:80vh; overflow-y:auto;
-          font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-          font-size:11px; color:#e5e7eb;
-        }
-        #iaa-debug-close{ background:none; border:none; color:#fff; font-size:16px; cursor:pointer; }
-        #iaa-debug-content{ white-space:pre-wrap; word-break:break-word; margin-top:10px; }
-        .iaa-debug-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
-        .iaa-debug-actions{ display:flex; align-items:center; gap:6px; }
-        #iaa-debug-copy{ padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#fff; font-size:10px; cursor:pointer; letter-spacing:.08em; }
-        #iaa-debug-copy:hover{ background:#1f1f1f; }
-        .iaa-debug-line{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:2px 0; }
-        .iaa-debug-key{ color:#9ca3af; }
-        .iaa-debug-value{ color:#e5e7eb; font-weight:600; }
-        .iaa-debug-value--warn{ color:#fbbf24; }
-        .iaa-debug-value--bad{ color:#f87171; }
       `;
       const style = document.createElement('style');
       style.textContent = css;
@@ -3834,7 +3284,7 @@
       const panel = document.createElement('div'); panel.id = 'iaa-panel';
       panel.style.opacity = String(S.panelOpacity ?? 1);
       panel.innerHTML = `
-        <div id="iaa-ver">MZ TRADING</div>
+        <div id="iaa-ver">INFINITY AI BEAST V1.0</div>
         <div class="iaa-top">
           <img id="iaa-logo" alt="∞"/>
           <span id="iaa-dot"></span>
@@ -3860,33 +3310,20 @@
           </div>
         </div>
         <div class="iaa-grid">
-          <div class="iaa-grid-row">
-            <div class="k blue">Asset</div><div id="iaa-asset" class="v strong">—</div>
-            <div class="k">Expiry</div><div id="iaa-exp" class="v">1M</div>
-          </div>
-          <div class="iaa-grid-row">
-            <div class="k">Exec (UTC-3)</div><div id="iaa-exec" class="v">—</div>
-            <div class="k">Profit</div><div id="iaa-profit" class="v wr">$0.00</div>
-          </div>
-          <div class="iaa-grid-row">
-            <div class="k">Analysis</div><div id="iaa-analysis-score" class="v">0%</div>
-            <div class="k">Next ETA</div><div id="iaa-next-trade" class="v">—</div>
-          </div>
-        </div>
-        <div class="iaa-live">
-          <div class="iaa-live-item"><span class="iaa-stat-label" data-status-key="lag_label">Lag</span><span id="iaa-live-lag" class="iaa-stat-value">—</span></div>
-          <div class="iaa-live-item"><span class="iaa-stat-label" data-status-key="feed_label">Feed</span><span id="iaa-live-feed" class="iaa-stat-value">—</span></div>
-        </div>
-        <div class="iaa-manual">
-          <span class="iaa-manual-label">Manual</span>
-          <span id="iaa-manual-signal" class="iaa-manual-value">—</span>
+          <div class="k blue">Asset</div>  <div id="iaa-asset" class="v strong">—</div>
+          <div class="k">Expiry</div>      <div id="iaa-exp" class="v">1M</div>
+          <div class="k">Exec (UTC-3)</div><div id="iaa-exec" class="v">—</div>
+          <div class="k">Profit</div>      <div id="iaa-profit" class="v wr">$0.00</div>
+          <div class="k">Analysis</div>    <div id="iaa-analysis-score" class="v">0%</div>
+          <div class="k">Next ETA</div>    <div id="iaa-next-trade" class="v">—</div>
         </div>
         <div class="iaa-stats">
-          <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="start_label">Start</span><span id="iaa-start-time" class="iaa-stat-value">—</span></div>
-          <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="total_label">Total</span><span id="iaa-total-trades" class="iaa-stat-value">0</span></div>
-          <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="win_label">Win</span><span id="iaa-win-trades" class="iaa-stat-value">0</span></div>
-          <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="loss_label">Loss</span><span id="iaa-loss-trades" class="iaa-stat-value">0</span></div>
-          <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="win_rate_label">%</span><span id="iaa-win-rate" class="iaa-stat-value">0%</span></div>
+          <div class="iaa-stat-row"><span class="k" data-status-key="start_label">Start</span><span id="iaa-start-time" class="v">—</span></div>
+          <div class="iaa-stat-row"><span class="k" data-status-key="total_label">Total</span><span id="iaa-total-trades" class="v">0</span></div>
+          <div class="iaa-stat-row iaa-stat-spacer"><span class="k">—</span><span class="v">—</span></div>
+          <div class="iaa-stat-row"><span class="k" data-status-key="win_label">Win</span><span id="iaa-win-trades" class="v">0</span></div>
+          <div class="iaa-stat-row"><span class="k" data-status-key="loss_label">Loss</span><span id="iaa-loss-trades" class="v">0</span></div>
+          <div class="iaa-stat-row"><span class="k" data-status-key="win_rate_label">%</span><span id="iaa-win-rate" class="v">0%</span></div>
         </div>
         <div id="iaa-warm" class="warmup red">INFINITY AI ENGINE 0%</div>
 
@@ -3894,18 +3331,6 @@
           <button id="iaa-mouse-toggle" class="iaa-control-btn" title="Mouse Mapping">🖱</button>
           <button id="iaa-settings-toggle" class="iaa-control-btn" title="Settings">⚙</button>
           <button id="iaa-skip-trade" class="iaa-control-btn" title="Skip Next Trade">⏭️</button>
-          <button id="iaa-debug-toggle" class="iaa-control-btn" title="Debug Info">🧪</button>
-        </div>
-
-        <div id="iaa-debug-panel">
-          <div class="iaa-debug-header">
-            <span>Debug Info</span>
-            <div class="iaa-debug-actions">
-              <button id="iaa-debug-copy" title="Copy debug info">COPY</button>
-              <button id="iaa-debug-close" title="Close debug info">×</button>
-            </div>
-          </div>
-          <div id="iaa-debug-content"></div>
         </div>
 
         <div id="iaa-settings-panel">
@@ -3917,7 +3342,6 @@
                 <option value="signals" data-i18n="trade_mode_signals">All assets + signals</option>
                 <option value="single_asset" data-i18n="trade_mode_single">Single asset (EUR/USD OTC)</option>
                 <option value="signals_only" data-i18n="trade_mode_signals_only">Signals only (1m/5m)</option>
-                <option value="test" data-i18n="trade_mode_test">TEST (experimental)</option>
               </select>
             </div>
             <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;font-size:12px"><input type="checkbox" id="iaa-signal-source-1m"> <span data-i18n="signal_source_1m">Enable 1m signals</span></label>
@@ -4173,10 +3597,8 @@
       function hidePopups() {
         const settings = $id('iaa-settings-panel');
         const mouse = $id('iaa-mouse-panel');
-        const debug = $id('iaa-debug-panel');
         if (settings) settings.style.display = 'none';
         if (mouse) mouse.style.display = 'none';
-        if (debug) debug.style.display = 'none';
         S.settingsPanelOpen = false;
         S.mousePanelOpen = false;
       }
@@ -4186,9 +3608,6 @@
       const settingsClose = $id('iaa-settings-close');
       const mouseClose = $id('iaa-mouse-close');
       const skipTrade = $id('iaa-skip-trade');
-      const debugToggle = $id('iaa-debug-toggle');
-      const debugClose = $id('iaa-debug-close');
-      const debugCopy = $id('iaa-debug-copy');
 
       if (settingsToggle) {
         settingsToggle.addEventListener('click', () => {
@@ -4204,32 +3623,8 @@
         });
       }
 
-      if (debugToggle) {
-        debugToggle.addEventListener('click', () => {
-          const debug = $id('iaa-debug-panel');
-          if (!debug) return;
-          renderDebugInfo();
-          if (debug.style.display === 'block') {
-            hidePopups();
-          } else {
-            hidePopups();
-            debug.style.display = 'block';
-          }
-        });
-      }
-
       if (settingsClose) settingsClose.addEventListener('click', hidePopups);
       if (mouseClose) mouseClose.addEventListener('click', hidePopups);
-      if (debugClose) debugClose.addEventListener('click', hidePopups);
-      if (debugCopy) {
-        debugCopy.addEventListener('click', async () => {
-          const ok = await copyDebugInfo();
-          if (!ok) return;
-          const original = debugCopy.textContent;
-          debugCopy.textContent = 'COPIED';
-          setTimeout(() => { debugCopy.textContent = original; }, 1200);
-        });
-      }
       if (skipTrade) {
         skipTrade.addEventListener('click', () => {
           S.skipNextTrade = true;
@@ -4300,9 +3695,26 @@
       }
 
       const etaEl = $id('iaa-next-trade');
-      if (etaEl) etaEl.textContent = getNextEtaLabel();
-      renderLiveInfo();
-      renderManualSignal();
+      if (etaEl) {
+        const now = Date.now();
+        let etaMs = null;
+        if (S.analysisReadyAt && S.analysisReadyAt > now) etaMs = S.analysisReadyAt - now;
+        if (S.nextTradeAllowedAt && S.nextTradeAllowedAt > now) {
+          etaMs = etaMs ? Math.max(etaMs, S.nextTradeAllowedAt - now) : (S.nextTradeAllowedAt - now);
+        }
+        if (etaMs == null && S.countdownActive && S.countdownTargetTime) {
+          etaMs = Math.max(0, S.countdownTargetTime - now);
+        }
+
+        if (etaMs != null) {
+          const totalSeconds = Math.ceil(etaMs / 1000);
+          const minutes = Math.floor(totalSeconds / 60);
+          const seconds = totalSeconds % 60;
+          etaEl.textContent = `${minutes}:${String(seconds).padStart(2, '0')}`;
+        } else {
+          etaEl.textContent = formatStatus('ready');
+        }
+      }
     }
 
     async function restoreSettings(){
@@ -4348,14 +3760,8 @@
       const signal5m = await storage.get(SIGNAL_SOURCE_5M_KEY);
       if (typeof signal5m === 'boolean') S.signalSourceEnabled['5m'] = signal5m;
       const tradeMode = await storage.get(TRADE_MODE_KEY);
-      if (typeof tradeMode === 'string' && ['signals', 'single_asset', 'signals_only', 'test'].includes(tradeMode)) {
+      if (typeof tradeMode === 'string' && ['signals', 'single_asset', 'signals_only'].includes(tradeMode)) {
         S.tradeMode = tradeMode;
-      }
-      if (isSingleAssetMode()) {
-        applySingleAssetDefaults();
-      }
-      if (isTestMode()) {
-        applyTestDefaults();
       }
 
       const savedCoords = await storage.get(COORDS_KEY);
@@ -4529,8 +3935,6 @@
             S.loop = setInterval(tick, 1000/C.FPS); 
             S.botStartTime = nowMs();
             S.botStartAt = Date.now();
-            S.lastSignalLagSec = null;
-            renderLagStatus();
             startPriceMonitoring();
             resetRiskSession();
             S.recentSignalKeys.clear();
@@ -4789,14 +4193,8 @@
       if (TRADE_MODE) {
         TRADE_MODE.addEventListener('change',()=>{ 
           const next = TRADE_MODE.value;
-          if (['signals', 'single_asset', 'signals_only', 'test'].includes(next)) {
+          if (['signals', 'single_asset', 'signals_only'].includes(next)) {
             S.tradeMode = next;
-            if (isSingleAssetMode()) {
-              applySingleAssetDefaults();
-            }
-            if (isTestMode()) {
-              applyTestDefaults();
-            }
             persistSettings();
             if (isSingleAssetMode()) {
               S.signalBuffer.length = 0;
