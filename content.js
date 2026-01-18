@@ -2685,6 +2685,62 @@
       S.lastSignalPollAt = 0;
       S.signalCooldownUntil = Date.now() + 5000;
     }
+/* ========================= EXPIRY CALIBRATION (Shift+W) ========================= */
+const IAA_EXP_CAL_KEY = 'IAA_EXPIRY_COORDS_V3';
+
+function iaaLoadExpCal() {
+  try { return JSON.parse(localStorage.getItem(IAA_EXP_CAL_KEY) || '{}'); }
+  catch { return {}; }
+}
+function iaaSaveExpCal(obj) {
+  try { localStorage.setItem(IAA_EXP_CAL_KEY, JSON.stringify(obj || {})); } catch {}
+}
+
+// state
+S.expiryCoordsV3 = S.expiryCoordsV3 || iaaLoadExpCal();   // {OPEN:{x,y}, S3:{x,y}, ...}
+S._calTarget = S._calTarget || null;                      // 'OPEN' | 'S3' | 'S15' | ...
+S._mouseXY = S._mouseXY || { x: 0, y: 0 };
+
+// track mouse
+document.addEventListener('mousemove', (e) => {
+  S._mouseXY = { x: Math.round(e.clientX), y: Math.round(e.clientY) };
+}, true);
+
+// Shift+W = save coords for current target
+document.addEventListener('keydown', (e) => {
+  if (!e.shiftKey) return;
+  if (e.code !== 'KeyW') return; // работи независимо от кирилица/латиница
+
+  if (!S._calTarget) {
+    logConsoleLine('Калибрация: избери таргет от Settings (OPEN / S30 / S15...).');
+    return;
+  }
+
+  e.preventDefault();
+
+  const { x, y } = S._mouseXY || {};
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    logConsoleLine('Калибрация: липсва позиция на мишката.');
+    return;
+  }
+
+  S.expiryCoordsV3 = S.expiryCoordsV3 || {};
+  S.expiryCoordsV3[S._calTarget] = { x, y };
+  iaaSaveExpCal(S.expiryCoordsV3);
+
+  logConsoleLine(`Калибрация OK: ${S._calTarget} = (${x},${y})`);
+}, true);
+
+function iaaSetCalTarget(key) {
+  S._calTarget = String(key || '').trim().toUpperCase();
+  logConsoleLine(`Калибрация: ${S._calTarget}. Отиди с мишката върху елемента и натисни Shift+W.`);
+}
+
+function iaaDumpCal() {
+  const obj = (S.expiryCoordsV3 || iaaLoadExpCal());
+  console.log('IAA_EXPIRY_COORDS_V3 =', obj);
+  return obj;
+}
 
     /* ------------------------- BUTTONS / AMOUNT --------------------------- */
     function visible(el){ return el && el.offsetParent !== null && getComputedStyle(el).visibility !== 'hidden'; }
@@ -2846,26 +2902,72 @@
       return true;
     }
 
-    async function ensurePlatformExpiry(expiry) {
-      const norm = normalizeExpiry(expiry);
-      if (!norm) return false;
-      const currentExpiry = getPlatformExpiryLabel();
-      if (currentExpiry === norm) {
-        S.lastPlatformExpiry = norm;
-        return true;
-      }
-      if (S.lastPlatformExpiry === norm && currentExpiry) return true;
-      const btn = findExpiryButton(norm);
-      const coords = getExpiryCoords(norm);
-      if (btn) {
-        simulateClick(btn);
-        await delay(300);
-        const updatedExpiry = getPlatformExpiryLabel();
-        if (updatedExpiry === norm) {
-          S.lastPlatformExpiry = norm;
-          return true;
-        }
-      }
+    function iaaExpKeyFromNorm(norm){
+  const n = String(norm||'').toUpperCase().trim();
+  if (n === '3S') return 'S3';
+  if (n === '5S') return 'S3';   // ако PO няма 5s в grid -> мап към 3s
+  if (n === '15S') return 'S15';
+  if (n === '30S') return 'S30';
+  if (n === '1M') return 'M1';
+  if (n === '3M') return 'M3';
+  if (n === '5M') return 'M5';
+  return null;
+}
+
+async function iaaOpenExpiryMenu() {
+  const c = (S.expiryCoordsV3 || {})?.OPEN;
+  if (!c || !Number.isFinite(c.x) || !Number.isFinite(c.y)) {
+    logConsoleLine('ПРОПУСК: Липсва калибрация за TIME panel (OPEN).');
+    S.lastSkipReason = 'Expiry';
+    return false;
+  }
+  clickAtCoordinates(c.x, c.y);
+  await delay(120);
+  return true;
+}
+
+async function ensurePlatformExpiry(expiry) {
+  const norm = normalizeExpiry(expiry);
+  if (!norm) return false;
+
+  // anti-spam guard (много важно)
+  S._expTryTs = S._expTryTs || 0;
+  if (Date.now() - S._expTryTs < 900) return false;
+  S._expTryTs = Date.now();
+
+  // recent-set guard
+  if (S.lastPlatformExpiry === norm && S.lastPlatformExpiryTS && (Date.now() - S.lastPlatformExpiryTS) < 3500) {
+    return true;
+  }
+
+  const key = iaaExpKeyFromNorm(norm);
+  if (!key) {
+    logConsoleLine(`ПРОПУСК: Неподдържано време: ${norm}`);
+    S.lastSkipReason = 'Expiry';
+    return false;
+  }
+
+  const btn = (S.expiryCoordsV3 || {})?.[key];
+  if (!btn || !Number.isFinite(btn.x) || !Number.isFinite(btn.y)) {
+    logConsoleLine(`ПРОПУСК: Липсва калибрация за време: ${key}`);
+    S.lastSkipReason = 'Expiry';
+    return false;
+  }
+
+  // 1) open TIME menu
+  const opened = await iaaOpenExpiryMenu();
+  if (!opened) return false;
+
+  // 2) click wanted time
+  clickAtCoordinates(btn.x, btn.y);
+  await delay(140);
+
+  // 3) mark set (не четем UI)
+  S.lastPlatformExpiry = norm;
+  S.lastPlatformExpiryTS = Date.now();
+  S.lastSkipReason = null;
+  return true;
+
       if (coords) {
         openExpiryMenu();
         clickAtCoordinates(coords.x, coords.y);
@@ -4907,6 +5009,51 @@
             <div style="margin:12px 0; padding-top:8px; border-top:1px solid rgba(255,255,255,.05);">
               <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;" data-i18n="sniper_timeframes">Таймфрейми за изпълнение:</div>
               <div style="display:flex;flex-wrap:wrap;gap:8px;">
+<div style="
+  margin-top:10px;
+  padding:10px;
+  border-radius:10px;
+  background:#0b1220;
+  border:1px solid rgba(255,255,255,.12);
+  color:#eaf2ff;
+">
+  <div style="font-weight:800;margin-bottom:8px;color:#ffffff;letter-spacing:.2px;">
+    Калибрация TIME/Expiry (Shift+W)
+  </div>
+
+  <div style="display:flex;flex-wrap:wrap;gap:8px;">
+    <button id="iaa-cal-open" type="button" style="padding:7px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:#16233a;color:#ffffff;font-weight:700;cursor:pointer;">
+      TIME (OPEN)
+    </button>
+    <button id="iaa-cal-s3" type="button" style="padding:7px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:#111827;color:#ffffff;font-weight:700;cursor:pointer;">
+      3s
+    </button>
+    <button id="iaa-cal-s15" type="button" style="padding:7px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:#111827;color:#ffffff;font-weight:700;cursor:pointer;">
+      15s
+    </button>
+    <button id="iaa-cal-s30" type="button" style="padding:7px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:#111827;color:#ffffff;font-weight:700;cursor:pointer;">
+      30s
+    </button>
+    <button id="iaa-cal-m1" type="button" style="padding:7px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:#111827;color:#ffffff;font-weight:700;cursor:pointer;">
+      1m
+    </button>
+    <button id="iaa-cal-m3" type="button" style="padding:7px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:#111827;color:#ffffff;font-weight:700;cursor:pointer;">
+      3m
+    </button>
+    <button id="iaa-cal-m5" type="button" style="padding:7px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:#111827;color:#ffffff;font-weight:700;cursor:pointer;">
+      5m
+    </button>
+    <button id="iaa-cal-dump" type="button" style="padding:7px 10px;border-radius:8px;border:1px solid rgba(56,189,248,.45);background:#0a2a3a;color:#e6fbff;font-weight:800;cursor:pointer;">
+      Покажи
+    </button>
+  </div>
+
+  <div style="opacity:0.9;margin-top:8px;font-size:12.5px;color:#cfe4ff;line-height:1.25;">
+    Натисни бутон → посочи елемента в PocketOption → <b style="color:#ffffff;">Shift+W</b>.
+  </div>
+</div>
+
+
                 <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="iaa-sniper-tf-5s"> 5s</label>
                 <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="iaa-sniper-tf-15s"> 15s</label>
                 <label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="iaa-sniper-tf-30s"> 30s</label>
@@ -5058,6 +5205,28 @@
           else { hidePopups(); showPopup('iaa-settings-panel'); S.settingsPanelOpen = true; renderSettingsPanel(); }
         });
       }
+setTimeout(() => {
+  const bind = (id, key) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.onclick = () => iaaSetCalTarget(key);
+  };
+
+  bind('iaa-cal-open', 'OPEN');
+  bind('iaa-cal-s3', 'S3');
+  bind('iaa-cal-s15', 'S15');
+  bind('iaa-cal-s30', 'S30');
+  bind('iaa-cal-m1', 'M1');
+  bind('iaa-cal-m3', 'M3');
+  bind('iaa-cal-m5', 'M5');
+
+  const dumpBtn = document.getElementById('iaa-cal-dump');
+  if (dumpBtn) dumpBtn.onclick = () => {
+    iaaDumpCal();
+    logConsoleLine('Калибрация: координатите са в F12 Console.');
+  };
+}, 0);
+
 
       if (mouseToggle) {
         mouseToggle.addEventListener('click', () => {
