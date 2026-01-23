@@ -81,9 +81,6 @@
   const STRATEGY_LEARNING_TRADES_KEY = 'IAA_STRATEGY_LEARNING_TRADES';
   const STRATEGY_LOSS_STREAK_LIMIT_KEY = 'IAA_STRATEGY_LOSS_STREAK_LIMIT';
   const STRATEGY_CONFIG_KEY = 'IAA_STRATEGY_CONFIG_V1';
-  const STRATEGY_MANUAL_ENABLED_KEY = 'IAA_STRATEGY_MANUAL_ENABLED';
-  const STRATEGY_MANUAL_KEY = 'IAA_STRATEGY_MANUAL_KEY';
-  const WS_PRICE_SAMPLE_TTL_MS = 2000;
   const MAX_TRADES_PER_MIN_KEY = 'IAA_MAX_TRADES_PER_MIN';
   const MAX_OPEN_TRADES_KEY = 'IAA_MAX_OPEN_TRADES';
   const IDLE_SWITCH_ENABLED_KEY = 'IAA_IDLE_SWITCH_ENABLED';
@@ -140,14 +137,7 @@
     configs: {
       vwap_momentum: { enabled: true, priority: 1, label: 'VWAP+Momentum' },
       candlestick: { enabled: true, priority: 0.9, label: 'Candlestick' },
-      stoch_extreme: { enabled: true, priority: 0.75, label: 'Stoch Extreme' },
-      ema_rsi_pullback: { enabled: true, priority: 0.85, label: 'EMA+RSI Pullback' },
-      scalp_microtrend: { enabled: false, priority: 0.7, label: 'SCALP_MICROTREND' },
-      vwap_cross: { enabled: false, priority: 0.7, label: 'VWAP_CROSS' },
-      rsi_divergence: { enabled: false, priority: 0.7, label: 'RSI_DIVERGENCE' },
-      swing_continuation: { enabled: false, priority: 0.7, label: 'SWING_CONTINUATION' },
-      candlestick_pattern: { enabled: false, priority: 0.7, label: 'CANDELSTICK_PATTERN' },
-      stochastic_oversold: { enabled: false, priority: 0.7, label: 'STOCHASTIC_OVERSOLD' }
+      stoch_extreme: { enabled: true, priority: 0.75, label: 'Stoch Extreme' }
     }
   };
 
@@ -166,58 +156,6 @@
       const idSet = new Set(lines.slice(1));
       return pass === globalPass && idSet.has((acct || "").trim());
     } catch { return false; }
-  }
-
-  function extractPriceFromWsPayload(payload) {
-    if (!payload) return null;
-    const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    if (!text) return null;
-    const regex = /"(price|bid|ask|rate|quote|last)"\s*:\s*([0-9]+(?:[.,][0-9]+)?)/gi;
-    let match;
-    let best = null;
-    while ((match = regex.exec(text)) !== null) {
-      const raw = match[2].replace(',', '.');
-      const value = parseFloat(raw);
-      const decimals = raw.includes('.') ? raw.split('.')[1].length : 0;
-      if (!Number.isFinite(value)) continue;
-      if (value <= 0 || value >= 10000) continue;
-      if (!best || decimals > best.decimals) {
-        best = { value, decimals };
-      }
-    }
-    return best;
-  }
-
-  function handleWsPriceSample(payload) {
-    const priceInfo = extractPriceFromWsPayload(payload);
-    if (!priceInfo) return;
-    S.wsLastPrice = priceInfo.value;
-    S.wsLastPriceDecimals = priceInfo.decimals;
-    S.wsLastPriceAt = Date.now();
-    S.wsLastPayload = typeof payload === 'string' ? payload.slice(0, 500) : payload;
-  }
-
-  function installWebSocketPriceTap() {
-    if (window.__iaaWsTapped) return;
-    window.__iaaWsTapped = true;
-    const OriginalWebSocket = window.WebSocket;
-    if (!OriginalWebSocket) return;
-    window.WebSocket = function (...args) {
-      const ws = new OriginalWebSocket(...args);
-      ws.addEventListener('message', (event) => {
-        try {
-          handleWsPriceSample(event?.data);
-        } catch {
-          // ignore ws parse errors
-        }
-      });
-      return ws;
-    };
-    window.WebSocket.prototype = OriginalWebSocket.prototype;
-    window.WebSocket.OPEN = OriginalWebSocket.OPEN;
-    window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
-    window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
-    window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
   }
 
   const storage = {
@@ -559,11 +497,6 @@
       // Price tracking
       lastTradeEntryPrice: null,
       currentAssetPrice: null,
-      currentAssetPriceDecimals: null,
-      wsLastPrice: null,
-      wsLastPriceAt: 0,
-      wsLastPriceDecimals: null,
-      wsLastPayload: null,
       tradeEntryPrice: null,
       tradeExitPrice: null,
       priceMonitorInterval: null,
@@ -603,7 +536,6 @@
       lastPayoutPercent: null,
       lastPayoutAt: 0,
       lastPayoutSource: null,
-      priceSmoothed: null,
       lastClosedTabRequestAt: 0,
 
       // risk controls
@@ -708,8 +640,6 @@
       featureSessionBoost: FEATURE_DEFAULTS.sessionBoost,
       featureTimeframes: { ...FEATURE_DEFAULTS.timeframes },
       autoSwitchStrategy: STRATEGY_DEFAULTS.autoSwitch,
-      strategyManualEnabled: false,
-      strategyManualKey: 'vwap_momentum',
       strategyWeightWr: STRATEGY_DEFAULTS.wrWeight,
       strategyWeightPnl: STRATEGY_DEFAULTS.pnlWeight,
       strategyLearningTrades: STRATEGY_DEFAULTS.learningTrades,
@@ -811,8 +741,6 @@
       if (typeof S.featureSessionBoost !== 'boolean') S.featureSessionBoost = FEATURE_DEFAULTS.sessionBoost;
       if (!S.featureTimeframes) S.featureTimeframes = { ...FEATURE_DEFAULTS.timeframes };
       if (typeof S.autoSwitchStrategy !== 'boolean') S.autoSwitchStrategy = STRATEGY_DEFAULTS.autoSwitch;
-      if (typeof S.strategyManualEnabled !== 'boolean') S.strategyManualEnabled = false;
-      if (!STRATEGY_DEFAULTS.configs[S.strategyManualKey]) S.strategyManualKey = 'vwap_momentum';
       if (!Number.isFinite(S.strategyWeightWr)) S.strategyWeightWr = STRATEGY_DEFAULTS.wrWeight;
       if (!Number.isFinite(S.strategyWeightPnl)) S.strategyWeightPnl = STRATEGY_DEFAULTS.pnlWeight;
       if (!Number.isFinite(S.strategyLearningTrades)) S.strategyLearningTrades = STRATEGY_DEFAULTS.learningTrades;
@@ -1271,18 +1199,8 @@
     function ensureClosedTradesTabActive() {
       const now = Date.now();
       if (now - (S.lastClosedTabRequestAt || 0) < 2000) return false;
-      const selectorCandidates = [
-        '[data-tab*="closed" i]',
-        '[data-test*="closed" i]',
-        '[aria-controls*="closed" i]',
-        '.right-widget-container .divider ul li a',
-        '.right-widget-container .divider ul li'
-      ];
-      const candidates = [
-        ...Array.from(document.querySelectorAll('a,button,li')),
-        ...selectorCandidates.flatMap((sel) => Array.from(document.querySelectorAll(sel)))
-      ];
-      const closedTab = candidates.find((el) => /closed|затвор|затворени/i.test(el.textContent || ''));
+      const candidates = Array.from(document.querySelectorAll('a,button,li'));
+      const closedTab = candidates.find((el) => /closed|затвор/i.test(el.textContent || ''));
       if (closedTab && !closedTab.classList.contains('active') && closedTab.getAttribute('aria-selected') !== 'true') {
         closedTab.click();
         S.lastClosedTabRequestAt = now;
@@ -1593,21 +1511,12 @@
       lagEl.textContent = `${S.lastSignalLagSec}s`;
     }
 
-    function formatLivePriceValue(value) {
-      if (!Number.isFinite(value)) return '—';
-      const decimals = Number.isFinite(S.currentAssetPriceDecimals)
-        ? Math.min(6, Math.max(2, S.currentAssetPriceDecimals))
-        : 5;
-      return value.toFixed(decimals);
-    }
-
     function renderTradeStats() {
       const totalEl = $id('iaa-total-trades');
       const winEl = $id('iaa-win-trades');
       const lossEl = $id('iaa-loss-trades');
       const rateEl = $id('iaa-win-rate');
       const startEl = $id('iaa-start-time');
-      const priceEl = $id('iaa-live-price');
 
       if (totalEl) totalEl.textContent = String(S.tradeStats.total);
       if (winEl) winEl.textContent = String(S.tradeStats.wins);
@@ -1621,10 +1530,6 @@
         startEl.textContent = S.botStartAt
           ? new Date(S.botStartAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
           : '—';
-      }
-      if (priceEl) {
-        const price = Number.isFinite(S.priceSmoothed) ? S.priceSmoothed : S.currentAssetPrice;
-        priceEl.textContent = formatLivePriceValue(price);
       }
       renderLagStatus();
       renderStrategiesPanel();
@@ -1645,42 +1550,10 @@
 
     function setAutoSwitchStrategy(enabled) {
       S.autoSwitchStrategy = !!enabled;
-      if (S.autoSwitchStrategy) {
-        S.strategyManualEnabled = false;
-      }
       const panelToggle = $id('iaa-strategy-auto-switch-panel');
       const settingsToggle = $id('iaa-strategy-auto-switch');
-      const manualToggle = $id('iaa-strategy-manual-toggle');
       if (panelToggle) panelToggle.checked = S.autoSwitchStrategy;
       if (settingsToggle) settingsToggle.checked = S.autoSwitchStrategy;
-      if (manualToggle) manualToggle.checked = !!S.strategyManualEnabled;
-      persistSettings();
-      renderStrategiesPanel();
-    }
-
-    function setManualStrategyEnabled(enabled) {
-      S.strategyManualEnabled = !!enabled;
-      if (S.strategyManualEnabled) {
-        S.autoSwitchStrategy = false;
-      }
-      const panelToggle = $id('iaa-strategy-auto-switch-panel');
-      const settingsToggle = $id('iaa-strategy-auto-switch');
-      const manualToggle = $id('iaa-strategy-manual-toggle');
-      if (panelToggle) panelToggle.checked = S.autoSwitchStrategy;
-      if (settingsToggle) settingsToggle.checked = S.autoSwitchStrategy;
-      if (manualToggle) manualToggle.checked = !!S.strategyManualEnabled;
-      persistSettings();
-      renderStrategiesPanel();
-    }
-
-    function setManualStrategyKey(key) {
-      if (!key) return;
-      if (!STRATEGY_DEFAULTS.configs[key]) return;
-      S.strategyManualKey = key;
-      const config = getStrategyConfig(key);
-      if (config.enabled === false) {
-        S.strategyConfigs = { ...S.strategyConfigs, [key]: { ...config, enabled: true } };
-      }
       persistSettings();
       renderStrategiesPanel();
     }
@@ -1688,41 +1561,12 @@
     function renderStrategiesPanel() {
       const autoSwitchPanel = $id('iaa-strategy-auto-switch-panel');
       if (autoSwitchPanel) autoSwitchPanel.checked = !!S.autoSwitchStrategy;
-      const manualToggle = $id('iaa-strategy-manual-toggle');
-      const manualSelect = $id('iaa-strategy-manual-select');
-      const manualRow = $id('iaa-strategy-manual-row');
       const body = $id('iaa-strategy-table-body');
       if (!body) return;
       const keys = Array.from(new Set([
         ...Object.keys(STRATEGY_DEFAULTS.configs),
         ...Object.keys(S.strategyStats || {})
       ]));
-      if (!STRATEGY_DEFAULTS.configs[S.strategyManualKey]) {
-        S.strategyManualKey = keys[0] || 'vwap_momentum';
-      }
-      if (manualToggle) {
-        manualToggle.checked = !!S.strategyManualEnabled;
-      }
-      if (autoSwitchPanel) {
-        autoSwitchPanel.disabled = !!S.strategyManualEnabled;
-      }
-      const settingsAutoSwitch = $id('iaa-strategy-auto-switch');
-      if (settingsAutoSwitch) {
-        settingsAutoSwitch.disabled = !!S.strategyManualEnabled;
-      }
-      if (manualRow) {
-        manualRow.style.opacity = S.strategyManualEnabled ? '1' : '0.5';
-      }
-      if (manualSelect) {
-        manualSelect.disabled = !S.strategyManualEnabled;
-        manualSelect.innerHTML = keys.map((key) => {
-          const label = getStrategyDisplayLabel(key);
-          return `<option value="${key}">${label}</option>`;
-        }).join('');
-        manualSelect.value = STRATEGY_DEFAULTS.configs[S.strategyManualKey]
-          ? S.strategyManualKey
-          : keys[0] || '';
-      }
       const rowsHtml = keys.map((key) => {
         const stats = S.strategyStats[key] || initStrategyStatsBucket();
         const pnl = formatStrategyPnl(stats);
@@ -1797,14 +1641,7 @@
       const tooltipMap = {
         vwap_momentum: 'VWAP + Momentum стратегия. По-висок приоритет = по-строга селекция.',
         candlestick: 'Свещни модели. По-висок приоритет = по-строг филтър.',
-        stoch_extreme: 'Stoch екстреми. По-висок приоритет = по-строга селекция.',
-        ema_rsi_pullback: 'EMA + RSI Pullback стратегия за откат в тренд.',
-        scalp_microtrend: 'Микротренд скалп стратегия (конфигурация).',
-        vwap_cross: 'VWAP cross стратегия (конфигурация).',
-        rsi_divergence: 'RSI divergence стратегия (конфигурация).',
-        swing_continuation: 'Swing continuation стратегия (конфигурация).',
-        candlestick_pattern: 'Candlestick pattern стратегия (конфигурация).',
-        stochastic_oversold: 'Stochastic oversold стратегия (конфигурация).'
+        stoch_extreme: 'Stoch екстреми. По-висок приоритет = по-строга селекция.'
       };
       configWrap.innerHTML = keys.map((key) => {
         const config = getStrategyConfig(key);
@@ -1845,110 +1682,6 @@
           persistSettings();
         });
       });
-    }
-
-    function showPopup(popupId) {
-      const popup = $id(popupId);
-      if (popup) popup.style.display = 'block';
-    }
-
-    function hidePopups() {
-      const settings = $id('iaa-settings-panel');
-      const mouse = $id('iaa-mouse-panel');
-      const debug = $id('iaa-debug-panel');
-      const calibration = $id('iaa-calibration-panel');
-      const strategies = $id('iaa-strategies-panel');
-      if (settings) settings.style.display = 'none';
-      if (mouse) mouse.style.display = 'none';
-      if (debug) debug.style.display = 'none';
-      if (calibration) calibration.style.display = 'none';
-      if (strategies) strategies.style.display = 'none';
-      S.settingsPanelOpen = false;
-      S.mousePanelOpen = false;
-      S.calibrationPanelOpen = false;
-      S.strategiesPanelOpen = false;
-    }
-
-    function bindTabButtons() {
-      $$('.iaa-tab-btn').forEach((btn) => {
-        if (btn.dataset.bound) return;
-        btn.addEventListener('click', () => {
-          const tab = btn.getAttribute('data-tab');
-          if (!tab) return;
-          S.sniperSettingsTab = tab;
-          renderSettingsPanel();
-        });
-        btn.dataset.bound = '1';
-      });
-    }
-
-    function bindPopupButtons() {
-      if (!document.__iaaPopupDelegated) {
-        document.__iaaPopupDelegated = true;
-        document.addEventListener('click', (event) => {
-          const target = event.target?.closest?.('#iaa-settings-toggle, #iaa-strategies-toggle, #iaa-mouse-toggle, #iaa-debug-toggle');
-          if (!target) return;
-          if (target.id === 'iaa-settings-toggle') {
-            if (S.settingsPanelOpen) hidePopups();
-            else { hidePopups(); showPopup('iaa-settings-panel'); S.settingsPanelOpen = true; captureSettingsSnapshot(); renderSettingsPanel(); }
-          } else if (target.id === 'iaa-strategies-toggle') {
-            if (S.strategiesPanelOpen) hidePopups();
-            else { hidePopups(); showPopup('iaa-strategies-panel'); S.strategiesPanelOpen = true; renderStrategiesPanel(); }
-          } else if (target.id === 'iaa-mouse-toggle') {
-            if (S.mousePanelOpen) hidePopups();
-            else { hidePopups(); showPopup('iaa-mouse-panel'); S.mousePanelOpen = true; renderMousePanel(); }
-          } else if (target.id === 'iaa-debug-toggle') {
-            const debug = $id('iaa-debug-panel');
-            if (!debug) return;
-            if (debug.style.display === 'block') {
-              hidePopups();
-            } else {
-              hidePopups();
-              debug.style.display = 'block';
-              setDebugTab(S.debugTab || 'status');
-            }
-          }
-        }, true);
-      }
-      const settingsToggle = $id('iaa-settings-toggle');
-      const strategiesToggle = $id('iaa-strategies-toggle');
-      const mouseToggle = $id('iaa-mouse-toggle');
-      const debugToggle = $id('iaa-debug-toggle');
-      if (settingsToggle && !settingsToggle.dataset.bound) {
-        settingsToggle.addEventListener('click', () => {
-          if (S.settingsPanelOpen) hidePopups();
-          else { hidePopups(); showPopup('iaa-settings-panel'); S.settingsPanelOpen = true; captureSettingsSnapshot(); renderSettingsPanel(); }
-        });
-        settingsToggle.dataset.bound = '1';
-      }
-      if (strategiesToggle && !strategiesToggle.dataset.bound) {
-        strategiesToggle.addEventListener('click', () => {
-          if (S.strategiesPanelOpen) hidePopups();
-          else { hidePopups(); showPopup('iaa-strategies-panel'); S.strategiesPanelOpen = true; renderStrategiesPanel(); }
-        });
-        strategiesToggle.dataset.bound = '1';
-      }
-      if (mouseToggle && !mouseToggle.dataset.bound) {
-        mouseToggle.addEventListener('click', () => {
-          if (S.mousePanelOpen) hidePopups();
-          else { hidePopups(); showPopup('iaa-mouse-panel'); S.mousePanelOpen = true; renderMousePanel(); }
-        });
-        mouseToggle.dataset.bound = '1';
-      }
-      if (debugToggle && !debugToggle.dataset.bound) {
-        debugToggle.addEventListener('click', () => {
-          const debug = $id('iaa-debug-panel');
-          if (!debug) return;
-          if (debug.style.display === 'block') {
-            hidePopups();
-          } else {
-            hidePopups();
-            debug.style.display = 'block';
-            setDebugTab(S.debugTab || 'status');
-          }
-        });
-        debugToggle.dataset.bound = '1';
-      }
     }
 
     function buildTradesCsv() {
@@ -2755,138 +2488,72 @@
       return lastValidBalance;
     }
 
-    function collectPriceCandidates() {
-      const candidates = [];
-      const balanceCents = readBalanceCents?.();
-      const balanceValue = Number.isFinite(balanceCents) ? balanceCents / 100 : null;
-      const isBotUiElement = (el) => !!(el?.closest?.('#iaa-panel')
-        || el?.closest?.('#iaa-settings-panel')
-        || el?.closest?.('#iaa-strategies-panel')
-        || el?.closest?.('#iaa-debug-panel')
-        || el?.closest?.('#iaa-calibration-panel')
-        || el?.closest?.('#iaa-mouse-panel')
-        || el?.closest?.(`#${LOGIN_SHELL_ID}`));
-      const isBalanceElement = (el) => {
-        if (!el) return false;
-        if (el.id === 'iaa-live-price') return true;
-        if (el.closest?.('.balance-info-block__data, .balance-info-block__balance')) return true;
-        if (el.matches?.('span.js-balance-demo, span[class*="js-balance-real-"], span.js-hd.js-balance-demo, span.js-hd.no-animation.js-balance-demo')) return true;
-        const attr = `${el.className || ''} ${el.id || ''}`.toLowerCase();
-        return attr.includes('balance') || attr.includes('deposit') || attr.includes('account');
-      };
-
-      // Method 1: Look for specific price elements first (NO CANVAS)
-      const priceSelectors = [
-        // Primary price display areas
-        '[data-test="current-price"]',
-        '[data-test*="price" i]',
-        '.current-price',
-        '.price-value',
-        '.rate-value',
-        '.ticker-price',
-        '.last-price',
-
-        // PocketOption specific selectors
-        '.rate-block__rate',
-        '.rate-block__value',
-        '.price-block__value',
-        '.currency-rate',
-        '.pair-rate',
-
-        // Chart price indicators
-        '.chart-price',
-        '.chart-rate',
-        '.tradingview-price',
-
-        // General price areas
-        '.price',
-        '.rate',
-        '.value',
-        '.ticker',
-        '.quote'
-      ];
-
-      for (const selector of priceSelectors) {
-        const elements = $$(selector);
-        for (const el of elements) {
-          if (visible(el) && !isBotUiElement(el) && !isBalanceElement(el)) {
-            const text = T(el);
-            const priceInfo = extractValidPriceInfo(text);
-            if (priceInfo) {
-              if (Number.isFinite(balanceValue) && Math.abs(priceInfo.value - balanceValue) < 0.001) continue;
-              candidates.push({ ...priceInfo, priority: 2, selector, text: text.slice(0, 80) });
-            }
-          }
-        }
-      }
-
-      // Method 2: Look for elements containing price-like patterns
-      const priceLikeSelectors = [
-        'div', 'span', 'td', 'li', 'p'
-      ];
-
-      for (const selector of priceLikeSelectors) {
-        const elements = $$(selector);
-        for (const el of elements) {
-          if (!visible(el) || isBotUiElement(el) || isBalanceElement(el)) continue;
-
-          const text = T(el);
-          if (text.length > 5 && text.length < 24) { // Reasonable price text length
-            const priceInfo = extractValidPriceInfo(text);
-            if (priceInfo) {
-              if (Number.isFinite(balanceValue) && Math.abs(priceInfo.value - balanceValue) < 0.001) continue;
-              candidates.push({ ...priceInfo, priority: 1, selector, text: text.slice(0, 80) });
-            }
-          }
-        }
-      }
-
-      return candidates;
-    }
-
-    function debugPriceSources() {
-      const asset = getCurrentAssetLabel();
-      const candidates = collectPriceCandidates()
-        .sort((a, b) => (b.decimals || 0) - (a.decimals || 0))
-        .slice(0, 12);
-      const balanceCents = readBalanceCents?.();
-      const balanceValue = Number.isFinite(balanceCents) ? balanceCents / 100 : null;
-      const balanceEls = [
-        ...$$('.balance-info-block__data'),
-        ...$$('.balance-info-block__balance'),
-        ...$$('span.js-balance-demo'),
-        ...$$('span[class*="js-balance-real-"]')
-      ].map((el) => T(el)).filter(Boolean);
-      console.log('[IAA] Asset:', asset);
-      console.log('[IAA] DOM price candidates:', candidates);
-      console.log('[IAA] Balance value:', balanceValue);
-      console.log('[IAA] Balance texts:', balanceEls);
-      if (S.wsLastPrice) {
-        console.log('[IAA] WS price:', S.wsLastPrice, 'decimals:', S.wsLastPriceDecimals, 'age(ms):', Date.now() - S.wsLastPriceAt);
-      } else {
-        console.log('[IAA] WS price: none');
-      }
-      console.log('[IAA] Current price:', S.currentAssetPrice, 'smoothed:', S.priceSmoothed);
-      return { asset, candidates, ws: { price: S.wsLastPrice, decimals: S.wsLastPriceDecimals, ageMs: Date.now() - S.wsLastPriceAt } };
-    }
-
     /* ========================= FIXED PRICE DETECTION - NO CANVAS OVERLOAD ========================= */
     function getCurrentAssetPrice() {
       try {
-        const candidates = collectPriceCandidates();
+        // Method 1: Look for specific price elements first (NO CANVAS)
+        const priceSelectors = [
+          // Primary price display areas
+          '[data-test="current-price"]',
+          '.current-price',
+          '.price-value',
+          '.rate-value',
+          '.ticker-price',
+          '.last-price',
 
-        if (!candidates.length) return null;
-        candidates.sort((a, b) => {
-          const scoreA = (a.decimals || 0) + (a.priority || 0) * 2;
-          const scoreB = (b.decimals || 0) + (b.priority || 0) * 2;
-          if (scoreB !== scoreA) return scoreB - scoreA;
-          return (b.value || 0) - (a.value || 0);
-        });
-        const best = candidates[0];
-        if (best) {
-          S.currentAssetPriceDecimals = best.decimals;
-          return best.value;
+          // PocketOption specific selectors
+          '.rate-block__rate',
+          '.rate-block__value',
+          '.price-block__value',
+          '.currency-rate',
+          '.pair-rate',
+
+          // Chart price indicators
+          '.chart-price',
+          '.chart-rate',
+          '.tradingview-price',
+
+          // General price areas
+          '.price',
+          '.rate',
+          '.value',
+          '.ticker',
+          '.quote'
+        ];
+
+        for (const selector of priceSelectors) {
+          const elements = $$(selector);
+          for (const el of elements) {
+            if (visible(el)) {
+              const text = T(el);
+              const price = extractValidPrice(text);
+              if (price !== null) {
+                return price;
+              }
+            }
+          }
         }
+
+        // Method 2: Look for elements containing price-like patterns
+        const priceLikeSelectors = [
+          'div', 'span', 'td', 'li', 'p'
+        ];
+
+        for (const selector of priceLikeSelectors) {
+          const elements = $$(selector);
+          for (const el of elements) {
+            if (!visible(el)) continue;
+
+            const text = T(el);
+            if (text.length > 5 && text.length < 20) { // Reasonable price text length
+              const price = extractValidPrice(text);
+              if (price !== null) {
+                return price;
+              }
+            }
+          }
+        }
+
         return null;
 
       } catch (error) {
@@ -2894,7 +2561,7 @@
       }
     }
 
-    function extractValidPriceInfo(text) {
+    function extractValidPrice(text) {
       if (!text) return null;
 
       // Clean the text - remove CSS animations and other noise
@@ -2907,25 +2574,26 @@
 
       if (!cleanText) return null;
 
-      const lowered = cleanText.toLowerCase();
-      if (/%/.test(cleanText)) return null;
-      if (/[€£¥₽₺₴₹₩₫$]/.test(cleanText)) return null;
-      if (/(payout|profit|balance|amount|stake|win|loss|bonus|deposit|withdraw)/i.test(lowered)) return null;
+      // Look for price patterns (numbers with 2-5 decimals)
+      const pricePatterns = [
+        /\b\d+\.\d{4,5}\b/,  // 4-5 decimals (common in forex)
+        /\b\d+\.\d{2,3}\b/,  // 2-3 decimals
+        /\b\d+,\d{4,5}\b/,   // European format with 4-5 decimals
+        /\b\d+,\d{2,3}\b/    // European format with 2-3 decimals
+      ];
 
-      const matches = [];
-      const regex = /\b\d+[.,]\d{2,6}\b/g;
-      let match;
-      while ((match = regex.exec(cleanText)) !== null) {
-        const raw = match[0].replace(',', '.');
-        const price = parseFloat(raw);
-        const decimals = raw.includes('.') ? raw.split('.')[1].length : 0;
-        if (!Number.isFinite(price)) continue;
-        if (price <= 0 || price >= 10000) continue;
-        matches.push({ value: price, decimals });
+      for (const pattern of pricePatterns) {
+        const match = cleanText.match(pattern);
+        if (match) {
+          const priceStr = match[0].replace(',', '.');
+          const price = parseFloat(priceStr);
+          if (!isNaN(price) && price > 0.1 && price < 1000) { // Reasonable price range
+            return price;
+          }
+        }
       }
-      if (!matches.length) return null;
-      matches.sort((a, b) => (b.decimals || 0) - (a.decimals || 0));
-      return matches[0];
+
+      return null;
     }
 
     /* ========================= PROPER BALANCE-BASED OUTCOME DETECTION ========================= */
@@ -3230,21 +2898,10 @@
 
       S.priceMonitorInterval = setInterval(() => {
         const now = Date.now();
-        const wsFresh = S.wsLastPrice && (now - S.wsLastPriceAt <= WS_PRICE_SAMPLE_TTL_MS);
-        const wsPrice = wsFresh ? S.wsLastPrice : null;
-        const currentPrice = wsPrice ?? getCurrentAssetPrice();
+        const currentPrice = getCurrentAssetPrice();
         if (currentPrice !== null) {
           S.currentAssetPrice = currentPrice;
-          if (wsPrice != null && Number.isFinite(S.wsLastPriceDecimals)) {
-            S.currentAssetPriceDecimals = S.wsLastPriceDecimals;
-          }
           S.lastPriceAt = now;
-          const alpha = 0.2;
-          if (!Number.isFinite(S.priceSmoothed)) {
-            S.priceSmoothed = currentPrice;
-          } else {
-            S.priceSmoothed = (alpha * currentPrice) + ((1 - alpha) * S.priceSmoothed);
-          }
 
           S.priceHistory.push({
             price: currentPrice,
@@ -3664,12 +3321,6 @@
           logConsoleLine(formatStatus('trade_buttons_missing'));
           return false;
         }
-        if (up && !isClickableTarget(up)) {
-          logConsoleLine('ПРОПУСК: BUY бутонът е неактивен/скрит.');
-        }
-        if (dn && !isClickableTarget(dn)) {
-          logConsoleLine('ПРОПУСК: SELL бутонът е неактивен/скрит.');
-        }
 
         const input = findAmountInput();
         const useCurrentAmount = !!signal?.useCurrentAmount && !Number.isFinite(signal?.overrideAmountCents);
@@ -3743,11 +3394,7 @@
                 expiry: `DYN ${finalSeconds}s`
               }));
               const clickTarget = (dir === 'buy' || dir === 'call' || dir === 'up') ? up : dn;
-              if (!clickTarget || !isClickableTarget(clickTarget)) {
-                logConsoleLine('ПРОПУСК: Бутонът за сделка не е активен.');
-                setSkipReason('Buttons');
-                return false;
-              }
+              if (!clickTarget) return false;
               simulateClick(clickTarget);
 
               const expiryMs = finalSeconds * 1000;
@@ -3797,11 +3444,7 @@
                 expiry
               }));
               const clickTarget = (dir === 'buy' || dir === 'call' || dir === 'up') ? up : dn;
-              if (!clickTarget || !isClickableTarget(clickTarget)) {
-                logConsoleLine('ПРОПУСК: Бутонът за сделка не е активен.');
-                setSkipReason('Buttons');
-                return false;
-              }
+              if (!clickTarget) return false;
               simulateClick(clickTarget);
 
               const expiryMs = secsFromTF(expiry) * 1000;
@@ -3841,7 +3484,7 @@
         } else {
           logConsoleLine(formatStatus('trade_attempt', { asset: signal.asset, direction: signal.direction.toUpperCase(), expiry: resolvedExpiry }));
           let clicked = false;
-          if ((dir === 'buy' || dir === 'call' || dir === 'up') && up && isClickableTarget(up)) {
+          if ((dir === 'buy' || dir === 'call' || dir === 'up') && up) {
             for (let i = 0; i < burstCount; i++) {
               simulateClick(up);
               if (i < burstCount - 1) {
@@ -3849,7 +3492,7 @@
               }
             }
             clicked = true;
-          } else if ((dir === 'sell' || dir === 'put' || dir === 'down') && dn && isClickableTarget(dn)) {
+          } else if ((dir === 'sell' || dir === 'put' || dir === 'down') && dn) {
             for (let i = 0; i < burstCount; i++) {
               simulateClick(dn);
               if (i < burstCount - 1) {
@@ -3860,7 +3503,6 @@
           }
           
           if (!clicked) {
-            logConsoleLine('ПРОПУСК: Няма активен BUY/SELL бутон за клик.');
             return false;
           }
 
@@ -4270,13 +3912,13 @@ document.addEventListener('keydown', (e) => {
     iaaSaveExpCal(IAA_EXP_CAL_KEY_OTC, coords);
   }
 
-  logConsoleLine('Калибрация OK [' + scope + ']: ' + S._calTarget + ' = (' + x + ',' + y + ')');
+  logConsoleLine(`Калибрация OK [${scope}]: ${S._calTarget} = (${x},${y})`);
 }, true);
 
 function iaaSetCalTarget(key, scope = 'OTC') {
   S._calTarget = String(key || '').trim().toUpperCase();
   S._calScope = scope.toUpperCase();
-  logConsoleLine('Калибрация [' + S._calScope + ']: ' + S._calTarget + '. Отиди с мишката върху елемента и натисни Shift+W.');
+  logConsoleLine(`Калибрация [${S._calScope}]: ${S._calTarget}. Отиди с мишката върху елемента и натисни Shift+W.`);
 }
 
 function iaaDumpCal() {
@@ -4414,29 +4056,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       if (!dn) dn = document.querySelector('[data-test="button-put"], [data-dir="put"], [data-direction="put"]');
 
       return { up: up || null, dn: dn || null };
-    }
-
-    function isClickableTarget(el) {
-      if (!el || !visible(el)) return false;
-      const rect = el.getBoundingClientRect();
-      if (!rect || rect.width < 2 || rect.height < 2) return false;
-      const style = window.getComputedStyle(el);
-      if (style.pointerEvents === 'none' || style.visibility === 'hidden' || style.display === 'none') return false;
-      const disabled = el.disabled || el.getAttribute?.('aria-disabled') === 'true';
-      return !disabled;
-    }
-
-    function debugTradeButtons() {
-      const { up, dn } = getBuySellButtons();
-      const info = {
-        method: S.buySellMethod,
-        buyFound: !!up,
-        sellFound: !!dn,
-        buyClickable: isClickableTarget(up),
-        sellClickable: isClickableTarget(dn)
-      };
-      console.log('[IAA] Trade buttons:', info, { up, dn });
-      return info;
     }
 
     function findAmountInput(){
@@ -5739,55 +5358,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       return null;
     }
 
-    function calcEmaRsiPullbackDecision(windowMs) {
-      const rsiWindow = Math.max(5, S.sniperRsiWindow || 10);
-      const emaFastPeriod = Math.max(2, S.sniperEmaFast || 4);
-      const emaSlowPeriod = Math.max(emaFastPeriod + 1, S.sniperEmaSlow || 16);
-      const minSamples = Math.max(rsiWindow + 2, emaSlowPeriod + 2, 20);
-      const prices = getPricesForWindow(windowMs, minSamples);
-      if (prices.length < minSamples) return null;
-      const rsi = calcRsi(prices, rsiWindow);
-      const emaFast = calcEma(prices, emaFastPeriod);
-      const emaSlow = calcEma(prices, emaSlowPeriod);
-      if (!Number.isFinite(rsi) || emaFast == null || emaSlow == null) return null;
-
-      const lastPrice = prices[prices.length - 1];
-      const emaDiff = emaSlow ? (emaFast - emaSlow) / emaSlow : 0;
-      const priceDeviation = emaFast ? (lastPrice - emaFast) / emaFast : 0;
-      const oversold = S.sniperRsiOversold ?? 30;
-      const overbought = S.sniperRsiOverbought ?? 70;
-      const pullbackFloor = 0.0002;
-
-      let direction = null;
-      if (emaFast > emaSlow && rsi <= oversold && priceDeviation <= -(pullbackFloor * 0.5)) {
-        direction = 'BUY';
-      } else if (emaFast < emaSlow && rsi >= overbought && priceDeviation >= (pullbackFloor * 0.5)) {
-        direction = 'SELL';
-      }
-      if (!direction) return null;
-
-      const rsiDistance = direction === 'BUY' ? Math.max(0, oversold - rsi) : Math.max(0, rsi - overbought);
-      const rsiScore = clamp01(rsiDistance / 15);
-      const emaScore = clamp01(Math.abs(emaDiff) * 35);
-      const pullbackScore = clamp01(Math.abs(priceDeviation) / Math.max(pullbackFloor, 0.0001));
-      const confidence = clamp01(0.4 + (rsiScore * 0.35) + (emaScore * 0.2) + (pullbackScore * 0.05));
-      const trendDir = calcTrendDirection(windowMs);
-      return {
-        strategyKey: 'ema_rsi_pullback',
-        direction,
-        confidence,
-        rangePct: 0,
-        trendDir,
-        trendAligned: trendDir === 0 || trendDir === (direction === 'BUY' ? 1 : -1),
-        volumeOk: true,
-        emaFast,
-        emaSlow,
-        rsi,
-        emaDiff,
-        priceDeviation
-      };
-    }
-
     function calcVwapMomentumDecision(tfKey) {
       const windowMs = SNIPER_TF_MS[tfKey];
       const candle = getCandleAt(Date.now(), windowMs);
@@ -5887,11 +5457,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         stoch.tfKey = tfKey;
         decisions.push(applyConfirmationBoost(stoch, windowMs));
       }
-      const emaRsi = calcEmaRsiPullbackDecision(windowMs);
-      if (emaRsi?.direction && isStrategyEnabled(emaRsi.strategyKey)) {
-        emaRsi.tfKey = tfKey;
-        decisions.push(applyConfirmationBoost(emaRsi, windowMs));
-      }
       if (S.featureVwapAnalysis && isStrategyEnabled('vwap_momentum')) {
         const vwapDecision = calcVwapMomentumDecision(tfKey);
         if (vwapDecision?.direction) decisions.push(applyConfirmationBoost(vwapDecision, windowMs));
@@ -5899,17 +5464,9 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       return decisions;
     }
 
-    function filterManualStrategyDecisions(decisions) {
-      if (!S.strategyManualEnabled) return decisions;
-      const manualKey = S.strategyManualKey;
-      if (!manualKey) return [];
-      return decisions.filter((decision) => decision.strategyKey === manualKey);
-    }
-
     function selectBestStrategyDecision(decisions) {
-      const scopedDecisions = filterManualStrategyDecisions(decisions);
-      if (!scopedDecisions.length) return null;
-      return scopedDecisions.reduce((best, decision) => {
+      if (!decisions.length) return null;
+      return decisions.reduce((best, decision) => {
         if (!isStrategyEnabled(decision.strategyKey)) return best;
         const weight = getStrategyPerformanceWeight(decision.strategyKey);
         const priority = getStrategyPriority(decision.strategyKey);
@@ -6761,11 +6318,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
 
     /* ----------------------------- UI ----------------------------- */
     function ensurePanel(){
-      if ($id(C.PANEL_ID)) {
-        bindPopupButtons();
-        bindTabButtons();
-        return;
-      }
+      if ($id(C.PANEL_ID)) return;
 
       const css = `
         #${C.PANEL_ID}{
@@ -6808,7 +6361,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         .iaa-console-msg--signal{ color:#22c55e; }
         .iaa-console-msg--skip{ color:#f87171; }
         .iaa-console-msg--warn{ color:#fbbf24; }
-        .iaa-console-strategy{ color:#facc15; font-weight:700; }
+        .iaa-console-strategy{ color:#a5b4fc; font-weight:700; }
         #iaa-console-copy, #iaa-console-clear{ align-self:flex-end; padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#fff; font-size:10px; cursor:pointer; letter-spacing:.08em; }
         #iaa-console-copy:hover, #iaa-console-clear:hover{ background:#1f1f1f; }
         #iaa-console-clear{ background:#141414; }
@@ -6901,7 +6454,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         .iaa-strategy-negative{ color:#f87171; font-weight:700; }
         .iaa-strategy-neutral{ color:#e5e7eb; font-weight:600; }
         .iaa-strategy-input{ width:64px; padding:3px 5px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#fff; font-size:10px; font-weight:700; }
-        .iaa-strategy-select{ flex:1; padding:4px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#0b0f14; color:#e5e7eb; font-size:11px; }
         .iaa-strategy-actions{ display:flex; gap:8px; margin-top:10px; }
         .iaa-strategy-actions button{ flex:1; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#e5e7eb; font-size:11px; cursor:pointer; }
         .iaa-strategy-summary{ display:grid; grid-template-columns:repeat(2, 1fr); gap:6px 10px; margin-top:10px; font-size:11px; }
@@ -7030,7 +6582,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
             <span class="iaa-stat-label" data-status-key="win_rate_label">%</span>
             <span id="iaa-win-rate" class="iaa-stat-value">0%</span>
           </div>
-          <div class="iaa-stat-row"><span class="iaa-stat-label">Цена</span><span id="iaa-live-price" class="iaa-stat-value">—</span></div>
         </div>
         <div class="iaa-balance-summary">
           <div class="iaa-balance-row">
@@ -7338,8 +6889,8 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
                   <span class="iaa-field-label">Обучение (брой) (0–50)</span>
                   <input type="number" id="iaa-strategy-learning-trades" min="0" max="50" step="1" value="12">
                 </div>
-                <div class="iaa-field-row" title="Серия загуби, след която стратегията се наказва и се преминава към друга.">
-                  <span class="iaa-field-label">Лимит загуби (смяна стратегия) (1–10)</span>
+                <div class="iaa-field-row" title="Максимална серия загуби преди авто-пауза.">
+                  <span class="iaa-field-label">Лимит загуби (1–10)</span>
                   <input type="number" id="iaa-strategy-loss-streak" min="1" max="10" step="1" value="3">
                 </div>
               </div>
@@ -7350,11 +6901,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
           <button id="iaa-strategies-close">×</button>
           <div style="font-weight:700;margin-bottom:6px;">Стратегии</div>
           <label class="iaa-checkbox"><input type="checkbox" id="iaa-strategy-auto-switch-panel"> Авто смяна на стратегия</label>
-          <label class="iaa-checkbox"><input type="checkbox" id="iaa-strategy-manual-toggle"> Ръчен избор на стратегия</label>
-          <div class="iaa-field-row" id="iaa-strategy-manual-row">
-            <span class="iaa-field-label">Избрана стратегия</span>
-            <select id="iaa-strategy-manual-select" class="iaa-strategy-select"></select>
-          </div>
           <table class="iaa-strategy-table">
             <thead>
               <tr>
@@ -7413,9 +6959,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       `;
       shell.appendChild(panel);
       document.body.appendChild(shell);
-
-      bindTabButtons();
-      bindPopupButtons();
 
       const toggleBtn = $id('iaa-toggle');
       const dotEl = $id('iaa-dot');
@@ -7487,10 +7030,36 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         applyNext();
       }
 
+      function showPopup(popupId) {
+        const popup = $id(popupId);
+        if (popup) popup.style.display = 'block';
+      }
+
+      function hidePopups() {
+        const settings = $id('iaa-settings-panel');
+        const mouse = $id('iaa-mouse-panel');
+        const debug = $id('iaa-debug-panel');
+        const calibration = $id('iaa-calibration-panel');
+        const strategies = $id('iaa-strategies-panel');
+        if (settings) settings.style.display = 'none';
+        if (mouse) mouse.style.display = 'none';
+        if (debug) debug.style.display = 'none';
+        if (calibration) calibration.style.display = 'none';
+        if (strategies) strategies.style.display = 'none';
+        S.settingsPanelOpen = false;
+        S.mousePanelOpen = false;
+        S.calibrationPanelOpen = false;
+        S.strategiesPanelOpen = false;
+      }
+
+      const settingsToggle = $id('iaa-settings-toggle');
+      const strategiesToggle = $id('iaa-strategies-toggle');
+      const mouseToggle = $id('iaa-mouse-toggle');
       const settingsClose = $id('iaa-settings-close');
       const strategiesClose = $id('iaa-strategies-close');
       const mouseClose = $id('iaa-mouse-close');
       const calibrationClose = $id('iaa-calibration-close');
+      const debugToggle = $id('iaa-debug-toggle');
       const debugClose = $id('iaa-debug-close');
       const debugCopy = $id('iaa-debug-copy');
       const lossCopy = $id('iaa-loss-copy');
@@ -7500,6 +7069,18 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const consoleClear = $id('iaa-console-clear');
       const calibrationFromMouse = $id('iaa-calibration-open');
 
+      if (settingsToggle) {
+        settingsToggle.addEventListener('click', () => {
+          if (S.settingsPanelOpen) hidePopups();
+          else { hidePopups(); showPopup('iaa-settings-panel'); S.settingsPanelOpen = true; captureSettingsSnapshot(); renderSettingsPanel(); }
+        });
+      }
+      if (strategiesToggle) {
+        strategiesToggle.addEventListener('click', () => {
+          if (S.strategiesPanelOpen) hidePopups();
+          else { hidePopups(); showPopup('iaa-strategies-panel'); S.strategiesPanelOpen = true; renderStrategiesPanel(); }
+        });
+      }
 setTimeout(() => {
   const bind = (id, key, scope) => {
     const el = document.getElementById(id);
@@ -7535,12 +7116,33 @@ setTimeout(() => {
 }, 0);
 
 
+      if (mouseToggle) {
+        mouseToggle.addEventListener('click', () => {
+          if (S.mousePanelOpen) hidePopups();
+          else { hidePopups(); showPopup('iaa-mouse-panel'); S.mousePanelOpen = true; renderMousePanel(); }
+        });
+      }
       if (calibrationFromMouse) {
         calibrationFromMouse.addEventListener('click', () => {
           if (S.calibrationPanelOpen) hidePopups();
           else { hidePopups(); showPopup('iaa-calibration-panel'); S.calibrationPanelOpen = true; }
         });
       }
+
+      if (debugToggle) {
+        debugToggle.addEventListener('click', () => {
+          const debug = $id('iaa-debug-panel');
+          if (!debug) return;
+          if (debug.style.display === 'block') {
+            hidePopups();
+          } else {
+            hidePopups();
+            debug.style.display = 'block';
+            setDebugTab(S.debugTab || 'status');
+          }
+        });
+      }
+
 
       if (settingsClose) settingsClose.addEventListener('click', hidePopups);
       if (strategiesClose) strategiesClose.addEventListener('click', hidePopups);
@@ -7792,16 +7394,6 @@ setTimeout(() => {
       if (strategyConfigs && typeof strategyConfigs === 'object') {
         S.strategyConfigs = Object.assign({}, S.strategyConfigs, strategyConfigs);
       }
-      const strategyManualEnabled = await storage.get(STRATEGY_MANUAL_ENABLED_KEY);
-      if (typeof strategyManualEnabled === 'boolean') S.strategyManualEnabled = strategyManualEnabled;
-      const strategyManualKey = await storage.get(STRATEGY_MANUAL_KEY);
-      if (typeof strategyManualKey === 'string') S.strategyManualKey = strategyManualKey;
-      if (S.strategyManualEnabled) {
-        S.autoSwitchStrategy = false;
-      }
-      if (!STRATEGY_DEFAULTS.configs[S.strategyManualKey]) {
-        S.strategyManualKey = 'vwap_momentum';
-      }
       const regimeStrength = await storage.get(REGIME_STRENGTH_KEY);
       if (typeof regimeStrength === 'number') S.regimeStrength = clamp01(regimeStrength);
       const confirmationStrength = await storage.get(CONFIRMATION_STRENGTH_KEY);
@@ -7882,8 +7474,6 @@ setTimeout(() => {
       storage.set(STRATEGY_LEARNING_TRADES_KEY, S.strategyLearningTrades);
       storage.set(STRATEGY_LOSS_STREAK_LIMIT_KEY, S.strategyLossStreakLimit);
       storage.set(STRATEGY_CONFIG_KEY, S.strategyConfigs);
-      storage.set(STRATEGY_MANUAL_ENABLED_KEY, !!S.strategyManualEnabled);
-      storage.set(STRATEGY_MANUAL_KEY, S.strategyManualKey);
       storage.set(REGIME_STRENGTH_KEY, S.regimeStrength);
       storage.set(CONFIRMATION_STRENGTH_KEY, S.confirmationStrength);
       storage.set(BIAS_STRENGTH_KEY, S.biasStrength);
@@ -8122,10 +7712,7 @@ setTimeout(() => {
       if (featureTf30m) featureTf30m.checked = !!S.featureTimeframes?.['30m'];
       if (idleSwitchEnabled) idleSwitchEnabled.checked = !!S.idleSwitchEnabled;
       if (idleSwitchMin) idleSwitchMin.value = S.idleSwitchMinutes ?? 60;
-      if (strategyAutoSwitch) {
-        strategyAutoSwitch.checked = !!S.autoSwitchStrategy;
-        strategyAutoSwitch.disabled = !!S.strategyManualEnabled;
-      }
+      if (strategyAutoSwitch) strategyAutoSwitch.checked = !!S.autoSwitchStrategy;
       if (strategyWeightWr) strategyWeightWr.value = (S.strategyWeightWr ?? STRATEGY_DEFAULTS.wrWeight).toFixed(2);
       if (strategyWeightPnl) strategyWeightPnl.value = (S.strategyWeightPnl ?? STRATEGY_DEFAULTS.pnlWeight).toFixed(2);
       if (strategyLearningTrades) strategyLearningTrades.value = S.strategyLearningTrades ?? STRATEGY_DEFAULTS.learningTrades;
@@ -8423,8 +8010,6 @@ setTimeout(() => {
       const MAX_TRADES_PER_MIN = $id('iaa-max-trades-per-minute');
       const MAX_OPEN_TRADES = $id('iaa-max-open-trades');
       const STRATEGY_AUTO_SWITCH_PANEL = $id('iaa-strategy-auto-switch-panel');
-      const STRATEGY_MANUAL_TOGGLE = $id('iaa-strategy-manual-toggle');
-      const STRATEGY_MANUAL_SELECT = $id('iaa-strategy-manual-select');
       const STRATEGY_DOWNLOAD = $id('iaa-strategy-download');
       const REGIME_STRENGTH = $id('iaa-regime-strength');
       const CONFIRMATION_STRENGTH = $id('iaa-confirmation-strength');
@@ -8435,7 +8020,14 @@ setTimeout(() => {
       const BIAS_TF_30M = $id('iaa-bias-tf-30m');
       const CONFLICT_STRENGTH = $id('iaa-conflict-strength');
 
-      bindTabButtons();
+      $$('.iaa-tab-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const tab = btn.getAttribute('data-tab');
+          if (!tab) return;
+          S.sniperSettingsTab = tab;
+          renderSettingsPanel();
+        });
+      });
 
       if (SETTINGS_SAVE) {
         SETTINGS_SAVE.addEventListener('click', () => {
@@ -8998,17 +8590,6 @@ setTimeout(() => {
           setAutoSwitchStrategy(STRATEGY_AUTO_SWITCH.checked);
         });
       }
-      if (STRATEGY_MANUAL_TOGGLE) {
-        STRATEGY_MANUAL_TOGGLE.addEventListener('change', () => {
-          setManualStrategyEnabled(STRATEGY_MANUAL_TOGGLE.checked);
-        });
-      }
-      if (STRATEGY_MANUAL_SELECT) {
-        STRATEGY_MANUAL_SELECT.addEventListener('change', () => {
-          const next = STRATEGY_MANUAL_SELECT.value;
-          setManualStrategyKey(next);
-        });
-      }
       if (STRATEGY_WEIGHT_WR) {
         STRATEGY_WEIGHT_WR.addEventListener('input', () => {
           const d = parseNumberFlexible(STRATEGY_WEIGHT_WR.value) || 0;
@@ -9185,7 +8766,6 @@ setTimeout(() => {
 
     /* ========================= BOOT ========================= */
     api.boot = async function(){
-      installWebSocketPriceTap();
       await restoreSettings();
       ensurePanelInit();
       ensureMouseHandlers();
@@ -9215,8 +8795,6 @@ setTimeout(() => {
     api.debugLog = debugLog;
     api.logConsole = logConsoleLine;
     api.formatStatus = formatStatus;
-    api.debugPrice = debugPriceSources;
-    api.debugButtons = debugTradeButtons;
 
     return api;
   })();
