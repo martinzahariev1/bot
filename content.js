@@ -81,6 +81,19 @@
   const STRATEGY_LEARNING_TRADES_KEY = 'IAA_STRATEGY_LEARNING_TRADES';
   const STRATEGY_LOSS_STREAK_LIMIT_KEY = 'IAA_STRATEGY_LOSS_STREAK_LIMIT';
   const STRATEGY_CONFIG_KEY = 'IAA_STRATEGY_CONFIG_V1';
+  const RSI_DIVERGENCE_LOOKBACK_KEY = 'IAA_RSI_DIVERGENCE_LOOKBACK';
+  const RSI_DIVERGENCE_MIN_DELTA_KEY = 'IAA_RSI_DIVERGENCE_MIN_DELTA';
+  const RSI_DIVERGENCE_RSI_WINDOW_KEY = 'IAA_RSI_DIVERGENCE_RSI_WINDOW';
+  const CANDLE_PATTERN_MIN_CONF_KEY = 'IAA_CANDLE_PATTERN_MIN_CONF';
+  const EMA_RSI_FAST_KEY = 'IAA_EMA_RSI_FAST';
+  const EMA_RSI_SLOW_KEY = 'IAA_EMA_RSI_SLOW';
+  const EMA_RSI_RSI_WINDOW_KEY = 'IAA_EMA_RSI_RSI_WINDOW';
+  const EMA_RSI_OVERSOLD_KEY = 'IAA_EMA_RSI_OVERSOLD';
+  const EMA_RSI_OVERBOUGHT_KEY = 'IAA_EMA_RSI_OVERBOUGHT';
+  const PARTNER_READY_3M_BARS_KEY = 'IAA_PARTNER_READY_3M_BARS';
+  const PARTNER_READY_5M_BARS_KEY = 'IAA_PARTNER_READY_5M_BARS';
+  const PARTNER_READY_15M_BARS_KEY = 'IAA_PARTNER_READY_15M_BARS';
+  const WS_PRICE_SAMPLE_TTL_MS = 2000;
   const MAX_TRADES_PER_MIN_KEY = 'IAA_MAX_TRADES_PER_MIN';
   const MAX_OPEN_TRADES_KEY = 'IAA_MAX_OPEN_TRADES';
   const IDLE_SWITCH_ENABLED_KEY = 'IAA_IDLE_SWITCH_ENABLED';
@@ -135,9 +148,8 @@
     learningTrades: 12,
     lossStreakLimit: 3,
     configs: {
-      vwap_momentum: { enabled: true, priority: 1, label: 'VWAP+Momentum' },
-      candlestick: { enabled: true, priority: 0.9, label: 'Candlestick' },
-      stoch_extreme: { enabled: true, priority: 0.75, label: 'Stoch Extreme' }
+      scalp_microtrend: { enabled: true, priority: 1, label: 'SCALP Microtrend' },
+      ema_rsi_pullback: { enabled: true, priority: 0.95, label: 'EMA+RSI Pullback' }
     }
   };
 
@@ -156,6 +168,110 @@
       const idSet = new Set(lines.slice(1));
       return pass === globalPass && idSet.has((acct || "").trim());
     } catch { return false; }
+  }
+
+  function extractPriceFromWsPayload(payload) {
+    if (!payload) return null;
+    const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    if (!text) return null;
+    const regex = /"(price|bid|ask|rate|quote|last|close|open|high|low)"\s*:\s*([0-9]+(?:[.,][0-9]+)?)/gi;
+    let match;
+    let best = null;
+    while ((match = regex.exec(text)) !== null) {
+      const raw = match[2].replace(',', '.');
+      const value = parseFloat(raw);
+      const decimals = raw.includes('.') ? raw.split('.')[1].length : 0;
+      if (!Number.isFinite(value)) continue;
+      if (value <= 0 || value >= 10000) continue;
+      if (!best || decimals > best.decimals) {
+        best = { value, decimals };
+      }
+    }
+    if (best) return best;
+
+    const tryParseSocketIo = () => {
+      try {
+        const normalized = String(text).trim();
+        const jsonPart = normalized.replace(/^\d+/, '');
+        if (!jsonPart.startsWith('[')) return null;
+        return JSON.parse(jsonPart);
+      } catch {
+        return null;
+      }
+    };
+    const packet = tryParseSocketIo();
+    if (!packet) return null;
+    const eventName = Array.isArray(packet) ? String(packet[0] || '') : '';
+    const data = Array.isArray(packet) ? packet[1] : packet;
+
+    const consider = (num) => {
+      if (!Number.isFinite(num) || num <= 0 || num >= 10000) return;
+      const raw = String(num);
+      const decimals = raw.includes('.') ? raw.split('.')[1].length : 0;
+      if (!best || decimals > best.decimals) best = { value: num, decimals };
+    };
+    const walk = (node, path = []) => {
+      if (node == null) return;
+      if (typeof node === 'number') {
+        const keyHint = path.join('.').toLowerCase();
+        if (/(price|rate|quote|close|open|high|low|candle|history)/.test(keyHint)) consider(node);
+        return;
+      }
+      if (Array.isArray(node)) {
+        if (node.length >= 2 && typeof node[0] === 'string' && typeof node[1] === 'number') {
+          consider(node[1]);
+        }
+        for (let i = 0; i < node.length; i += 1) walk(node[i], path.concat(String(i)));
+        return;
+      }
+      if (typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) walk(v, path.concat(k));
+      }
+    };
+
+    if (/loadhistoryperiod/i.test(eventName)) {
+      const history = data?.history || data?.candles || data?.data;
+      if (Array.isArray(history) && history.length) {
+        const last = history[history.length - 1];
+        if (Array.isArray(last)) {
+          last.forEach((v) => { if (typeof v === 'number') consider(v); });
+        }
+      }
+    }
+
+    walk(data, [eventName]);
+    return best;
+  }
+
+  function handleWsPriceSample(payload) {
+    const priceInfo = extractPriceFromWsPayload(payload);
+    if (!priceInfo) return;
+    S.wsLastPrice = priceInfo.value;
+    S.wsLastPriceDecimals = priceInfo.decimals;
+    S.wsLastPriceAt = Date.now();
+  }
+
+  function installWebSocketPriceTap() {
+    if (window.__iaaWsTapped) return;
+    window.__iaaWsTapped = true;
+    const OriginalWebSocket = window.WebSocket;
+    if (!OriginalWebSocket) return;
+    window.WebSocket = function (...args) {
+      const ws = new OriginalWebSocket(...args);
+      ws.addEventListener('message', (event) => {
+        try {
+          handleWsPriceSample(event?.data);
+        } catch {
+          // ignore ws parse errors
+        }
+      });
+      return ws;
+    };
+    window.WebSocket.prototype = OriginalWebSocket.prototype;
+    window.WebSocket.OPEN = OriginalWebSocket.OPEN;
+    window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
+    window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
+    window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
   }
 
   const storage = {
@@ -497,6 +613,10 @@
       // Price tracking
       lastTradeEntryPrice: null,
       currentAssetPrice: null,
+      currentAssetPriceDecimals: null,
+      wsLastPrice: null,
+      wsLastPriceDecimals: null,
+      wsLastPriceAt: 0,
       tradeEntryPrice: null,
       tradeExitPrice: null,
       priceMonitorInterval: null,
@@ -557,6 +677,20 @@
       analysisWindowSec: 300,
       analysisWarmupMin: 5,
       selfTradeEnabled: false,
+
+      // strategy parameters
+      rsiDivergenceLookback: 14,
+      rsiDivergenceMinDelta: 6,
+      rsiDivergenceRsiWindow: 14,
+      candlestickPatternMinConfidence: 0.6,
+      emaRsiFast: 8,
+      emaRsiSlow: 21,
+      emaRsiWindow: 14,
+      emaRsiOversold: 35,
+      emaRsiOverbought: 65,
+      partnerReadyBars3m: 6,
+      partnerReadyBars5m: 3,
+      partnerReadyBars15m: 2,
       reversalWindowSec: 5,
       reversalOppositeRatio: 0.6,
       panelOpacity: 1,
@@ -897,7 +1031,7 @@
     }
 
     function getActiveMode() {
-      return S.mode === 'sniper' ? 'sniper' : 'signals';
+      return 'sniper';
     }
 
     function isSniperMode() {
@@ -908,40 +1042,25 @@
       return isSniperMode() ? S.sniperKeepAliveEnabled : S.keepAliveEnabled;
     }
 
-    function setMode(nextMode) {
-      const normalized = nextMode === 'sniper' ? 'sniper' : 'signals';
-      if (S.mode === normalized) return;
-      S.mode = normalized;
+    function setMode() {
+      S.mode = 'sniper';
       stopCountdown();
-
-      if (normalized === 'sniper') {
-        S.sniperKeepAliveEnabled = false;
-        S.currentSignal = null;
-        S.tradeSequenceActive = false;
-        S.hasLiveSignal = false;
-        S.signalBuffer.length = 0;
-        S.forceImmediate = false;
-            S.sniperWarmupUntil = Date.now() + Math.max(1, S.sniperWarmupMin || 10) * 60 * 1000;
-        S.sniperLastTradeByTf = {};
-        S.sniperNextTradeByTf = {};
-        S.sniperTfStatus = {};
-        renderSniperMatrix();
-      } else {
-        S.sniperLastDecision = null;
-        S.sniperLastTradeByTf = {};
-        S.sniperNextTradeByTf = {};
-        S.sniperTfStatus = {};
-        renderSniperMatrix();
-      }
-
+      S.sniperKeepAliveEnabled = false;
+      S.currentSignal = null;
+      S.tradeSequenceActive = false;
+      S.hasLiveSignal = false;
+      S.signalBuffer.length = 0;
+      S.forceImmediate = false;
+      S.sniperWarmupUntil = Date.now() + Math.max(1, S.sniperWarmupMin || 10) * 60 * 1000;
+      S.sniperLastTradeByTf = {};
+      S.sniperNextTradeByTf = {};
+      S.sniperTfStatus = {};
+      renderSniperMatrix();
       persistSettings();
       renderSettingsPanel();
       if (S.running) {
-        if (getEffectiveKeepAliveEnabled()) {
-          startKeepAlive();
-        } else {
-          stopKeepAlive();
-        }
+        if (getEffectiveKeepAliveEnabled()) startKeepAlive();
+        else stopKeepAlive();
       }
     }
 
@@ -1640,8 +1759,8 @@
       if (!configWrap) return;
       const tooltipMap = {
         vwap_momentum: 'VWAP + Momentum стратегия. По-висок приоритет = по-строга селекция.',
-        candlestick: 'Свещни модели. По-висок приоритет = по-строг филтър.',
-        stoch_extreme: 'Stoch екстреми. По-висок приоритет = по-строга селекция.'
+        scalp_microtrend: 'RangeRevert логика (Upper/Lower BB + Stoch + тренд филтър).',
+        ema_rsi_pullback: 'TrendPullback логика (EMA + RSI pullback) с потвърждение.'
       };
       configWrap.innerHTML = keys.map((key) => {
         const config = getStrategyConfig(key);
@@ -1992,10 +2111,6 @@
       if (Number.isNaN(serverTs)) return;
       const driftSec = (Date.now() - serverTs) / 1000;
       S.clockDriftSec = Math.round(driftSec * 10) / 10;
-    }
-
-    function renderLiveInfo() {
-      renderLagStatus();
     }
 
     function renderSniperMatrix() {
@@ -2489,82 +2604,180 @@
     }
 
     /* ========================= FIXED PRICE DETECTION - NO CANVAS OVERLOAD ========================= */
+    function collectPriceCandidates() {
+      const candidates = [];
+      const balanceCents = readBalanceCents?.();
+      const balanceValue = Number.isFinite(balanceCents) ? balanceCents / 100 : null;
+      const attributeSelectors = [
+        '[data-price]',
+        '[data-last-price]',
+        '[data-quote]',
+        '[data-rate]',
+        '[data-value]',
+        '[data-price-value]'
+      ];
+      const isBotUiElement = (el) => !!(el?.closest?.('#iaa-panel')
+        || el?.closest?.('#iaa-settings-panel')
+        || el?.closest?.('#iaa-strategies-panel')
+        || el?.closest?.('#iaa-debug-panel')
+        || el?.closest?.('#iaa-calibration-panel')
+        || el?.closest?.('#iaa-mouse-panel')
+        || el?.closest?.(`#${LOGIN_SHELL_ID}`));
+      const isBalanceElement = (el) => {
+        if (!el) return false;
+        if (el.closest?.('.balance-info-block__data, .balance-info-block__balance')) return true;
+        if (el.matches?.('span.js-balance-demo, span[class*="js-balance-real-"], span.js-hd.js-balance-demo, span.js-hd.no-animation.js-balance-demo')) return true;
+        const attr = `${el.className || ''} ${el.id || ''}`.toLowerCase();
+        return attr.includes('balance') || attr.includes('deposit') || attr.includes('account');
+      };
+      const hasBalanceContext = (el) => {
+        if (!el) return false;
+        const context = `${el.className || ''} ${el.id || ''} ${el.getAttribute?.('data-test') || ''} ${el.getAttribute?.('data-testid') || ''}`.toLowerCase();
+        return /balance|deposit|account|wallet|fund|payment|cashier/.test(context);
+      };
+      const isTradingAreaElement = (el) => {
+        if (!el) return false;
+        if (el.closest?.('.chart, .chart-container, .chart-page, .chart-widget, .trading-panel, [class*="chart" i], [class*="trading" i], [data-test*="chart" i], [data-testid*="chart" i], [data-test*="asset" i], [data-testid*="asset" i], [data-test*="ticker" i], [data-testid*="ticker" i], [data-test*="quote" i], [data-testid*="quote" i]')) {
+          return true;
+        }
+        const context = `${el.className || ''} ${el.id || ''} ${el.getAttribute?.('data-test') || ''} ${el.getAttribute?.('data-testid') || ''}`.toLowerCase();
+        return /chart|trade|ticker|quote|asset|pair|symbol|candle/.test(context);
+      };
+
+      const priceSelectors = [
+        '[data-test="current-price"]',
+        '[data-test*="price" i]',
+        '[data-testid*="price" i]',
+        '[data-qa*="price" i]',
+        '[data-test*="quote" i]',
+        '[data-testid*="quote" i]',
+        '[data-qa*="quote" i]',
+        '[data-test*="rate" i]',
+        '[data-testid*="rate" i]',
+        '[data-qa*="rate" i]',
+        '[id*="price" i]',
+        '[id*="quote" i]',
+        '[id*="rate" i]',
+        '[id*="ticker" i]',
+        '[class*="price" i]',
+        '[class*="quote" i]',
+        '[class*="rate" i]',
+        '[class*="ticker" i]',
+        '.current-price',
+        '.price-value',
+        '.rate-value',
+        '.ticker-price',
+        '.last-price',
+
+        // PocketOption specific selectors
+        '.rate-block__rate',
+        '.rate-block__value',
+        '.price-block__value',
+        '.currency-rate',
+        '.pair-rate',
+
+        // Chart price indicators
+        '.chart-price',
+        '.chart-rate',
+        '.tradingview-price',
+
+        // General price areas
+        '.price',
+        '.rate',
+        '.value',
+        '.ticker',
+        '.quote'
+      ];
+
+      for (const selector of attributeSelectors) {
+        const elements = $$(selector);
+        for (const el of elements) {
+          if (!visible(el) || isBotUiElement(el) || isBalanceElement(el)) continue;
+          const attrs = [
+            el.getAttribute?.('data-price'),
+            el.getAttribute?.('data-last-price'),
+            el.getAttribute?.('data-quote'),
+            el.getAttribute?.('data-rate'),
+            el.getAttribute?.('data-value'),
+            el.getAttribute?.('data-price-value')
+          ].filter(Boolean);
+          for (const attr of attrs) {
+            const priceInfo = extractValidPriceInfo(String(attr));
+            if (priceInfo) {
+              if (Number.isFinite(balanceValue) && Math.abs(priceInfo.value - balanceValue) < 0.01) continue;
+              const areaBoost = isTradingAreaElement(el) ? 2 : 0;
+              if (!areaBoost && hasBalanceContext(el)) continue;
+              candidates.push({ ...priceInfo, priority: 3 + areaBoost, selector, text: String(attr).slice(0, 80) });
+            }
+          }
+        }
+      }
+
+      for (const selector of priceSelectors) {
+        const elements = $$(selector);
+        for (const el of elements) {
+          if (visible(el) && !isBotUiElement(el) && !isBalanceElement(el)) {
+            const text = T(el);
+            const priceInfo = extractValidPriceInfo(text);
+            if (priceInfo) {
+              if (Number.isFinite(balanceValue) && Math.abs(priceInfo.value - balanceValue) < 0.01) continue;
+              const areaBoost = isTradingAreaElement(el) ? 2 : 0;
+              if (!areaBoost && hasBalanceContext(el)) continue;
+              candidates.push({ ...priceInfo, priority: 2 + areaBoost, selector, text: text.slice(0, 80) });
+            }
+          }
+        }
+      }
+
+      const priceLikeSelectors = [
+        'div', 'span', 'td', 'li', 'p'
+      ];
+
+      for (const selector of priceLikeSelectors) {
+        const elements = $$(selector);
+        for (const el of elements) {
+          if (!visible(el) || isBotUiElement(el) || isBalanceElement(el)) continue;
+
+          const text = T(el);
+          if (text.length > 5 && text.length < 24) {
+            const priceInfo = extractValidPriceInfo(text);
+            if (priceInfo) {
+              if (Number.isFinite(balanceValue) && Math.abs(priceInfo.value - balanceValue) < 0.01) continue;
+              const areaBoost = isTradingAreaElement(el) ? 2 : 0;
+              if (!areaBoost && hasBalanceContext(el)) continue;
+              candidates.push({ ...priceInfo, priority: 1 + areaBoost, selector, text: text.slice(0, 80) });
+            }
+          }
+        }
+      }
+
+      return candidates;
+    }
+
     function getCurrentAssetPrice() {
       try {
-        // Method 1: Look for specific price elements first (NO CANVAS)
-        const priceSelectors = [
-          // Primary price display areas
-          '[data-test="current-price"]',
-          '.current-price',
-          '.price-value',
-          '.rate-value',
-          '.ticker-price',
-          '.last-price',
-
-          // PocketOption specific selectors
-          '.rate-block__rate',
-          '.rate-block__value',
-          '.price-block__value',
-          '.currency-rate',
-          '.pair-rate',
-
-          // Chart price indicators
-          '.chart-price',
-          '.chart-rate',
-          '.tradingview-price',
-
-          // General price areas
-          '.price',
-          '.rate',
-          '.value',
-          '.ticker',
-          '.quote'
-        ];
-
-        for (const selector of priceSelectors) {
-          const elements = $$(selector);
-          for (const el of elements) {
-            if (visible(el)) {
-              const text = T(el);
-              const price = extractValidPrice(text);
-              if (price !== null) {
-                return price;
-              }
-            }
-          }
+        const candidates = collectPriceCandidates();
+        if (!candidates.length) return null;
+        candidates.sort((a, b) => {
+          const scoreA = (a.decimals || 0) + (a.priority || 0) * 2;
+          const scoreB = (b.decimals || 0) + (b.priority || 0) * 2;
+          if (scoreB !== scoreA) return scoreB - scoreA;
+          return (b.value || 0) - (a.value || 0);
+        });
+        const best = candidates[0];
+        if (best) {
+          S.currentAssetPriceDecimals = best.decimals;
+          return best.value;
         }
-
-        // Method 2: Look for elements containing price-like patterns
-        const priceLikeSelectors = [
-          'div', 'span', 'td', 'li', 'p'
-        ];
-
-        for (const selector of priceLikeSelectors) {
-          const elements = $$(selector);
-          for (const el of elements) {
-            if (!visible(el)) continue;
-
-            const text = T(el);
-            if (text.length > 5 && text.length < 20) { // Reasonable price text length
-              const price = extractValidPrice(text);
-              if (price !== null) {
-                return price;
-              }
-            }
-          }
-        }
-
         return null;
-
       } catch (error) {
         return null;
       }
     }
 
-    function extractValidPrice(text) {
+    function extractValidPriceInfo(text) {
       if (!text) return null;
 
-      // Clean the text - remove CSS animations and other noise
       const cleanText = text.replace(/@keyframes[^}]+}/g, '')
                           .replace(/transform:[^;]+;/g, '')
                           .replace(/translate\([^)]+\)/g, '')
@@ -2573,27 +2786,24 @@
                           .trim();
 
       if (!cleanText) return null;
+      if (/%/.test(cleanText)) return null;
+      if (/[€£¥₽₺₴₹₩₫$]/.test(cleanText)) return null;
+      if (/(payout|profit|balance|amount|stake|win|loss|bonus|deposit|withdraw)/i.test(cleanText.toLowerCase())) return null;
 
-      // Look for price patterns (numbers with 2-5 decimals)
-      const pricePatterns = [
-        /\b\d+\.\d{4,5}\b/,  // 4-5 decimals (common in forex)
-        /\b\d+\.\d{2,3}\b/,  // 2-3 decimals
-        /\b\d+,\d{4,5}\b/,   // European format with 4-5 decimals
-        /\b\d+,\d{2,3}\b/    // European format with 2-3 decimals
-      ];
-
-      for (const pattern of pricePatterns) {
-        const match = cleanText.match(pattern);
-        if (match) {
-          const priceStr = match[0].replace(',', '.');
-          const price = parseFloat(priceStr);
-          if (!isNaN(price) && price > 0.1 && price < 1000) { // Reasonable price range
-            return price;
-          }
-        }
+      const matches = [];
+      const regex = /\b\d+[.,]\d{2,6}\b/g;
+      let match;
+      while ((match = regex.exec(cleanText)) !== null) {
+        const raw = match[0].replace(',', '.');
+        const price = parseFloat(raw);
+        const decimals = raw.includes('.') ? raw.split('.')[1].length : 0;
+        if (!Number.isFinite(price)) continue;
+        if (price <= 0 || price >= 10000) continue;
+        matches.push({ value: price, decimals });
       }
-
-      return null;
+      if (!matches.length) return null;
+      matches.sort((a, b) => (b.decimals || 0) - (a.decimals || 0));
+      return matches[0];
     }
 
     /* ========================= PROPER BALANCE-BASED OUTCOME DETECTION ========================= */
@@ -2898,9 +3108,14 @@
 
       S.priceMonitorInterval = setInterval(() => {
         const now = Date.now();
-        const currentPrice = getCurrentAssetPrice();
+        const wsFresh = S.wsLastPrice && (now - S.wsLastPriceAt <= WS_PRICE_SAMPLE_TTL_MS);
+        const wsPrice = wsFresh ? S.wsLastPrice : null;
+        const currentPrice = wsPrice ?? getCurrentAssetPrice();
         if (currentPrice !== null) {
           S.currentAssetPrice = currentPrice;
+          if (wsPrice != null && Number.isFinite(S.wsLastPriceDecimals)) {
+            S.currentAssetPriceDecimals = S.wsLastPriceDecimals;
+          }
           S.lastPriceAt = now;
 
           S.priceHistory.push({
@@ -2911,6 +3126,9 @@
           const windowMs = getPriceHistoryWindowMs();
           const cutoff = now - windowMs;
           S.priceHistory = S.priceHistory.filter(p => p.timestamp > cutoff);
+          renderLivePriceCard();
+        } else {
+          renderLivePriceCard();
         }
       }, C.PRICE_MONITOR_INTERVAL_MS);
     }
@@ -5323,6 +5541,107 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       };
     }
 
+    function calcCandlestickPatternDecision(windowMs) {
+      const base = calcCandlestickDecision(windowMs);
+      if (!base || !base.direction) return null;
+      const minConf = clamp01(Number.isFinite(S.candlestickPatternMinConfidence) ? S.candlestickPatternMinConfidence : 0.6);
+      if (base.confidence < minConf) return null;
+      return { ...base, strategyKey: 'candlestick_pattern' };
+    }
+
+    function calcRsiDivergenceDecision(windowMs) {
+      const lookback = Math.max(6, Math.round(S.rsiDivergenceLookback || 14));
+      const rsiWindow = Math.max(5, Math.round(S.rsiDivergenceRsiWindow || 14));
+      const minDelta = Math.max(1, Math.round(S.rsiDivergenceMinDelta || 6));
+      const prices = getPricesForWindow(windowMs * 2, Math.max(lookback * 2, rsiWindow + 2));
+      if (prices.length < Math.max(lookback * 2, rsiWindow + 2)) return null;
+      const mid = Math.floor(prices.length / 2);
+      const first = prices.slice(0, mid);
+      const second = prices.slice(mid);
+      if (first.length < rsiWindow + 1 || second.length < rsiWindow + 1) return null;
+      const rsiFirst = calcRsi(first, rsiWindow);
+      const rsiSecond = calcRsi(second, rsiWindow);
+      if (!Number.isFinite(rsiFirst) || !Number.isFinite(rsiSecond)) return null;
+      const lowFirst = Math.min(...first);
+      const lowSecond = Math.min(...second);
+      const highFirst = Math.max(...first);
+      const highSecond = Math.max(...second);
+      const rsiDelta = rsiSecond - rsiFirst;
+      const trendDir = calcTrendDirection(windowMs);
+      const candle = getCandleAt(Date.now(), windowMs);
+      const rangePct = candle?.open ? (candle.high - candle.low) / candle.open : 0;
+      const minPriceDelta = 0.0003;
+
+      if (lowSecond < lowFirst * (1 - minPriceDelta) && rsiDelta >= minDelta) {
+        const confidence = clamp01(0.55 + Math.min(0.35, (rsiDelta / (minDelta * 2)) * 0.35));
+        return {
+          strategyKey: 'rsi_divergence',
+          direction: 'BUY',
+          confidence,
+          rangePct,
+          trendDir,
+          trendAligned: trendDir === 0 || trendDir >= 0,
+          volumeOk: true
+        };
+      }
+      if (highSecond > highFirst * (1 + minPriceDelta) && rsiDelta <= -minDelta) {
+        const confidence = clamp01(0.55 + Math.min(0.35, (Math.abs(rsiDelta) / (minDelta * 2)) * 0.35));
+        return {
+          strategyKey: 'rsi_divergence',
+          direction: 'SELL',
+          confidence,
+          rangePct,
+          trendDir,
+          trendAligned: trendDir === 0 || trendDir <= 0,
+          volumeOk: true
+        };
+      }
+      return null;
+    }
+
+    function calcEmaRsiPullbackDecision(windowMs) {
+      const rsiWindow = Math.max(5, Math.round(S.emaRsiWindow || 14));
+      const emaFast = Math.max(2, Math.round(S.emaRsiFast || 8));
+      const emaSlow = Math.max(emaFast + 1, Math.round(S.emaRsiSlow || 21));
+      const prices = getPricesForWindow(windowMs, rsiWindow + 3);
+      if (!prices.length) return null;
+      const rsi = calcRsi(prices, rsiWindow);
+      const emaFastVal = calcEma(prices, emaFast);
+      const emaSlowVal = calcEma(prices, emaSlow);
+      if (!Number.isFinite(rsi) || emaFastVal == null || emaSlowVal == null) return null;
+      const oversold = Math.max(10, Math.min(50, Math.round(S.emaRsiOversold || 35)));
+      const overbought = Math.max(50, Math.min(90, Math.round(S.emaRsiOverbought || 65)));
+      const trendDir = calcTrendDirection(windowMs);
+      const candle = getCandleAt(Date.now(), windowMs);
+      const rangePct = candle?.open ? (candle.high - candle.low) / candle.open : 0;
+
+      if (emaFastVal > emaSlowVal && rsi <= oversold) {
+        const confidence = clamp01(0.55 + (oversold - rsi) / Math.max(oversold, 1) * 0.35);
+        return {
+          strategyKey: 'ema_rsi_pullback',
+          direction: 'BUY',
+          confidence,
+          rangePct,
+          trendDir,
+          trendAligned: trendDir === 0 || trendDir >= 0,
+          volumeOk: true
+        };
+      }
+      if (emaFastVal < emaSlowVal && rsi >= overbought) {
+        const confidence = clamp01(0.55 + (rsi - overbought) / Math.max(100 - overbought, 1) * 0.35);
+        return {
+          strategyKey: 'ema_rsi_pullback',
+          direction: 'SELL',
+          confidence,
+          rangePct,
+          trendDir,
+          trendAligned: trendDir === 0 || trendDir <= 0,
+          volumeOk: true
+        };
+      }
+      return null;
+    }
+
     function calcStochDecision(windowMs) {
       const prices = getPricesForWindow(windowMs, (S.sniperStochWindow || 10) + 2);
       if (!prices.length) return null;
@@ -5444,22 +5763,100 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       };
     }
 
+    function countReadyBars(windowMs, maxBars = 80) {
+      let ready = 0;
+      for (let i = 0; i < maxBars; i += 1) {
+        const candle = getCandleAtOffset(windowMs, i);
+        if (!candle || !Number.isFinite(candle.open) || !Number.isFinite(candle.close)) break;
+        ready += 1;
+      }
+      return ready;
+    }
+
+    function getPartnerTfReadiness() {
+      const req3 = Math.max(1, Math.round(S.partnerReadyBars3m || 6));
+      const req5 = Math.max(1, Math.round(S.partnerReadyBars5m || 3));
+      const req15 = Math.max(1, Math.round(S.partnerReadyBars15m || 2));
+      const bars3 = countReadyBars(SNIPER_TF_MS['3m']);
+      const bars5 = countReadyBars(SNIPER_TF_MS['5m']);
+      const bars15 = countReadyBars(SNIPER_TF_MS['15m']);
+      return {
+        ok: bars3 >= req3 && bars5 >= req5 && bars15 >= req15,
+        details: {
+          '3m': { bars: bars3, required: req3, ready: bars3 >= req3 },
+          '5m': { bars: bars5, required: req5, ready: bars5 >= req5 },
+          '15m': { bars: bars15, required: req15, ready: bars15 >= req15 }
+        }
+      };
+    }
+
+    function calcScalpMicrotrendDecision(windowMs) {
+      const prices = getPricesForWindow(windowMs, 24);
+      if (prices.length < 24) return null;
+      const nowCandle = getCandleAt(Date.now(), windowMs);
+      if (!nowCandle || !Number.isFinite(nowCandle.open) || nowCandle.open <= 0) return null;
+      const emaFastVal = calcEma(prices, 8);
+      const emaSlowVal = calcEma(prices, 21);
+      const stoch = calcStochastic(prices, 10);
+      const vwap = calcSniperVwap(windowMs * 2);
+      const bb = calcBollingerBands(prices, 20, 2);
+      if (emaFastVal == null || emaSlowVal == null || !Number.isFinite(stoch) || !bb) return null;
+      const last = prices[prices.length - 1];
+      const trendDir = calcTrendDirection(windowMs);
+      const rangePct = (nowCandle.high - nowCandle.low) / nowCandle.open;
+      let direction = null;
+      let reason = 'RangeRevert';
+      let confidence = 0;
+      if (last <= bb.lower && stoch <= 30) {
+        direction = 'BUY';
+        confidence = Math.min(0.98, 0.72 + ((bb.lower - last) / Math.max(last, 1e-8)) * 45 + (30 - stoch) / 100);
+        reason = 'RangeRevert(LowerBB)';
+      } else if (last >= bb.upper && stoch >= 70) {
+        direction = 'SELL';
+        confidence = Math.min(0.98, 0.72 + ((last - bb.upper) / Math.max(last, 1e-8)) * 45 + (stoch - 70) / 100);
+        reason = 'RangeRevert(UpperBB)';
+      } else {
+        return null;
+      }
+      const trendBias = emaFastVal >= emaSlowVal ? 1 : -1;
+      const trendAligned = direction === 'BUY' ? trendBias > 0 : trendBias < 0;
+      const regime = detectMarketRegime(windowMs);
+      if (regime?.state === 'trend' && regime.trendDir !== 0) {
+        const regimeDir = regime.trendDir > 0 ? 'BUY' : 'SELL';
+        if (direction !== regimeDir) confidence = Math.max(0, confidence - 0.08);
+      }
+      if (vwap != null) {
+        const vwapAligned = direction === 'BUY' ? last <= vwap : last >= vwap;
+        if (!vwapAligned) confidence = Math.max(0, confidence - 0.05);
+      }
+      return {
+        strategyKey: 'scalp_microtrend',
+        direction,
+        confidence: clamp01(confidence),
+        rangePct,
+        trendDir,
+        trendAligned,
+        volumeOk: true,
+        reason,
+        stoch,
+        ema20: emaFastVal,
+        ema50: emaSlowVal,
+        vwap
+      };
+    }
+
     function getStrategyDecisions(tfKey) {
       const windowMs = SNIPER_TF_MS[tfKey];
       const decisions = [];
-      const candlestick = calcCandlestickDecision(windowMs);
-      if (candlestick?.direction && isStrategyEnabled(candlestick.strategyKey)) {
-        candlestick.tfKey = tfKey;
-        decisions.push(applyConfirmationBoost(candlestick, windowMs));
+      const scalpMicrotrend = calcScalpMicrotrendDecision(windowMs);
+      if (scalpMicrotrend?.direction && isStrategyEnabled(scalpMicrotrend.strategyKey)) {
+        scalpMicrotrend.tfKey = tfKey;
+        decisions.push(applyConfirmationBoost(scalpMicrotrend, windowMs));
       }
-      const stoch = calcStochDecision(windowMs);
-      if (stoch?.direction && isStrategyEnabled(stoch.strategyKey)) {
-        stoch.tfKey = tfKey;
-        decisions.push(applyConfirmationBoost(stoch, windowMs));
-      }
-      if (S.featureVwapAnalysis && isStrategyEnabled('vwap_momentum')) {
-        const vwapDecision = calcVwapMomentumDecision(tfKey);
-        if (vwapDecision?.direction) decisions.push(applyConfirmationBoost(vwapDecision, windowMs));
+      const emaRsiPullback = calcEmaRsiPullbackDecision(windowMs);
+      if (emaRsiPullback?.direction && isStrategyEnabled(emaRsiPullback.strategyKey)) {
+        emaRsiPullback.tfKey = tfKey;
+        decisions.push(applyConfirmationBoost(emaRsiPullback, windowMs));
       }
       return decisions;
     }
@@ -5610,6 +6007,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const payoutOk = getSniperMinPayoutOk();
       const assetScope = getExpiryScopeFromAsset(getCurrentAssetLabel());
       const requiredThreshold = clamp01(getSniperThresholdForScope(assetScope));
+      const partnerReady = getPartnerTfReadiness();
 
       let best = null;
       let bestCandidate = null;
@@ -5747,6 +6145,16 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       S.sniperTfStatus = tfStatus;
       renderSniperMatrix();
       renderPendingTrades();
+
+      if (!partnerReady.ok) {
+        S.analysisConfidence = bestCandidate ? bestCandidate.confidence : 0;
+        S.analysisDirection = bestCandidate ? bestCandidate.direction : null;
+        S.tradeQualityScore = bestCandidate ? Math.round((bestCandidate.confidence || 0) * 100) : 0;
+        S.currentStrategyKey = bestCandidate?.strategyKey || null;
+        S.analysisUpdatedAt = now;
+        setStatusOverlay(`Снайпер: TF not ready 3m=${partnerReady.details['3m'].bars}/${partnerReady.details['3m'].required} 5m=${partnerReady.details['5m'].bars}/${partnerReady.details['5m'].required} 15m=${partnerReady.details['15m'].bars}/${partnerReady.details['15m'].required}`, '', false);
+        return;
+      }
 
       if (!best) {
         S.analysisConfidence = bestCandidate ? bestCandidate.confidence : 0;
@@ -6318,7 +6726,10 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
 
     /* ----------------------------- UI ----------------------------- */
     function ensurePanel(){
-      if ($id(C.PANEL_ID)) return;
+      if ($id(C.PANEL_ID)) {
+        rebindPanelPopupButtons();
+        return;
+      }
 
       const css = `
         #${C.PANEL_ID}{
@@ -6386,6 +6797,12 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         .iaa-grid-row{ display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; position:relative; }
         .iaa-grid-row::after{ content:""; position:absolute; top:2px; bottom:2px; left:50%; width:1px; background:rgba(255,255,255,.06); pointer-events:none; }
         .iaa-stats{ display:flex; flex-wrap:nowrap; gap:8px; margin-top:6px; padding-top:6px; border-top:1px solid rgba(255,255,255,.05); }
+        .iaa-live-card{ margin-top:6px; padding:6px 8px; border-radius:10px; border:1px solid rgba(255,255,255,.08); background:#0b1220; display:flex; flex-direction:column; gap:4px; }
+        .iaa-live-asset{ font-size:12px; font-weight:700; color:#e5e7eb; }
+        .iaa-live-price-row{ display:flex; align-items:center; gap:6px; font-size:11px; }
+        .iaa-live-label{ color:#94a3b8; font-size:10px; }
+        .iaa-live-price{ color:#facc15; font-weight:700; letter-spacing:.3px; }
+        .iaa-live-idle{ color:#9ca3af; font-size:10px; }
         .iaa-balance-summary{ display:flex; align-items:center; justify-content:space-between; gap:6px; margin-top:4px; padding-top:4px; border-top:1px solid rgba(255,255,255,.05); flex-wrap:nowrap; font-size:10px; line-height:1.15; }
         .iaa-balance-row{ display:flex; align-items:center; gap:4px; white-space:nowrap; }
         .iaa-balance-row:not(:last-child)::after{ content:';'; margin-left:4px; color:#6b7280; }
@@ -6439,29 +6856,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         .iaa-toggle-btn{ background:#111827; color:#e5e7eb; border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:2px 6px; cursor:pointer; }
         .iaa-toggle-btn:hover{ background:#1f2937; }
 
-        #iaa-strategies-panel{
-          display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%);
-          width:360px; background:#0b1220; border:1px solid rgba(255,255,255,.15);
-          border-radius:14px; padding:16px; z-index:2147483648;
-          box-shadow:0 12px 40px rgba(0,0,0,.8); max-height:80vh; overflow-y:auto;
-          font-family:system-ui, Arial !important; color:#e5e7eb;
-        }
-        #iaa-strategies-close{ position:absolute; top:8px; right:8px; background:none; border:none; color:#fff; font-size:16px; cursor:pointer; }
-        .iaa-strategy-table{ width:100%; border-collapse:collapse; font-size:11px; margin-top:8px; }
-        .iaa-strategy-table th, .iaa-strategy-table td{ padding:6px 4px; border-bottom:1px solid rgba(255,255,255,.08); text-align:left; }
-        .iaa-strategy-table th{ color:#93c5fd; font-weight:700; }
-        .iaa-strategy-positive{ color:#22c55e; font-weight:700; }
-        .iaa-strategy-negative{ color:#f87171; font-weight:700; }
-        .iaa-strategy-neutral{ color:#e5e7eb; font-weight:600; }
-        .iaa-strategy-input{ width:64px; padding:3px 5px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#fff; font-size:10px; font-weight:700; }
-        .iaa-strategy-actions{ display:flex; gap:8px; margin-top:10px; }
-        .iaa-strategy-actions button{ flex:1; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#e5e7eb; font-size:11px; cursor:pointer; }
-        .iaa-strategy-summary{ display:grid; grid-template-columns:repeat(2, 1fr); gap:6px 10px; margin-top:10px; font-size:11px; }
-        .iaa-strategy-summary .iaa-summary-card{ padding:6px; border-radius:8px; border:1px solid rgba(255,255,255,.08); background:#0f172a; }
-        .iaa-history-table{ width:100%; border-collapse:collapse; font-size:10px; margin-top:8px; }
-        .iaa-history-table th, .iaa-history-table td{ padding:5px 4px; border-bottom:1px solid rgba(255,255,255,.08); text-align:left; }
-        .iaa-history-table th{ color:#93c5fd; font-weight:700; }
-
         /* Mouse Panel */
         #iaa-mouse-panel{
           display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%);
@@ -6472,8 +6866,8 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         }
         #iaa-mouse-close{ position:absolute; top:8px; right:8px; background:none; border:none; color:#fff; font-size:16px; cursor:pointer; }
 
-        .iaa-controls{ display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,.05);}
-        .iaa-control-btn{ width:36px; height:36px; border-radius:50%; background:#252525; color:#fff; font-size:14px; border:1px solid rgba(255,255,255,.1); cursor:pointer; display:flex; align-items:center; justify-content:center; }
+        .iaa-controls{ display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,.05); position:relative; z-index:5; pointer-events:auto;}
+        .iaa-control-btn{ width:36px; height:36px; border-radius:50%; background:#252525; color:#fff; font-size:14px; border:1px solid rgba(255,255,255,.1); cursor:pointer; display:flex; align-items:center; justify-content:center; pointer-events:auto; }
         .iaa-control-btn:hover{ background:#333; }
 
         #iaa-debug-panel{
@@ -6583,6 +6977,11 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
             <span id="iaa-win-rate" class="iaa-stat-value">0%</span>
           </div>
         </div>
+        <div class="iaa-live-card">
+          <div id="iaa-live-asset" class="iaa-live-asset">—</div>
+          <div class="iaa-live-price-row"><span class="iaa-live-label">PRICE:</span><span id="iaa-live-price" class="iaa-live-price">—</span></div>
+          <div id="iaa-live-idle" class="iaa-live-idle">idle —</div>
+        </div>
         <div class="iaa-balance-summary">
           <div class="iaa-balance-row">
             <span class="iaa-balance-label">Старт</span>
@@ -6612,7 +7011,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         <div class="iaa-controls">
           <button id="iaa-mouse-toggle" class="iaa-control-btn" title="Mouse Mapping">🖱</button>
           <button id="iaa-settings-toggle" class="iaa-control-btn" title="Settings">⚙</button>
-          <button id="iaa-strategies-toggle" class="iaa-control-btn" title="Стратегии">📊</button>
           <button id="iaa-debug-toggle" class="iaa-control-btn" title="Диагностика">🧪</button>
         </div>
 
@@ -6707,27 +7105,13 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         <div id="iaa-settings-panel">
           <button id="iaa-settings-close">×</button>
           <div style="margin-bottom:12px;">
-            <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;" data-i18n="mode_label">Режим на работа</div>
+            <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">Режим на работа</div>
             <div style="display:flex; gap:8px;">
-              <button id="iaa-mode-signals" style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,.1); background:#1f2937; color:#fff; cursor:pointer; font-size:11px;" data-i18n="mode_signals">Сигнали 1м/5м</button>
               <button id="iaa-mode-sniper" style="flex:1; padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,.1); background:#111827; color:#fff; cursor:pointer; font-size:11px;" data-i18n="mode_sniper">СНАЙПЕР</button>
             </div>
           </div>
 
-          <div id="iaa-settings-signals">
-            <div style="margin-bottom:12px;">
-              <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;font-size:12px"><input type="checkbox" id="iaa-signal-source-1m"> <span data-i18n="signal_source_1m">Сигнали 1м</span></label>
-              <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;font-size:12px"><input type="checkbox" id="iaa-signal-source-5m"> <span data-i18n="signal_source_5m">Сигнали 5м</span></label>
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                <span style="color:#9ca3af; font-size:11px;" data-i18n="base_amount">Базова сума ($)</span>
-                <input type="number" id="iaa-base-amount" min="1" step="1" value="1" style="width:70px; padding:4px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:rgba(0,0,0,.3); color:#fff; font-weight:700" />
-              </div>
-              <div style="color:#9ca3af; font-size:11px; margin-bottom:4px;" data-i18n="expiry_setting">Време на изтичане:</div>
-              <select id="iaa-expiry-setting" style="width:100%; padding:6px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:rgba(0,0,0,.3); color:#fff"><option value="1M" data-i18n="expiry_1m">1 минута</option><option value="5M" data-i18n="expiry_5m">5 минути</option></select>
-            </div>
-          </div>
-
-          <div id="iaa-settings-sniper" style="display:none;">
+          <div id="iaa-settings-sniper" style="display:block;">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;">
               <div style="font-weight:700;color:#e5e7eb;">Настройки</div>
               <button id="iaa-sniper-collapse" type="button" class="iaa-toggle-btn">▾</button>
@@ -6893,43 +7277,43 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
                   <span class="iaa-field-label">Лимит загуби (1–10)</span>
                   <input type="number" id="iaa-strategy-loss-streak" min="1" max="10" step="1" value="3">
                 </div>
+                <div class="iaa-subtitle">Стратегии (Partner mode)</div>
+                <label class="iaa-checkbox"><input type="checkbox" id="iaa-strategy-ema-rsi-pullback-enabled"> EMA+RSI Pullback</label>
+                <label class="iaa-checkbox"><input type="checkbox" id="iaa-strategy-scalp-microtrend-enabled"> SCALP Microtrend</label>
+                <div class="iaa-subtitle">TF readiness gate</div>
+                <div class="iaa-field-row" title="Минимални готови барове за 3m потвърждение.">
+                  <span class="iaa-field-label">3m ready bars</span>
+                  <input type="number" id="iaa-partner-ready-3m" min="1" max="40" step="1" value="6">
+                </div>
+                <div class="iaa-field-row" title="Минимални готови барове за 5m потвърждение.">
+                  <span class="iaa-field-label">5m ready bars</span>
+                  <input type="number" id="iaa-partner-ready-5m" min="1" max="40" step="1" value="3">
+                </div>
+                <div class="iaa-field-row" title="Минимални готови барове за 15m потвърждение.">
+                  <span class="iaa-field-label">15m ready bars</span>
+                  <input type="number" id="iaa-partner-ready-15m" min="1" max="40" step="1" value="2">
+                </div>
+                <div class="iaa-field-row" title="EMA fast период.">
+                  <span class="iaa-field-label">EMA Fast (2–30)</span>
+                  <input type="number" id="iaa-ema-rsi-fast" min="2" max="30" step="1" value="8">
+                </div>
+                <div class="iaa-field-row" title="EMA slow период.">
+                  <span class="iaa-field-label">EMA Slow (3–60)</span>
+                  <input type="number" id="iaa-ema-rsi-slow" min="3" max="60" step="1" value="21">
+                </div>
+                <div class="iaa-field-row" title="RSI прозорец.">
+                  <span class="iaa-field-label">RSI Window (5–30)</span>
+                  <input type="number" id="iaa-ema-rsi-window" min="5" max="30" step="1" value="14">
+                </div>
+                <div class="iaa-field-row" title="RSI ниво за препродаденост.">
+                  <span class="iaa-field-label">RSI Oversold (10–50)</span>
+                  <input type="number" id="iaa-ema-rsi-oversold" min="10" max="50" step="1" value="35">
+                </div>
+                <div class="iaa-field-row" title="RSI ниво за прекупеност.">
+                  <span class="iaa-field-label">RSI Overbought (50–90)</span>
+                  <input type="number" id="iaa-ema-rsi-overbought" min="50" max="90" step="1" value="65">
+                </div>
               </div>
-          </div>
-        </div>
-
-        <div id="iaa-strategies-panel">
-          <button id="iaa-strategies-close">×</button>
-          <div style="font-weight:700;margin-bottom:6px;">Стратегии</div>
-          <label class="iaa-checkbox"><input type="checkbox" id="iaa-strategy-auto-switch-panel"> Авто смяна на стратегия</label>
-          <table class="iaa-strategy-table">
-            <thead>
-              <tr>
-                <th>Стратегия</th>
-                <th>N</th>
-                <th>Затворени</th>
-                <th>P&L</th>
-              </tr>
-            </thead>
-            <tbody id="iaa-strategy-table-body"></tbody>
-          </table>
-          <div class="iaa-subtitle">Общо представяне</div>
-          <div id="iaa-strategy-summary" class="iaa-strategy-summary"></div>
-          <div class="iaa-subtitle">История (последни сделки)</div>
-          <table class="iaa-history-table">
-            <thead>
-              <tr>
-                <th>Час</th>
-                <th>Стратегия</th>
-                <th>Резултат</th>
-                <th>P&L</th>
-              </tr>
-            </thead>
-            <tbody id="iaa-strategy-history-body"></tbody>
-          </table>
-          <div class="iaa-subtitle">Редакция</div>
-          <div id="iaa-strategy-configs"></div>
-          <div class="iaa-strategy-actions">
-            <button id="iaa-strategy-download" type="button">Свали CSV</button>
           </div>
         </div>
 
@@ -7040,12 +7424,10 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         const mouse = $id('iaa-mouse-panel');
         const debug = $id('iaa-debug-panel');
         const calibration = $id('iaa-calibration-panel');
-        const strategies = $id('iaa-strategies-panel');
         if (settings) settings.style.display = 'none';
         if (mouse) mouse.style.display = 'none';
         if (debug) debug.style.display = 'none';
         if (calibration) calibration.style.display = 'none';
-        if (strategies) strategies.style.display = 'none';
         S.settingsPanelOpen = false;
         S.mousePanelOpen = false;
         S.calibrationPanelOpen = false;
@@ -7053,10 +7435,8 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       }
 
       const settingsToggle = $id('iaa-settings-toggle');
-      const strategiesToggle = $id('iaa-strategies-toggle');
       const mouseToggle = $id('iaa-mouse-toggle');
       const settingsClose = $id('iaa-settings-close');
-      const strategiesClose = $id('iaa-strategies-close');
       const mouseClose = $id('iaa-mouse-close');
       const calibrationClose = $id('iaa-calibration-close');
       const debugToggle = $id('iaa-debug-toggle');
@@ -7073,12 +7453,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         settingsToggle.addEventListener('click', () => {
           if (S.settingsPanelOpen) hidePopups();
           else { hidePopups(); showPopup('iaa-settings-panel'); S.settingsPanelOpen = true; captureSettingsSnapshot(); renderSettingsPanel(); }
-        });
-      }
-      if (strategiesToggle) {
-        strategiesToggle.addEventListener('click', () => {
-          if (S.strategiesPanelOpen) hidePopups();
-          else { hidePopups(); showPopup('iaa-strategies-panel'); S.strategiesPanelOpen = true; renderStrategiesPanel(); }
         });
       }
 setTimeout(() => {
@@ -7145,7 +7519,6 @@ setTimeout(() => {
 
 
       if (settingsClose) settingsClose.addEventListener('click', hidePopups);
-      if (strategiesClose) strategiesClose.addEventListener('click', hidePopups);
       if (mouseClose) mouseClose.addEventListener('click', hidePopups);
       if (calibrationClose) calibrationClose.addEventListener('click', hidePopups);
       if (debugClose) debugClose.addEventListener('click', hidePopups);
@@ -7201,6 +7574,7 @@ setTimeout(() => {
           renderConsole();
         });
       }
+      rebindPanelPopupButtons();
     }
 
     function setStatusOverlay(text, countdown = '', logToConsole = true) {
@@ -7250,6 +7624,28 @@ setTimeout(() => {
       }
     }
 
+
+    function renderLivePriceCard() {
+      const assetEl = $id('iaa-live-asset');
+      const priceEl = $id('iaa-live-price');
+      const idleEl = $id('iaa-live-idle');
+      const asset = getCurrentAssetLabel() || '—';
+      if (assetEl) assetEl.textContent = asset;
+      const decimals = Number.isFinite(S.currentAssetPriceDecimals) ? Math.max(2, Math.min(8, S.currentAssetPriceDecimals)) : 5;
+      if (priceEl) {
+        if (Number.isFinite(S.currentAssetPrice)) priceEl.textContent = Number(S.currentAssetPrice).toFixed(decimals);
+        else priceEl.textContent = '—';
+      }
+      if (idleEl) {
+        if (S.lastPriceAt) {
+          const ageMs = Date.now() - S.lastPriceAt;
+          idleEl.textContent = `tick ${Math.max(0, ageMs)} ms`;
+        } else {
+          idleEl.textContent = 'idle —';
+        }
+      }
+    }
+
     function renderPendingTrades(){
       const execEl = $id('iaa-exec');
       if (S.currentSignal && execEl) execEl.textContent = fmtHHMMSSLocal(new Date(S.currentSignal.targetTsMs));
@@ -7268,7 +7664,7 @@ setTimeout(() => {
 
       const etaEl = $id('iaa-next-trade');
       if (etaEl) etaEl.textContent = getNextEtaLabel();
-      renderLiveInfo();
+      renderLivePriceCard();
       renderSniperMatrix();
     }
 
@@ -7295,10 +7691,6 @@ setTimeout(() => {
       const analysisWindowSec = await storage.get(ANALYSIS_WINDOW_SEC_KEY); if (typeof analysisWindowSec === 'number') S.analysisWindowSec = analysisWindowSec;
       const analysisWarmupMin = await storage.get(ANALYSIS_WARMUP_MIN_KEY); if (typeof analysisWarmupMin === 'number') S.analysisWarmupMin = analysisWarmupMin;
       const selfTradeEnabled = await storage.get(SELF_TRADE_ENABLED_KEY); if (typeof selfTradeEnabled === 'boolean') S.selfTradeEnabled = selfTradeEnabled;
-      const signal1m = await storage.get(SIGNAL_SOURCE_1M_KEY);
-      if (typeof signal1m === 'boolean') S.signalSourceEnabled['1m'] = signal1m;
-      const signal5m = await storage.get(SIGNAL_SOURCE_5M_KEY);
-      if (typeof signal5m === 'boolean') S.signalSourceEnabled['5m'] = signal5m;
       const signalOffset = await storage.get(SIGNAL_TIME_OFFSET_MIN_KEY);
       if (typeof signalOffset === 'number') S.signalTimeOffsetMin = signalOffset;
       const savedMethod = await storage.get(BUY_SELL_METHOD_KEY);
@@ -7311,10 +7703,7 @@ setTimeout(() => {
         S.xpathSelectors = Object.assign({}, S.xpathSelectors, savedXPaths);
       }
 
-      const savedMode = await storage.get(MODE_KEY);
-      if (savedMode === 'sniper' || savedMode === 'signals') {
-        S.mode = savedMode;
-      }
+      S.mode = 'sniper';
       applySniperDefaults();
       const sniperBaseAmount = await storage.get(SNIPER_BASE_AMOUNT_KEY);
       if (typeof sniperBaseAmount === 'number') S.sniperBaseAmount = sniperBaseAmount;
@@ -7392,8 +7781,34 @@ setTimeout(() => {
       if (typeof strategyLossStreakLimit === 'number') S.strategyLossStreakLimit = strategyLossStreakLimit;
       const strategyConfigs = await storage.get(STRATEGY_CONFIG_KEY);
       if (strategyConfigs && typeof strategyConfigs === 'object') {
-        S.strategyConfigs = Object.assign({}, S.strategyConfigs, strategyConfigs);
+        const merged = Object.assign({}, S.strategyConfigs, strategyConfigs);
+        const allowed = new Set(Object.keys(STRATEGY_DEFAULTS.configs));
+        S.strategyConfigs = Object.fromEntries(Object.entries(merged).filter(([key]) => allowed.has(key)));
       }
+      const rsiDivergenceLookback = await storage.get(RSI_DIVERGENCE_LOOKBACK_KEY);
+      if (typeof rsiDivergenceLookback === 'number') S.rsiDivergenceLookback = Math.max(6, Math.round(rsiDivergenceLookback));
+      const rsiDivergenceMinDelta = await storage.get(RSI_DIVERGENCE_MIN_DELTA_KEY);
+      if (typeof rsiDivergenceMinDelta === 'number') S.rsiDivergenceMinDelta = Math.max(1, Math.round(rsiDivergenceMinDelta));
+      const rsiDivergenceRsiWindow = await storage.get(RSI_DIVERGENCE_RSI_WINDOW_KEY);
+      if (typeof rsiDivergenceRsiWindow === 'number') S.rsiDivergenceRsiWindow = Math.max(5, Math.round(rsiDivergenceRsiWindow));
+      const candlestickPatternMinConf = await storage.get(CANDLE_PATTERN_MIN_CONF_KEY);
+      if (typeof candlestickPatternMinConf === 'number') S.candlestickPatternMinConfidence = clamp01(candlestickPatternMinConf);
+      const emaRsiFast = await storage.get(EMA_RSI_FAST_KEY);
+      if (typeof emaRsiFast === 'number') S.emaRsiFast = Math.max(2, Math.round(emaRsiFast));
+      const emaRsiSlow = await storage.get(EMA_RSI_SLOW_KEY);
+      if (typeof emaRsiSlow === 'number') S.emaRsiSlow = Math.max(3, Math.round(emaRsiSlow));
+      const emaRsiWindow = await storage.get(EMA_RSI_RSI_WINDOW_KEY);
+      if (typeof emaRsiWindow === 'number') S.emaRsiWindow = Math.max(5, Math.round(emaRsiWindow));
+      const emaRsiOversold = await storage.get(EMA_RSI_OVERSOLD_KEY);
+      if (typeof emaRsiOversold === 'number') S.emaRsiOversold = Math.max(10, Math.min(50, Math.round(emaRsiOversold)));
+      const emaRsiOverbought = await storage.get(EMA_RSI_OVERBOUGHT_KEY);
+      if (typeof emaRsiOverbought === 'number') S.emaRsiOverbought = Math.max(50, Math.min(90, Math.round(emaRsiOverbought)));
+      const partnerReadyBars3m = await storage.get(PARTNER_READY_3M_BARS_KEY);
+      if (typeof partnerReadyBars3m === 'number') S.partnerReadyBars3m = Math.max(1, Math.min(40, Math.round(partnerReadyBars3m)));
+      const partnerReadyBars5m = await storage.get(PARTNER_READY_5M_BARS_KEY);
+      if (typeof partnerReadyBars5m === 'number') S.partnerReadyBars5m = Math.max(1, Math.min(40, Math.round(partnerReadyBars5m)));
+      const partnerReadyBars15m = await storage.get(PARTNER_READY_15M_BARS_KEY);
+      if (typeof partnerReadyBars15m === 'number') S.partnerReadyBars15m = Math.max(1, Math.min(40, Math.round(partnerReadyBars15m)));
       const regimeStrength = await storage.get(REGIME_STRENGTH_KEY);
       if (typeof regimeStrength === 'number') S.regimeStrength = clamp01(regimeStrength);
       const confirmationStrength = await storage.get(CONFIRMATION_STRENGTH_KEY);
@@ -7431,8 +7846,6 @@ setTimeout(() => {
       storage.set(ANALYSIS_WINDOW_SEC_KEY, S.analysisWindowSec);
       storage.set(ANALYSIS_WARMUP_MIN_KEY, S.analysisWarmupMin);
       storage.set(SELF_TRADE_ENABLED_KEY, S.selfTradeEnabled);
-      storage.set(SIGNAL_SOURCE_1M_KEY, S.signalSourceEnabled['1m']);
-      storage.set(SIGNAL_SOURCE_5M_KEY, S.signalSourceEnabled['5m']);
       storage.set(SIGNAL_TIME_OFFSET_MIN_KEY, S.signalTimeOffsetMin);
       storage.set(BUY_SELL_METHOD_KEY, S.buySellMethod);
       storage.set(XPATH_SELECTORS_KEY, S.xpathSelectors);
@@ -7474,6 +7887,18 @@ setTimeout(() => {
       storage.set(STRATEGY_LEARNING_TRADES_KEY, S.strategyLearningTrades);
       storage.set(STRATEGY_LOSS_STREAK_LIMIT_KEY, S.strategyLossStreakLimit);
       storage.set(STRATEGY_CONFIG_KEY, S.strategyConfigs);
+      storage.set(RSI_DIVERGENCE_LOOKBACK_KEY, S.rsiDivergenceLookback);
+      storage.set(RSI_DIVERGENCE_MIN_DELTA_KEY, S.rsiDivergenceMinDelta);
+      storage.set(RSI_DIVERGENCE_RSI_WINDOW_KEY, S.rsiDivergenceRsiWindow);
+      storage.set(CANDLE_PATTERN_MIN_CONF_KEY, S.candlestickPatternMinConfidence);
+      storage.set(EMA_RSI_FAST_KEY, S.emaRsiFast);
+      storage.set(EMA_RSI_SLOW_KEY, S.emaRsiSlow);
+      storage.set(EMA_RSI_RSI_WINDOW_KEY, S.emaRsiWindow);
+      storage.set(EMA_RSI_OVERSOLD_KEY, S.emaRsiOversold);
+      storage.set(EMA_RSI_OVERBOUGHT_KEY, S.emaRsiOverbought);
+      storage.set(PARTNER_READY_3M_BARS_KEY, S.partnerReadyBars3m);
+      storage.set(PARTNER_READY_5M_BARS_KEY, S.partnerReadyBars5m);
+      storage.set(PARTNER_READY_15M_BARS_KEY, S.partnerReadyBars15m);
       storage.set(REGIME_STRENGTH_KEY, S.regimeStrength);
       storage.set(CONFIRMATION_STRENGTH_KEY, S.confirmationStrength);
       storage.set(BIAS_STRENGTH_KEY, S.biasStrength);
@@ -7525,7 +7950,16 @@ setTimeout(() => {
         strategyWeightWr: S.strategyWeightWr,
         strategyWeightPnl: S.strategyWeightPnl,
         strategyLearningTrades: S.strategyLearningTrades,
-        strategyLossStreakLimit: S.strategyLossStreakLimit
+        strategyLossStreakLimit: S.strategyLossStreakLimit,
+        rsiDivergenceLookback: S.rsiDivergenceLookback,
+        rsiDivergenceMinDelta: S.rsiDivergenceMinDelta,
+        rsiDivergenceRsiWindow: S.rsiDivergenceRsiWindow,
+        candlestickPatternMinConfidence: S.candlestickPatternMinConfidence,
+        emaRsiFast: S.emaRsiFast,
+        emaRsiSlow: S.emaRsiSlow,
+        emaRsiWindow: S.emaRsiWindow,
+        emaRsiOversold: S.emaRsiOversold,
+        emaRsiOverbought: S.emaRsiOverbought
       };
     }
 
@@ -7541,9 +7975,7 @@ setTimeout(() => {
       if (l1) l1.checked = S.l1Active;
       if (l2) l2.checked = S.l2Active;
 
-      const modeSignals = $id('iaa-mode-signals');
       const modeSniper = $id('iaa-mode-sniper');
-      const signalsPanel = $id('iaa-settings-signals');
       const sniperPanel = $id('iaa-settings-sniper');
       const sniper5sSettings = $id('iaa-sniper-5s-settings');
       const sniperSettingsBody = $id('iaa-sniper-settings-body');
@@ -7613,6 +8045,16 @@ setTimeout(() => {
       const strategyWeightPnl = $id('iaa-strategy-weight-pnl');
       const strategyLearningTrades = $id('iaa-strategy-learning-trades');
       const strategyLossStreak = $id('iaa-strategy-loss-streak');
+      const emaRsiPullbackEnabled = $id('iaa-strategy-ema-rsi-pullback-enabled');
+      const scalpMicrotrendEnabled = $id('iaa-strategy-scalp-microtrend-enabled');
+      const partnerReady3m = $id('iaa-partner-ready-3m');
+      const partnerReady5m = $id('iaa-partner-ready-5m');
+      const partnerReady15m = $id('iaa-partner-ready-15m');
+      const emaRsiFast = $id('iaa-ema-rsi-fast');
+      const emaRsiSlow = $id('iaa-ema-rsi-slow');
+      const emaRsiWindow = $id('iaa-ema-rsi-window');
+      const emaRsiOversold = $id('iaa-ema-rsi-oversold');
+      const emaRsiOverbought = $id('iaa-ema-rsi-overbought');
       const maxTradesPerMinute = $id('iaa-max-trades-per-minute');
       const maxOpenTrades = $id('iaa-max-open-trades');
       const regimeStrength = $id('iaa-regime-strength');
@@ -7637,8 +8079,6 @@ setTimeout(() => {
       const analysisWindow = $id('iaa-analysis-window');
       const analysisWarmup = $id('iaa-analysis-warmup');
       const selfTradeEnabled = $id('iaa-self-trade-enabled');
-      const signalSource1m = $id('iaa-signal-source-1m');
-      const signalSource5m = $id('iaa-signal-source-5m');
       const signalTimeOffset = $id('iaa-signal-time-offset');
 
       if (exp) exp.value = S.expirySetting;
@@ -7654,8 +8094,6 @@ setTimeout(() => {
       if (analysisWindow) analysisWindow.value = S.analysisWindowSec || 300;
       if (analysisWarmup) analysisWarmup.value = S.analysisWarmupMin || 5;
       if (selfTradeEnabled) selfTradeEnabled.checked = S.selfTradeEnabled;
-      if (signalSource1m) signalSource1m.checked = S.signalSourceEnabled['1m'];
-      if (signalSource5m) signalSource5m.checked = S.signalSourceEnabled['5m'];
       if (signalTimeOffset) signalTimeOffset.value = S.signalTimeOffsetMin ?? 0;
       if (sniper5sSettings) sniper5sSettings.style.display = 'block';
       if (sniperThreshold) sniperThreshold.value = S.sniperThreshold ?? 0.7;
@@ -7717,6 +8155,16 @@ setTimeout(() => {
       if (strategyWeightPnl) strategyWeightPnl.value = (S.strategyWeightPnl ?? STRATEGY_DEFAULTS.pnlWeight).toFixed(2);
       if (strategyLearningTrades) strategyLearningTrades.value = S.strategyLearningTrades ?? STRATEGY_DEFAULTS.learningTrades;
       if (strategyLossStreak) strategyLossStreak.value = S.strategyLossStreakLimit ?? STRATEGY_DEFAULTS.lossStreakLimit;
+      if (emaRsiPullbackEnabled) emaRsiPullbackEnabled.checked = isStrategyEnabled('ema_rsi_pullback');
+      if (scalpMicrotrendEnabled) scalpMicrotrendEnabled.checked = isStrategyEnabled('scalp_microtrend');
+      if (partnerReady3m) partnerReady3m.value = S.partnerReadyBars3m ?? 6;
+      if (partnerReady5m) partnerReady5m.value = S.partnerReadyBars5m ?? 3;
+      if (partnerReady15m) partnerReady15m.value = S.partnerReadyBars15m ?? 2;
+      if (emaRsiFast) emaRsiFast.value = S.emaRsiFast ?? 8;
+      if (emaRsiSlow) emaRsiSlow.value = S.emaRsiSlow ?? 21;
+      if (emaRsiWindow) emaRsiWindow.value = S.emaRsiWindow ?? 14;
+      if (emaRsiOversold) emaRsiOversold.value = S.emaRsiOversold ?? 35;
+      if (emaRsiOverbought) emaRsiOverbought.value = S.emaRsiOverbought ?? 65;
       if (maxTradesPerMinute) maxTradesPerMinute.value = S.maxTradesPerMinute ?? 0;
       if (maxOpenTrades) maxOpenTrades.value = S.maxOpenTrades ?? 1;
       if (regimeStrength) regimeStrength.value = (S.regimeStrength ?? 0.6).toFixed(2);
@@ -7766,8 +8214,7 @@ setTimeout(() => {
         modeSniper.style.background = sniperMode ? '#16a34a' : '#111827';
         modeSniper.style.color = sniperMode ? '#052e16' : '#fff';
       }
-      if (signalsPanel) signalsPanel.style.display = isSniperMode() ? 'none' : 'block';
-      if (sniperPanel) sniperPanel.style.display = isSniperMode() ? 'block' : 'none';
+      if (sniperPanel) sniperPanel.style.display = 'block';
       const tabBodies = {
         basic: $id('iaa-tab-basic'),
         advanced: $id('iaa-tab-advanced'),
@@ -7788,12 +8235,79 @@ setTimeout(() => {
       renderTradeStats();
     }
 
+
+
+    function handlePanelPopupAction(action) {
+      const showPopup = (popupId) => {
+        const popup = $id(popupId);
+        if (popup) popup.style.display = 'block';
+      };
+      const hidePopups = () => {
+        const settings = $id('iaa-settings-panel');
+        const mouse = $id('iaa-mouse-panel');
+        const debug = $id('iaa-debug-panel');
+        const calibration = $id('iaa-calibration-panel');
+        if (settings) settings.style.display = 'none';
+        if (mouse) mouse.style.display = 'none';
+        if (debug) debug.style.display = 'none';
+        if (calibration) calibration.style.display = 'none';
+        S.settingsPanelOpen = false;
+        S.mousePanelOpen = false;
+        S.calibrationPanelOpen = false;
+        S.strategiesPanelOpen = false;
+      };
+
+      if (action === 'settings') {
+        if (S.settingsPanelOpen) hidePopups();
+        else { hidePopups(); showPopup('iaa-settings-panel'); S.settingsPanelOpen = true; captureSettingsSnapshot(); renderSettingsPanel(); }
+        return;
+      }
+      if (action === 'mouse') {
+        if (S.mousePanelOpen) hidePopups();
+        else { hidePopups(); showPopup('iaa-mouse-panel'); S.mousePanelOpen = true; renderMousePanel(); }
+        return;
+      }
+      if (action === 'debug') {
+        const debug = $id('iaa-debug-panel');
+        if (!debug) return;
+        if (debug.style.display === 'block') hidePopups();
+        else {
+          hidePopups();
+          debug.style.display = 'block';
+          setDebugTab(S.debugTab || 'status');
+        }
+      }
+    }
+
+    function rebindPanelPopupButtons() {
+      const clearInline = (id) => {
+        const el = $id(id);
+        if (el) el.onclick = null;
+      };
+      clearInline('iaa-settings-toggle');
+      clearInline('iaa-mouse-toggle');
+      clearInline('iaa-debug-toggle');
+    }
+
     function ensurePanelHandlers(){
+      rebindPanelPopupButtons();
       const toggleBtn = $id('iaa-toggle');
       const autoBtn = $id('iaa-auto');
       const gridToggle = $id('iaa-grid-toggle');
       const dynamicTimeToggle = $id('iaa-dynamic-time-toggle');
       const dynamicTimeToggleSettings = $id('iaa-dynamic-time-toggle-settings');
+      const panelEl = $id('iaa-panel');
+      if (panelEl && !panelEl.dataset.popupDelegated) {
+        panelEl.dataset.popupDelegated = '1';
+        panelEl.addEventListener('click', (event) => {
+          const target = event.target;
+          if (!(target instanceof Element)) return;
+          if (target.closest('#iaa-settings-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('settings'); return; }
+          if (target.closest('#iaa-mouse-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('mouse'); return; }
+          if (target.closest('#iaa-debug-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('debug'); }
+        }, true);
+      }
+
       const closeSettingsPanel = () => {
         const panel = $id('iaa-settings-panel');
         if (panel) panel.style.display = 'none';
@@ -7940,14 +8454,11 @@ setTimeout(() => {
       const ANALYSIS_WINDOW = $id('iaa-analysis-window');
       const ANALYSIS_WARMUP = $id('iaa-analysis-warmup');
       const SELF_TRADE_ENABLED = $id('iaa-self-trade-enabled');
-      const SIGNAL_SOURCE_1M = $id('iaa-signal-source-1m');
-      const SIGNAL_SOURCE_5M = $id('iaa-signal-source-5m');
       const SIGNAL_TIME_OFFSET = $id('iaa-signal-time-offset');
       const SETTINGS_SAVE = $id('iaa-settings-save');
       const SETTINGS_CANCEL = $id('iaa-settings-cancel');
       const SNIPER_MAX_SESSION_LOSS = $id('iaa-sniper-max-session-loss');
       const SNIPER_MAX_LOSS_STREAK = $id('iaa-sniper-max-loss-streak');
-      const MODE_SIGNALS = $id('iaa-mode-signals');
       const MODE_SNIPER = $id('iaa-mode-sniper');
       const SNIPER_THRESHOLD = $id('iaa-sniper-threshold');
       const SNIPER_THRESHOLD_OTC = $id('iaa-sniper-threshold-otc');
@@ -8007,6 +8518,16 @@ setTimeout(() => {
       const STRATEGY_WEIGHT_PNL = $id('iaa-strategy-weight-pnl');
       const STRATEGY_LEARNING = $id('iaa-strategy-learning-trades');
       const STRATEGY_LOSS_STREAK = $id('iaa-strategy-loss-streak');
+      const STRATEGY_EMA_RSI_PULLBACK = $id('iaa-strategy-ema-rsi-pullback-enabled');
+      const STRATEGY_SCALP_MICROTREND = $id('iaa-strategy-scalp-microtrend-enabled');
+      const PARTNER_READY_3M = $id('iaa-partner-ready-3m');
+      const PARTNER_READY_5M = $id('iaa-partner-ready-5m');
+      const PARTNER_READY_15M = $id('iaa-partner-ready-15m');
+      const EMA_RSI_FAST = $id('iaa-ema-rsi-fast');
+      const EMA_RSI_SLOW = $id('iaa-ema-rsi-slow');
+      const EMA_RSI_WINDOW = $id('iaa-ema-rsi-window');
+      const EMA_RSI_OVERSOLD = $id('iaa-ema-rsi-oversold');
+      const EMA_RSI_OVERBOUGHT = $id('iaa-ema-rsi-overbought');
       const MAX_TRADES_PER_MIN = $id('iaa-max-trades-per-minute');
       const MAX_OPEN_TRADES = $id('iaa-max-open-trades');
       const STRATEGY_AUTO_SWITCH_PANEL = $id('iaa-strategy-auto-switch-panel');
@@ -8146,29 +8667,11 @@ setTimeout(() => {
           persistSettings();
         });
       }
-      if (SIGNAL_SOURCE_1M) {
-        SIGNAL_SOURCE_1M.addEventListener('change', () => {
-          S.signalSourceEnabled['1m'] = SIGNAL_SOURCE_1M.checked;
-          persistSettings();
-        });
-      }
-      if (SIGNAL_SOURCE_5M) {
-        SIGNAL_SOURCE_5M.addEventListener('change', () => {
-          S.signalSourceEnabled['5m'] = SIGNAL_SOURCE_5M.checked;
-          persistSettings();
-        });
-      }
       if (SIGNAL_TIME_OFFSET) {
         SIGNAL_TIME_OFFSET.addEventListener('input', () => {
           const d = parseNumberFlexible(SIGNAL_TIME_OFFSET.value) || 0;
           S.signalTimeOffsetMin = Math.max(-180, Math.min(180, Math.round(d)));
           persistSettings();
-        });
-      }
-      if (MODE_SIGNALS) {
-        MODE_SIGNALS.addEventListener('click', () => {
-          setMode('signals');
-          logConsoleLine('Режим: Сигнали 1м/5м');
         });
       }
       if (MODE_SNIPER) {
@@ -8622,6 +9125,86 @@ setTimeout(() => {
           persistSettings();
         });
       }
+      if (STRATEGY_EMA_RSI_PULLBACK) {
+        STRATEGY_EMA_RSI_PULLBACK.addEventListener('change', () => {
+          const current = getStrategyConfig('ema_rsi_pullback');
+          S.strategyConfigs = { ...S.strategyConfigs, ema_rsi_pullback: { ...current, enabled: STRATEGY_EMA_RSI_PULLBACK.checked } };
+          persistSettings();
+          renderStrategiesPanel();
+        });
+      }
+      if (STRATEGY_SCALP_MICROTREND) {
+        STRATEGY_SCALP_MICROTREND.addEventListener('change', () => {
+          const current = getStrategyConfig('scalp_microtrend');
+          S.strategyConfigs = { ...S.strategyConfigs, scalp_microtrend: { ...current, enabled: STRATEGY_SCALP_MICROTREND.checked } };
+          persistSettings();
+          renderStrategiesPanel();
+        });
+      }
+      if (PARTNER_READY_3M) {
+        PARTNER_READY_3M.addEventListener('input', () => {
+          const d = parseNumberFlexible(PARTNER_READY_3M.value) || 6;
+          S.partnerReadyBars3m = Math.max(1, Math.min(40, Math.round(d)));
+          PARTNER_READY_3M.value = String(S.partnerReadyBars3m);
+          persistSettings();
+        });
+      }
+      if (PARTNER_READY_5M) {
+        PARTNER_READY_5M.addEventListener('input', () => {
+          const d = parseNumberFlexible(PARTNER_READY_5M.value) || 3;
+          S.partnerReadyBars5m = Math.max(1, Math.min(40, Math.round(d)));
+          PARTNER_READY_5M.value = String(S.partnerReadyBars5m);
+          persistSettings();
+        });
+      }
+      if (PARTNER_READY_15M) {
+        PARTNER_READY_15M.addEventListener('input', () => {
+          const d = parseNumberFlexible(PARTNER_READY_15M.value) || 2;
+          S.partnerReadyBars15m = Math.max(1, Math.min(40, Math.round(d)));
+          PARTNER_READY_15M.value = String(S.partnerReadyBars15m);
+          persistSettings();
+        });
+      }
+      if (EMA_RSI_FAST) {
+        EMA_RSI_FAST.addEventListener('input', () => {
+          const d = parseNumberFlexible(EMA_RSI_FAST.value) || 8;
+          S.emaRsiFast = Math.max(2, Math.min(30, Math.round(d)));
+          EMA_RSI_FAST.value = String(S.emaRsiFast);
+          persistSettings();
+        });
+      }
+      if (EMA_RSI_SLOW) {
+        EMA_RSI_SLOW.addEventListener('input', () => {
+          const d = parseNumberFlexible(EMA_RSI_SLOW.value) || 21;
+          S.emaRsiSlow = Math.max(3, Math.min(60, Math.round(d)));
+          EMA_RSI_SLOW.value = String(S.emaRsiSlow);
+          persistSettings();
+        });
+      }
+      if (EMA_RSI_WINDOW) {
+        EMA_RSI_WINDOW.addEventListener('input', () => {
+          const d = parseNumberFlexible(EMA_RSI_WINDOW.value) || 14;
+          S.emaRsiWindow = Math.max(5, Math.min(30, Math.round(d)));
+          EMA_RSI_WINDOW.value = String(S.emaRsiWindow);
+          persistSettings();
+        });
+      }
+      if (EMA_RSI_OVERSOLD) {
+        EMA_RSI_OVERSOLD.addEventListener('input', () => {
+          const d = parseNumberFlexible(EMA_RSI_OVERSOLD.value) || 35;
+          S.emaRsiOversold = Math.max(10, Math.min(50, Math.round(d)));
+          EMA_RSI_OVERSOLD.value = String(S.emaRsiOversold);
+          persistSettings();
+        });
+      }
+      if (EMA_RSI_OVERBOUGHT) {
+        EMA_RSI_OVERBOUGHT.addEventListener('input', () => {
+          const d = parseNumberFlexible(EMA_RSI_OVERBOUGHT.value) || 65;
+          S.emaRsiOverbought = Math.max(50, Math.min(90, Math.round(d)));
+          EMA_RSI_OVERBOUGHT.value = String(S.emaRsiOverbought);
+          persistSettings();
+        });
+      }
       if (STRATEGY_AUTO_SWITCH_PANEL) {
         STRATEGY_AUTO_SWITCH_PANEL.addEventListener('change', () => {
           setAutoSwitchStrategy(STRATEGY_AUTO_SWITCH_PANEL.checked);
@@ -8766,6 +9349,7 @@ setTimeout(() => {
 
     /* ========================= BOOT ========================= */
     api.boot = async function(){
+      installWebSocketPriceTap();
       await restoreSettings();
       ensurePanelInit();
       ensureMouseHandlers();
