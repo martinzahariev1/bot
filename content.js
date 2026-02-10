@@ -1,10 +1,152 @@
 (() => {
   'use strict';
 
+  const IAA_PAGE_BRIDGE_MODE = (() => {
+    try {
+      const src = document.currentScript?.src || '';
+      return /[?&]iaa_page_bridge=1(?:[&#]|$)/.test(src);
+    } catch {
+      return false;
+    }
+  })();
+
+  const PO_PRICE_EVENT = 'IAA_PO_PRICE';
+  const PRICE_HISTORY_MAX_POINTS = 12000;
+  const PRICE_HISTORY_DEDUPE_MS = 250;
+  const LEGACY_SIGNAL_MODE_ENABLED = false;
+
+  if (IAA_PAGE_BRIDGE_MODE) {
+    if (!window.__iaaPageWsBridgeInstalled) {
+      window.__iaaPageWsBridgeInstalled = true;
+      const BRIDGE_EVENT = 'IAA_WS_BRIDGE_FRAME';
+      window.postMessage({ __iaaType: 'IAA_WS_BRIDGE_READY' }, '*');
+      const decode = (data) => {
+        if (data == null) return null;
+        if (typeof data === 'string') return data;
+        if (data instanceof ArrayBuffer) {
+          try { return new TextDecoder('utf-8').decode(new Uint8Array(data)); } catch { return null; }
+        }
+        if (ArrayBuffer.isView(data)) {
+          try {
+            return new TextDecoder('utf-8').decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      };
+      const emit = (payload, source = 'ws') => {
+        if (typeof payload !== 'string' || !payload.length) return;
+        window.postMessage({ __iaaType: BRIDGE_EVENT, payload, source }, '*');
+      };
+      const handleData = (data, source = 'ws') => {
+        const decoded = decode(data);
+        if (decoded != null) { emit(decoded, source); return; }
+        if (typeof Blob !== 'undefined' && data instanceof Blob) {
+          data.text().then((text) => emit(text, source)).catch(() => {});
+        }
+      };
+
+      const OriginalWebSocket = window.WebSocket;
+      if (OriginalWebSocket) {
+        try {
+          const proto = OriginalWebSocket.prototype;
+          if (proto && typeof proto.dispatchEvent === 'function' && !proto.__iaaPageDispatchTapped) {
+            const originalDispatch = proto.dispatchEvent;
+            proto.dispatchEvent = function(event) {
+              if (event?.type === 'message') {
+                try { handleData(event.data, 'ws'); } catch {}
+              }
+              return originalDispatch.apply(this, arguments);
+            };
+            proto.__iaaPageDispatchTapped = true;
+          }
+        } catch {}
+
+        window.WebSocket = function (...args) {
+          const ws = new OriginalWebSocket(...args);
+          ws.addEventListener('message', (event) => {
+            try { handleData(event?.data, 'ws'); } catch {}
+          });
+          return ws;
+        };
+        window.WebSocket.prototype = OriginalWebSocket.prototype;
+        window.WebSocket.OPEN = OriginalWebSocket.OPEN;
+        window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
+        window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
+        window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
+      }
+
+      const looksRelevant = (text = '', url = '') => {
+        const hay = `${url} ${text}`.toLowerCase();
+        return /(quote|price|tick|candle|history|stream|asset|symbol|pair|loadhistory|updatestream|socket\.io)/.test(hay);
+      };
+
+      try {
+        const origFetch = window.fetch;
+        if (typeof origFetch === 'function' && !window.__iaaPageFetchTapped) {
+          window.__iaaPageFetchTapped = true;
+          window.fetch = async function(...args) {
+            const res = await origFetch.apply(this, args);
+            try {
+              const url = String(args?.[0]?.url || args?.[0] || '');
+              const clone = res?.clone?.();
+              if (clone) {
+                clone.text().then((txt) => {
+                  if (!txt || txt.length > 350000) return;
+                  if (!looksRelevant(txt, url)) return;
+                  emit(txt, 'http');
+                }).catch(() => {});
+              }
+            } catch {}
+            return res;
+          };
+        }
+      } catch {}
+
+      try {
+        if (!window.__iaaPageXhrTapped) {
+          window.__iaaPageXhrTapped = true;
+          const origOpen = XMLHttpRequest.prototype.open;
+          const origSend = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+            this.__iaaUrl = String(url || '');
+            return origOpen.call(this, method, url, ...rest);
+          };
+          XMLHttpRequest.prototype.send = function(...args) {
+            this.addEventListener('load', () => {
+              try {
+                const txt = typeof this.responseText === 'string' ? this.responseText : '';
+                if (!txt || txt.length > 350000) return;
+                if (!looksRelevant(txt, this.__iaaUrl || '')) return;
+                emit(txt, 'http');
+              } catch {}
+            });
+            return origSend.apply(this, args);
+          };
+        }
+      } catch {}
+    }
+    return;
+  }
+
   /* ========================= AUTH / LOGIN ========================= */
   const LOGIN_SHELL_ID = 'iaa-login-shell';
   const SESSION_KEY = 'IAA_AUTH_SESSION';
   const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
+  const WS_FEED_BUFFER = window.__iaaWsFeedBuffer || (window.__iaaWsFeedBuffer = {
+    lastPrice: null,
+    lastDecimals: null,
+    lastAt: 0,
+    lastAsset: null,
+    lastSource: null,
+    lastRejectReason: null,
+    packetsSeen: 0,
+    bridgeFramesSeen: 0,
+    httpFramesSeen: 0,
+    bridgeReady: false
+  });
   const WL_URL = "https://raw.githubusercontent.com/Karimmw/Codes/refs/heads/main/iaa_whitelist.txt";
 
   // persisted settings keys
@@ -75,6 +217,10 @@
   const FEATURE_VWAP_ANALYSIS_KEY = 'IAA_FEATURE_VWAP_ANALYSIS';
   const FEATURE_SESSION_BOOST_KEY = 'IAA_FEATURE_SESSION_BOOST';
   const FEATURE_TIMEFRAMES_KEY = 'IAA_FEATURE_TIMEFRAMES_V1';
+  const AI_VISION_ENABLED_KEY = 'IAA_AI_VISION_ENABLED';
+  const AI_VISION_MORNING_STAR_KEY = 'IAA_AI_VISION_MORNING_STAR';
+  const AI_VISION_EVENING_STAR_KEY = 'IAA_AI_VISION_EVENING_STAR';
+  const AI_VISION_REQUIRE_MATCH_KEY = 'IAA_AI_VISION_REQUIRE_MATCH';
   const STRATEGY_AUTO_SWITCH_KEY = 'IAA_STRATEGY_AUTO_SWITCH';
   const STRATEGY_WR_WEIGHT_KEY = 'IAA_STRATEGY_WR_WEIGHT';
   const STRATEGY_PNL_WEIGHT_KEY = 'IAA_STRATEGY_PNL_WEIGHT';
@@ -85,11 +231,14 @@
   const RSI_DIVERGENCE_MIN_DELTA_KEY = 'IAA_RSI_DIVERGENCE_MIN_DELTA';
   const RSI_DIVERGENCE_RSI_WINDOW_KEY = 'IAA_RSI_DIVERGENCE_RSI_WINDOW';
   const CANDLE_PATTERN_MIN_CONF_KEY = 'IAA_CANDLE_PATTERN_MIN_CONF';
+  const CANDLE_PATTERN_ENABLED_KEY = 'IAA_CANDLE_PATTERN_ENABLED';
+  const CANDLE_PATTERN_WEIGHT_KEY = 'IAA_CANDLE_PATTERN_WEIGHT';
   const EMA_RSI_FAST_KEY = 'IAA_EMA_RSI_FAST';
   const EMA_RSI_SLOW_KEY = 'IAA_EMA_RSI_SLOW';
   const EMA_RSI_RSI_WINDOW_KEY = 'IAA_EMA_RSI_RSI_WINDOW';
   const EMA_RSI_OVERSOLD_KEY = 'IAA_EMA_RSI_OVERSOLD';
   const EMA_RSI_OVERBOUGHT_KEY = 'IAA_EMA_RSI_OVERBOUGHT';
+  const PARTNER_READY_1M_BARS_KEY = 'IAA_PARTNER_READY_1M_BARS';
   const PARTNER_READY_3M_BARS_KEY = 'IAA_PARTNER_READY_3M_BARS';
   const PARTNER_READY_5M_BARS_KEY = 'IAA_PARTNER_READY_5M_BARS';
   const PARTNER_READY_15M_BARS_KEY = 'IAA_PARTNER_READY_15M_BARS';
@@ -149,7 +298,9 @@
     lossStreakLimit: 3,
     configs: {
       scalp_microtrend: { enabled: true, priority: 1, label: 'SCALP Microtrend' },
-      ema_rsi_pullback: { enabled: true, priority: 0.95, label: 'EMA+RSI Pullback' }
+      ema_rsi_pullback: { enabled: true, priority: 0.95, label: 'EMA+RSI Pullback' },
+      vwap_momentum: { enabled: true, priority: 0.92, label: 'VWAP+Momentum' },
+      candlestick_pattern: { enabled: true, priority: 0.88, label: 'Candlestick Pattern' }
     }
   };
 
@@ -170,97 +321,539 @@
     } catch { return false; }
   }
 
+  function normalizeFeedAssetLabel(label) {
+    if (!label) return '';
+    return String(label)
+      .replace(/\(OTC\)/ig, '_OTC')
+      .replace(/[^A-Za-z0-9]+/g, '')
+      .toUpperCase();
+  }
+
+  function stripFeedOtcSuffix(label) {
+    return String(label || '').replace(/OTC$/i, '');
+  }
+
+  function currentAssetMatchesFeedAsset(feedAsset) {
+    const candidate = normalizeFeedAssetLabel(feedAsset);
+    if (!candidate) return true;
+    const current = normalizeFeedAssetLabel(getCurrentAssetLabel() || S.lastAssetLabel || '');
+    if (!current) return true;
+    return candidate === current || stripFeedOtcSuffix(candidate) === stripFeedOtcSuffix(current);
+  }
+
+  function inferPriceFromNumericSample(rawValue, prevPrice = null) {
+    const n = Number(rawValue);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const directDecimals = String(n).includes('.') ? String(n).split('.')[1].length : 0;
+    const candidates = [];
+
+    const pushCandidate = (value, decimals, scale) => {
+      if (!Number.isFinite(value) || value <= 0 || value > 1000000) return;
+      candidates.push({ value, decimals: Math.max(0, Math.min(8, decimals)), scale });
+    };
+
+    if (n < 10000) {
+      pushCandidate(n, directDecimals, 1);
+    } else {
+      for (const scale of [1, 10, 100, 1000, 10000, 100000, 1000000]) {
+        const value = n / scale;
+        const dec = scale === 1 ? directDecimals : Math.round(Math.log10(scale));
+        pushCandidate(value, dec, scale);
+      }
+    }
+    if (!candidates.length) return null;
+
+    const preferred = candidates.filter((c) => c.value >= 0.00001 && c.value <= 10000);
+    const scoped = preferred.length ? preferred : candidates;
+
+    if (Number.isFinite(prevPrice) && prevPrice > 0) {
+      scoped.sort((a, b) => Math.abs(a.value - prevPrice) - Math.abs(b.value - prevPrice));
+      return scoped[0];
+    }
+
+    scoped.sort((a, b) => {
+      const aScore = Math.abs((a.decimals >= 2 && a.decimals <= 6) ? 0 : 3) + Math.abs(a.value - 1);
+      const bScore = Math.abs((b.decimals >= 2 && b.decimals <= 6) ? 0 : 3) + Math.abs(b.value - 1);
+      return aScore - bScore;
+    });
+    return scoped[0];
+  }
+
   function extractPriceFromWsPayload(payload) {
     if (!payload) return null;
     const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
     if (!text) return null;
-    const regex = /"(price|bid|ask|rate|quote|last|close|open|high|low)"\s*:\s*([0-9]+(?:[.,][0-9]+)?)/gi;
-    let match;
-    let best = null;
-    while ((match = regex.exec(text)) !== null) {
-      const raw = match[2].replace(',', '.');
-      const value = parseFloat(raw);
-      const decimals = raw.includes('.') ? raw.split('.')[1].length : 0;
-      if (!Number.isFinite(value)) continue;
-      if (value <= 0 || value >= 10000) continue;
-      if (!best || decimals > best.decimals) {
-        best = { value, decimals };
-      }
+
+    const normalized = String(text).trim();
+    const jsonPart = normalized.replace(/^\d+-?/, '');
+    let parsed = null;
+    if (jsonPart.startsWith('{') || jsonPart.startsWith('[')) {
+      try { parsed = JSON.parse(jsonPart); } catch {}
     }
-    if (best) return best;
 
-    const tryParseSocketIo = () => {
-      try {
-        const normalized = String(text).trim();
-        const jsonPart = normalized.replace(/^\d+/, '');
-        if (!jsonPart.startsWith('[')) return null;
-        return JSON.parse(jsonPart);
-      } catch {
-        return null;
+    let best = null;
+    const prevPrice = Number.isFinite(S.currentAssetPrice) ? S.currentAssetPrice : null;
+
+    const consider = (num, asset = '', ts = 0) => {
+      const priceInfo = inferPriceFromNumericSample(num, prevPrice);
+      if (!priceInfo) return;
+      if (!best || Math.abs(priceInfo.value - (prevPrice || priceInfo.value)) < Math.abs(best.value - (prevPrice || best.value))) {
+        best = {
+          value: priceInfo.value,
+          decimals: priceInfo.decimals,
+          asset: asset || null,
+          timestamp: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
+          scale: priceInfo.scale
+        };
       }
     };
-    const packet = tryParseSocketIo();
-    if (!packet) return null;
-    const eventName = Array.isArray(packet) ? String(packet[0] || '') : '';
-    const data = Array.isArray(packet) ? packet[1] : packet;
 
-    const consider = (num) => {
-      if (!Number.isFinite(num) || num <= 0 || num >= 10000) return;
-      const raw = String(num);
-      const decimals = raw.includes('.') ? raw.split('.')[1].length : 0;
-      if (!best || decimals > best.decimals) best = { value: num, decimals };
+    const parseTuple = (node) => {
+      if (!Array.isArray(node) || node.length < 2 || typeof node[0] !== 'string') return false;
+      const symbol = String(node[0] || '').trim();
+      if (!symbol) return false;
+      const maybeTs = Number(node[1]);
+      let raw = null;
+      let ts = Date.now();
+
+      if (node.length >= 3 && Number.isFinite(Number(node[2]))) {
+        raw = Number(node[2]);
+        if (Number.isFinite(maybeTs)) {
+          ts = maybeTs > 1e12 ? maybeTs : maybeTs > 1e10 ? Math.floor(maybeTs / 1000) : maybeTs * 1000;
+        }
+      } else if (Number.isFinite(maybeTs)) {
+        raw = maybeTs;
+      }
+
+      if (!Number.isFinite(Number(raw))) return false;
+      consider(Number(raw), symbol, ts);
+      return true;
     };
+
     const walk = (node, path = []) => {
       if (node == null) return;
       if (typeof node === 'number') {
         const keyHint = path.join('.').toLowerCase();
-        if (/(price|rate|quote|close|open|high|low|candle|history)/.test(keyHint)) consider(node);
+        if (/(price|bid|ask|rate|quote|last|close|open|high|low|value|tick)/.test(keyHint)) consider(node);
         return;
       }
       if (Array.isArray(node)) {
-        if (node.length >= 2 && typeof node[0] === 'string' && typeof node[1] === 'number') {
-          consider(node[1]);
-        }
+        if (parseTuple(node)) return;
         for (let i = 0; i < node.length; i += 1) walk(node[i], path.concat(String(i)));
         return;
       }
       if (typeof node === 'object') {
+        const asset = node.asset || node.symbol || node.pair || node.instrument || '';
+        const ts = node.timestamp || node.ts || node.time || node.t || Date.now();
+        const values = [node.priceInt, node.price, node.value, node.last, node.close, node.bid, node.ask, node.rate, node.quote];
+        for (const maybe of values) {
+          if (Number.isFinite(Number(maybe))) consider(Number(maybe), asset, ts);
+        }
         for (const [k, v] of Object.entries(node)) walk(v, path.concat(k));
       }
     };
 
-    if (/loadhistoryperiod/i.test(eventName)) {
-      const history = data?.history || data?.candles || data?.data;
-      if (Array.isArray(history) && history.length) {
-        const last = history[history.length - 1];
-        if (Array.isArray(last)) {
-          last.forEach((v) => { if (typeof v === 'number') consider(v); });
-        }
+    if (parsed != null) {
+      if (Array.isArray(parsed) && parsed.length >= 2 && typeof parsed[0] === 'string' && Array.isArray(parsed[1])) {
+        parseTuple(parsed[1]);
       }
+      walk(parsed, ['root']);
+      if (best) return best;
     }
 
-    walk(data, [eventName]);
+    const regex = /"(price|bid|ask|rate|quote|last|close|open|high|low|value)"\s*:\s*([0-9]+(?:[.,][0-9]+)?)/gi;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const raw = match[2].replace(',', '.');
+      consider(parseFloat(raw));
+    }
+
     return best;
   }
 
+  function decodeWsMessageData(data) {
+    if (data == null) return null;
+    if (typeof data === 'string') return data;
+    if (data instanceof ArrayBuffer) {
+      try { return new TextDecoder('utf-8').decode(new Uint8Array(data)); } catch { return null; }
+    }
+    if (ArrayBuffer.isView(data)) {
+      try {
+        const view = data;
+        return new TextDecoder('utf-8').decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function handleWsMessageData(data) {
+    const decoded = decodeWsMessageData(data);
+    if (decoded != null) {
+      handleWsPriceSample(decoded);
+      return;
+    }
+    if (typeof Blob !== 'undefined' && data instanceof Blob) {
+      data.text().then((text) => {
+        if (typeof text === 'string' && text.length) handleWsPriceSample(text);
+      }).catch(() => {});
+      return;
+    }
+    handleWsPriceSample(data);
+  }
+
   function handleWsPriceSample(payload) {
+    ingestHistoryFromPayload(payload);
+    WS_FEED_BUFFER.packetsSeen = (WS_FEED_BUFFER.packetsSeen || 0) + 1;
     const priceInfo = extractPriceFromWsPayload(payload);
     if (!priceInfo) return;
-    S.wsLastPrice = priceInfo.value;
-    S.wsLastPriceDecimals = priceInfo.decimals;
-    S.wsLastPriceAt = Date.now();
+    applyPriceFromNumericSample(
+      priceInfo.value,
+      priceInfo.decimals,
+      'ws',
+      priceInfo.asset || '',
+      priceInfo.timestamp || Date.now()
+    );
+  }
+
+  function validateFeedPrice(value, decimals = 5, prevPrice = null) {
+    if (!Number.isFinite(value)) return { ok: false, reason: 'nan_value' };
+    if (value <= 0) return { ok: false, reason: 'non_positive' };
+    if (value > 1000000) return { ok: false, reason: 'too_large' };
+    if (value < 0.000001) return { ok: false, reason: 'too_small' };
+    const d = Number.isFinite(decimals) ? decimals : 0;
+    if (d < 0 || d > 10) return { ok: false, reason: 'bad_decimals' };
+    if (Number.isFinite(prevPrice) && prevPrice > 0) {
+      const jump = Math.abs(value - prevPrice) / prevPrice;
+      if (jump > 0.95 && Math.abs(value - prevPrice) > Math.max(1, prevPrice * 40)) {
+        return { ok: false, reason: 'extreme_jump' };
+      }
+    }
+    return { ok: true, reason: '' };
+  }
+
+  function isLikelyFeedPrice(value, decimals = 5, prevPrice = null) {
+    return validateFeedPrice(value, decimals, prevPrice).ok;
+  }
+
+  function ingestHistoryFromPayload(payload) {
+    try {
+      const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      if (!text) return;
+      const normalized = String(text).trim();
+      const jsonPart = normalized.replace(/^\d+-?/, '');
+      if (!jsonPart.startsWith('{') && !jsonPart.startsWith('[')) return;
+      const parsed = JSON.parse(jsonPart);
+      const botState = window.InfinityBot?.S || S;
+      if (!botState || !Array.isArray(botState.priceHistory)) return;
+
+      const ingestPoint = (ts, value) => {
+        const p = Number(value);
+        if (!Number.isFinite(p)) return;
+        if (p <= 0 || p >= 10000) return;
+        const t = Number(ts);
+        const ms = Number.isFinite(t)
+          ? (t > 1e12 ? t : t > 1e10 ? Math.floor(t / 1000) : t * 1000)
+          : Date.now();
+        appendPriceHistoryTick(botState, p, ms, 'history_payload');
+      };
+
+      const ingestHistoryArray = (arr) => {
+        if (!Array.isArray(arr) || !arr.length) return;
+        const tail = arr.slice(-900);
+        for (const row of tail) {
+          if (!Array.isArray(row) || row.length < 2) continue;
+          if (Array.isArray(row[1])) {
+            for (const item of row[1]) {
+              if (Array.isArray(item) && item.length >= 2 && typeof item[0] === 'string') {
+                ingestPoint(row[0], item[1]);
+              }
+            }
+            continue;
+          }
+          ingestPoint(row[0], row[1]);
+        }
+      };
+
+      const walk = (node) => {
+        if (!node) return;
+        if (Array.isArray(node)) {
+          if (node.length >= 5 && Number.isFinite(Number(node[0])) && Number.isFinite(Number(node[2]))) {
+            ingestPoint(node[0], node[2]);
+          }
+          for (const v of node) walk(v);
+          return;
+        }
+        if (typeof node === 'object') {
+          if (Array.isArray(node.history)) ingestHistoryArray(node.history);
+          if (Array.isArray(node.candles)) ingestHistoryArray(node.candles);
+          if (typeof node.asset === 'string' && Number.isFinite(Number(node.value)) && Number.isFinite(Number(node.timestamp))) {
+            ingestPoint(node.timestamp, node.value);
+          }
+          for (const v of Object.values(node)) walk(v);
+        }
+      };
+
+      walk(parsed);
+      trimPriceHistory(botState);
+    } catch {}
+  }
+
+  function trimPriceHistory(botState = S) {
+    if (!botState || !Array.isArray(botState.priceHistory)) return;
+    if (botState.priceHistory.length > PRICE_HISTORY_MAX_POINTS) {
+      botState.priceHistory = botState.priceHistory.slice(-PRICE_HISTORY_MAX_POINTS);
+    }
+  }
+
+  function appendPriceHistoryTick(botState = S, price, timestamp = Date.now(), source = 'unknown') {
+    if (!botState || !Array.isArray(botState.priceHistory)) return false;
+    const p = Number(price);
+    const ts = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+    if (!Number.isFinite(p) || p <= 0 || p >= 10000) return false;
+    const tail = botState.priceHistory[botState.priceHistory.length - 1];
+    if (tail && Number.isFinite(tail.price) && Number.isFinite(tail.timestamp)) {
+      const samePrice = Math.abs(tail.price - p) < 1e-8;
+      const tooClose = Math.abs(tail.timestamp - ts) <= PRICE_HISTORY_DEDUPE_MS;
+      if (samePrice && tooClose) {
+        botState.historyDuplicateTicks = (botState.historyDuplicateTicks || 0) + 1;
+        botState.lastHistoryRejectReason = `duplicate_${source}`;
+        return false;
+      }
+    }
+    botState.priceHistory.push({ price: p, timestamp: ts });
+    botState.historyAcceptedTicks = (botState.historyAcceptedTicks || 0) + 1;
+    botState.lastHistoryRejectReason = null;
+    trimPriceHistory(botState);
+    return true;
+  }
+
+  function applyPriceFromNumericSample(price, decimals = 5, source = 'bridge', asset = '', sampleTs = Date.now()) {
+    const value = Number(price);
+    if (!Number.isFinite(value)) return false;
+    const d = Number.isFinite(decimals) ? decimals : 5;
+    const prevPrice = Number.isFinite(S.currentAssetPrice) ? S.currentAssetPrice : null;
+
+    if (!currentAssetMatchesFeedAsset(asset)) {
+      WS_FEED_BUFFER.lastRejectReason = 'asset_mismatch';
+      S.lastPriceRejectReason = 'asset_mismatch';
+      return false;
+    }
+
+    const validation = validateFeedPrice(value, d, prevPrice);
+    if (!validation.ok) {
+      WS_FEED_BUFFER.lastRejectReason = validation.reason;
+      S.lastPriceRejectReason = validation.reason;
+      return false;
+    }
+
+    const at = Number.isFinite(Number(sampleTs)) ? Number(sampleTs) : Date.now();
+    WS_FEED_BUFFER.packetsSeen = (WS_FEED_BUFFER.packetsSeen || 0) + 1;
+    WS_FEED_BUFFER.lastPrice = value;
+    WS_FEED_BUFFER.lastDecimals = d;
+    WS_FEED_BUFFER.lastAt = at;
+    WS_FEED_BUFFER.lastAsset = asset || null;
+    WS_FEED_BUFFER.lastSource = source;
+    WS_FEED_BUFFER.lastRejectReason = null;
+
+    if (source === 'http') {
+      WS_FEED_BUFFER.httpFramesSeen = (WS_FEED_BUFFER.httpFramesSeen || 0) + 1;
+    } else if (source === 'bridge') {
+      WS_FEED_BUFFER.bridgeFramesSeen = (WS_FEED_BUFFER.bridgeFramesSeen || 0) + 1;
+    }
+
+    const botState = window.InfinityBot?.S;
+    if (botState) {
+      botState.wsPacketsSeen = WS_FEED_BUFFER.packetsSeen;
+      botState.wsBridgeFramesSeen = WS_FEED_BUFFER.bridgeFramesSeen || 0;
+      botState.httpFramesSeen = WS_FEED_BUFFER.httpFramesSeen || 0;
+      botState.wsLastPrice = value;
+      botState.wsLastPriceDecimals = d;
+      botState.wsLastPriceAt = at;
+      botState.currentAssetPrice = value;
+      botState.currentAssetPriceDecimals = d;
+      botState.lastPriceAt = at;
+      botState.lastPriceRejectReason = null;
+      botState.lastFeedSource = source;
+      botState.feedState = 'READY';
+      appendPriceHistoryTick(botState, value, at, `feed_${source}`);
+    }
+    return true;
+  }
+
+  function ensurePageWsBridgeListener() {
+    if (window.__iaaBridgeListenerReady) return;
+    window.__iaaBridgeListenerReady = true;
+    window.addEventListener('message', (event) => {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (!data) return;
+      if (typeof data.__iaaType !== 'string') {
+        // Fallback: some page internals post raw payloads without our marker.
+        // Try to decode an int-based OTC price from generic payload.
+        try {
+          const candidate = extractPriceFromWsPayload(data);
+          if (candidate && Number.isFinite(candidate.value)) {
+            applyPriceFromNumericSample(candidate.value, candidate.decimals || 5, 'bridge', candidate.asset || '', candidate.timestamp || Date.now());
+          }
+        } catch {}
+        return;
+      }
+      if (data.__iaaType === 'IAA_WS_BRIDGE_READY') {
+        WS_FEED_BUFFER.bridgeReady = true;
+        const st = window.InfinityBot?.S;
+        if (st) st.wsBridgeReady = true;
+        return;
+      }
+      if (data.__iaaType === PO_PRICE_EVENT) {
+        const raw = Number(data.raw);
+        const scaled = Number(data.price);
+        const ts = Number(data.ts) || Date.now();
+        const asset = String(data.asset || '').trim();
+        if (!asset || !Number.isFinite(raw) || !Number.isFinite(scaled)) return;
+        WS_FEED_BUFFER.bridgeReady = true;
+        const readyState = window.InfinityBot?.S;
+        if (readyState) readyState.wsBridgeReady = true;
+        applyPriceFromNumericSample(scaled, 5, 'bridge', asset, ts);
+        return;
+      }
+      if (data.__iaaType !== 'IAA_WS_BRIDGE_FRAME' || typeof data.payload !== 'string') return;
+      const source = data.source === 'http' ? 'http' : 'ws';
+      if (source === 'http') {
+        WS_FEED_BUFFER.httpFramesSeen = (WS_FEED_BUFFER.httpFramesSeen || 0) + 1;
+      } else {
+        WS_FEED_BUFFER.bridgeFramesSeen = (WS_FEED_BUFFER.bridgeFramesSeen || 0) + 1;
+      }
+      try {
+        handleWsPriceSample(data.payload);
+      } catch {}
+    }, false);
+  }
+
+  function ensurePageWsBridgeInjected() {
+    if (window.__iaaBridgeInjectAttempted) return;
+    window.__iaaBridgeInjectAttempted = true;
+    window.__iaaBridgeInjectOk = false;
+    window.__iaaBridgeInjectError = null;
+
+    try {
+      const src = chrome?.runtime?.getURL?.('inject.js');
+      if (!src) {
+        window.__iaaBridgeInjectError = 'inject_url_unavailable';
+        return;
+      }
+      if (document.querySelector('script[data-iaa-bridge="inject-js"]')) {
+        window.__iaaBridgeInjectOk = true;
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = src;
+      script.async = false;
+      script.dataset.iaaBridge = '1';
+      script.dataset.iaaBridgeMode = 'inject-js';
+      script.addEventListener('load', () => {
+        window.__iaaBridgeInjectOk = true;
+        window.__iaaBridgeInjectError = null;
+        script.remove();
+      }, { once: true });
+      script.addEventListener('error', () => {
+        window.__iaaBridgeInjectOk = false;
+        window.__iaaBridgeInjectError = 'inject_script_load_error';
+        script.remove();
+      }, { once: true });
+      (document.documentElement || document.head || document.body)?.appendChild(script);
+    } catch (err) {
+      window.__iaaBridgeInjectOk = false;
+      window.__iaaBridgeInjectError = `inject_exception:${String(err?.message || err || 'unknown')}`;
+    }
+  }
+
+  function installHttpPriceTap() {
+    if (window.__iaaHttpTapped) return;
+    window.__iaaHttpTapped = true;
+    const looksRelevant = (text = '', url = '') => {
+      const hay = `${url} ${text}`.toLowerCase();
+      return /(quote|price|tick|candle|history|stream|asset|symbol|pair|loadhistory|updatestream|socket\.io)/.test(hay);
+    };
+
+    try {
+      const origFetch = window.fetch;
+      if (typeof origFetch === 'function' && !window.__iaaContentFetchTapped) {
+        window.__iaaContentFetchTapped = true;
+        window.fetch = async function(...args) {
+          const res = await origFetch.apply(this, args);
+          try {
+            const url = String(args?.[0]?.url || args?.[0] || '');
+            const clone = res?.clone?.();
+            if (clone) {
+              clone.text().then((txt) => {
+                if (!txt || txt.length > 350000) return;
+                if (!looksRelevant(txt, url)) return;
+                const candidate = extractPriceFromWsPayload(txt);
+                if (candidate?.value) applyPriceFromNumericSample(candidate.value, candidate.decimals || 5, 'http', candidate.asset || '', candidate.timestamp || Date.now());
+              }).catch(() => {});
+            }
+          } catch {}
+          return res;
+        };
+      }
+    } catch {}
+
+    try {
+      if (!window.__iaaContentXhrTapped) {
+        window.__iaaContentXhrTapped = true;
+        const origOpen = XMLHttpRequest.prototype.open;
+        const origSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+          this.__iaaUrl = String(url || '');
+          return origOpen.call(this, method, url, ...rest);
+        };
+        XMLHttpRequest.prototype.send = function(...args) {
+          this.addEventListener('load', () => {
+            try {
+              const txt = typeof this.responseText === 'string' ? this.responseText : '';
+              if (!txt || txt.length > 350000) return;
+              if (!looksRelevant(txt, this.__iaaUrl || '')) return;
+              const candidate = extractPriceFromWsPayload(txt);
+              if (candidate?.value) applyPriceFromNumericSample(candidate.value, candidate.decimals || 5, 'http', candidate.asset || '', candidate.timestamp || Date.now());
+            } catch {}
+          });
+          return origSend.apply(this, args);
+        };
+      }
+    } catch {}
   }
 
   function installWebSocketPriceTap() {
     if (window.__iaaWsTapped) return;
     window.__iaaWsTapped = true;
+    ensurePageWsBridgeListener();
+    ensurePageWsBridgeInjected();
     const OriginalWebSocket = window.WebSocket;
     if (!OriginalWebSocket) return;
+
+    try {
+      const proto = OriginalWebSocket.prototype;
+      if (proto && typeof proto.dispatchEvent === 'function' && !proto.__iaaDispatchTapped) {
+        const originalDispatch = proto.dispatchEvent;
+        proto.dispatchEvent = function(event) {
+          if (event?.type === 'message') {
+            try { handleWsMessageData(event.data); } catch {}
+          }
+          return originalDispatch.apply(this, arguments);
+        };
+        proto.__iaaDispatchTapped = true;
+      }
+    } catch {
+      // ignore prototype hook errors
+    }
+
     window.WebSocket = function (...args) {
       const ws = new OriginalWebSocket(...args);
       ws.addEventListener('message', (event) => {
         try {
-          handleWsPriceSample(event?.data);
+          handleWsMessageData(event?.data);
         } catch {
           // ignore ws parse errors
         }
@@ -272,6 +865,13 @@
     window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
     window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
     window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
+    const botState = window.InfinityBot?.S;
+    if (botState) {
+      botState.wsTapInstalled = true;
+      botState.wsBridgeListener = !!window.__iaaBridgeListenerReady;
+      botState.wsBridgeInjected = !!window.__iaaBridgeInjectOk;
+      botState.wsBridgeReady = !!WS_FEED_BUFFER.bridgeReady;
+    }
   }
 
   const storage = {
@@ -357,7 +957,6 @@
       LOGO_FALLBACK: 'https://i.ibb.co/M5Skh64X/logo.png',
       FPS: 10,
 
-      // Telegram signals (1m/5m)
       SIGNAL_SOURCES: [
         {
           key: '5m',
@@ -577,8 +1176,6 @@
       processedSignals: new Set(),
       lastSignalPollAt: 0,
       lastProcessedSignalHashes: new Map(),
-      telegramJoinAttempted: false,
-      telegramJoinOpenedAt: 0,
 
       // execution guards
       executing:false,
@@ -617,6 +1214,16 @@
       wsLastPrice: null,
       wsLastPriceDecimals: null,
       wsLastPriceAt: 0,
+      wsPacketsSeen: 0,
+      wsBridgeFramesSeen: 0,
+      wsTapInstalled: false,
+      wsBridgeListener: false,
+      wsBridgeInjected: false,
+      wsBridgeReady: false,
+      httpFramesSeen: 0,
+      feedState: 'NO_FEED',
+      lastPriceRejectReason: null,
+      lastFeedSource: null,
       tradeEntryPrice: null,
       tradeExitPrice: null,
       priceMonitorInterval: null,
@@ -683,11 +1290,14 @@
       rsiDivergenceMinDelta: 6,
       rsiDivergenceRsiWindow: 14,
       candlestickPatternMinConfidence: 0.6,
+      candlestickPatternEnabled: true,
+      candlestickPatternWeight: 0.25,
       emaRsiFast: 8,
       emaRsiSlow: 21,
       emaRsiWindow: 14,
       emaRsiOversold: 35,
       emaRsiOverbought: 65,
+      partnerReadyBars1m: 10,
       partnerReadyBars3m: 6,
       partnerReadyBars5m: 3,
       partnerReadyBars15m: 2,
@@ -707,8 +1317,8 @@
       biasTimeframes: { '1m': true, '3m': true, '5m': true, '30m': false },
       conflictStrength: 0.6,
       lossReports: [],
-      maxTradesPerMinute: 0,
-      maxOpenTrades: 1,
+      maxTradesPerMinute: 5,
+      maxOpenTrades: 5,
       idleSwitchEnabled: false,
       idleSwitchMinutes: 60,
       lastIdleSwitchAt: 0,
@@ -731,7 +1341,7 @@
       lastSelfTradeHintAt: 0,
       lastDiagnosticsAt: 0,
       lastSignalLogAt: new Map(),
-      signalSourceEnabled: { '1m': true, '5m': true },
+      signalSourceEnabled: { '1m': false, '5m': false },
       signalTimeOffsetMin: 0,
 
       /* ---------- Sniper mode ---------- */
@@ -772,6 +1382,10 @@
       featureVolumeRejection: FEATURE_DEFAULTS.volumeRejection,
       featureVwapAnalysis: FEATURE_DEFAULTS.vwapAnalysis,
       featureSessionBoost: FEATURE_DEFAULTS.sessionBoost,
+      aiVisionEnabled: true,
+      aiVisionMorningStar: true,
+      aiVisionEveningStar: true,
+      aiVisionRequireMatch: false,
       featureTimeframes: { ...FEATURE_DEFAULTS.timeframes },
       autoSwitchStrategy: STRATEGY_DEFAULTS.autoSwitch,
       strategyWeightWr: STRATEGY_DEFAULTS.wrWeight,
@@ -826,7 +1440,16 @@
       lastBalanceCheck: null,
       cycleProfitLoss: 0,
       tradeExecutionTime: 0,
-      patternIdentifiedTime: 0
+      patternIdentifiedTime: 0,
+      historyAcceptedTicks: 0,
+      historyDuplicateTicks: 0,
+      lastHistoryRejectReason: null,
+      tfReadyMinCount: 1,
+      strategyFlipCooldownMs: 2500,
+      lastStrategyDirection: null,
+      lastStrategyDirectionAt: 0,
+      pendingTradeConfirmations: [],
+      lastDecisionSnapshot: null
     };
 
     function applySniperDefaults() {
@@ -873,6 +1496,10 @@
       if (typeof S.featureVolumeRejection !== 'boolean') S.featureVolumeRejection = FEATURE_DEFAULTS.volumeRejection;
       if (typeof S.featureVwapAnalysis !== 'boolean') S.featureVwapAnalysis = FEATURE_DEFAULTS.vwapAnalysis;
       if (typeof S.featureSessionBoost !== 'boolean') S.featureSessionBoost = FEATURE_DEFAULTS.sessionBoost;
+      if (typeof S.aiVisionEnabled !== 'boolean') S.aiVisionEnabled = true;
+      if (typeof S.aiVisionMorningStar !== 'boolean') S.aiVisionMorningStar = true;
+      if (typeof S.aiVisionEveningStar !== 'boolean') S.aiVisionEveningStar = true;
+      if (typeof S.aiVisionRequireMatch !== 'boolean') S.aiVisionRequireMatch = false;
       if (!S.featureTimeframes) S.featureTimeframes = { ...FEATURE_DEFAULTS.timeframes };
       if (typeof S.autoSwitchStrategy !== 'boolean') S.autoSwitchStrategy = STRATEGY_DEFAULTS.autoSwitch;
       if (!Number.isFinite(S.strategyWeightWr)) S.strategyWeightWr = STRATEGY_DEFAULTS.wrWeight;
@@ -880,6 +1507,8 @@
       if (!Number.isFinite(S.strategyLearningTrades)) S.strategyLearningTrades = STRATEGY_DEFAULTS.learningTrades;
       if (!Number.isFinite(S.strategyLossStreakLimit)) S.strategyLossStreakLimit = STRATEGY_DEFAULTS.lossStreakLimit;
       if (!S.strategyConfigs) S.strategyConfigs = { ...STRATEGY_DEFAULTS.configs };
+      if (typeof S.candlestickPatternEnabled !== 'boolean') S.candlestickPatternEnabled = true;
+      if (!Number.isFinite(S.candlestickPatternWeight)) S.candlestickPatternWeight = 0.25;
     }
 
     const SETTINGS_I18N = {
@@ -887,10 +1516,6 @@
       expiry_setting: 'Време на изтичане:',
       expiry_1m: '1 минута',
       expiry_5m: '5 минути',
-      l1_martingale: 'L1 мартингейл',
-      l2_martingale: 'L2 мартингейл',
-      l1_multiplier: 'L1 множител',
-      l2_multiplier: 'L2 множител',
       max_session_loss: 'Макс. загуба за сесия ($):',
       max_loss_streak: 'Макс. серия загуби:',
       limits_hint: 'Задай 0 за изключване на лимитите',
@@ -907,11 +1532,6 @@
       keep_tab_alive_hint: 'Предотвратява приспиване на таба от браузъра',
       force_asset_selection: 'Принудителен избор на актив',
       force_asset_selection_hint: 'Проверява избора на актив и повтаря при неуспех',
-      signal_source_1m: 'Сигнали 1м',
-      signal_source_5m: 'Сигнали 5м',
-      signal_time_offset: 'Часова корекция (мин):',
-      mode_label: 'Режим на работа',
-      mode_signals: 'Сигнали 1м/5м',
       mode_sniper: 'СНАЙПЕР',
       sniper_panel_title: 'Снайпер настройки',
       sniper_max_session_loss: 'Стоп при загуба (€):',
@@ -932,8 +1552,6 @@
       auto_on: 'Авто‑търговия: включена.',
       auto_off: 'Авто‑търговия: изключена.',
       skip_reason: 'ПРОПУСК: {reason}',
-      signal_received: 'Получен сигнал ({source}): {asset} {direction} {expiry}',
-      signal_scheduled: 'Планиран сигнал: {time} ({expiry})',
       diagnostics: 'Диагн.: авто={auto} анализ=посока={dir} уверен={conf}% праг={thr}% стратегия={strategy} пропуск={skip}',
       trade_attempt: 'Опит за сделка: {asset} {direction} {expiry}',
       trade_buttons_missing: 'Пропуск: липсват бутони',
@@ -941,19 +1559,12 @@
       trade_clicked: 'Клик: {direction} {amount}',
       asset_selected: 'Избран актив: {asset}',
       asset_select_failed: 'Провал при избор на актив',
-      signal_fetch_failed: 'Проблем при сигнал ({source})',
-      signal_empty: 'Празен сигнал ({source})',
-      signal_parse_failed: 'Невалиден сигнал ({source})',
-      signal_text_snippet: 'Текст: {snippet}',
-      signal_duplicate: 'Дублиран сигнал ({source})',
-      signal_stale: 'Просрочен сигнал ({source})',
       payout_missing: 'Липсва изплащане',
       analysis_ready_selftrade_off: 'Анализът е готов, но самостоятелните сделки са изключени.',
       switching_asset: 'Смяна на актив',
       identifying_pattern: 'Търсене на входен модел',
       pattern_identified: 'Моделът е открит',
-      trade_executed: 'Сделката е изпълнена',
-      l_activated: 'L{level} активирано',
+      trade_executed: 'Заявка за сделка е изпратена',
       trade_won: '✅ ПЕЧЕЛИВША СДЕЛКА',
       trade_lost: '❌ ГУБЕЩА СДЕЛКА',
       trade_even: '➖ НЕУТРАЛНА СДЕЛКА',
@@ -1051,7 +1662,7 @@
       S.hasLiveSignal = false;
       S.signalBuffer.length = 0;
       S.forceImmediate = false;
-      S.sniperWarmupUntil = Date.now() + Math.max(1, S.sniperWarmupMin || 10) * 60 * 1000;
+      S.sniperWarmupUntil = Date.now();
       S.sniperLastTradeByTf = {};
       S.sniperNextTradeByTf = {};
       S.sniperTfStatus = {};
@@ -1119,12 +1730,15 @@
         weak: 9,
         confirm: 8,
         chop: 7,
+        vwap: 7,
+        momentum: 7,
         regime: 6,
         bias: 5,
         trend: 4,
         volume: 3,
         late: 2,
         payout: 1,
+        tf_wait: 1,
         nodata: 0,
         warmup: 0
       };
@@ -1159,10 +1773,11 @@
         volume: 'Volume',
         late: 'Късен вход',
         payout: 'Payout',
+        tf_wait: 'TF not ready',
         nodata: getNoDataLabel(),
         warmup: 'Загряване'
       };
-      const marketBad = ['chop', 'trend', 'volume', 'regime', 'bias', 'confirm'].includes(status.state);
+      const marketBad = ['chop', 'vwap', 'momentum', 'trend', 'volume', 'regime', 'bias', 'confirm'].includes(status.state);
       return {
         label: labelMap[status.state] || status.state,
         marketBad
@@ -1173,7 +1788,6 @@
       const now = Date.now();
       if (now - S.lastDiagnosticsAt < 60000) return;
       if (!isSniperMode() && !S.analysisEnabled) return;
-      if (isSniperMode() && !isSniperWarmupReady()) return;
       S.lastDiagnosticsAt = now;
       const auto = S.autoTrade ? 'on' : 'off';
       const analysis = isSniperMode() ? 'sniper' : (S.analysisEnabled ? 'on' : 'off');
@@ -1192,32 +1806,6 @@
       logConsoleLine(formatStatus('diagnostics', { auto, analysis, dir, conf, thr, strategy: strategyLabel, skip: skipReason }));
     }
 
-    function logSignalStatus(source, key, options = {}) {
-      if (!source || !key) return;
-      const { minIntervalMs = 60000, ...extras } = options;
-      const label = source.label || source.url || 'signal';
-      const logKey = `${label}:${key}`;
-      const now = Date.now();
-      const last = S.lastSignalLogAt.get(logKey) || 0;
-      if (now - last < minIntervalMs) return;
-      S.lastSignalLogAt.set(logKey, now);
-      logConsoleLine(formatStatus(key, { source: label, ...extras }));
-    }
-
-    function logSignalSnippet(source, text, { force = false } = {}) {
-      if (!text) return;
-      const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 140);
-      if (!snippet) return;
-      const label = source.label || source.url || 'signal';
-      const hash = snippet.replace(/\s+/g, '').slice(0, 30);
-      const logKey = `${label}:snippet:${hash}`;
-      const minIntervalMs = force ? 300000 : 60000;
-      const now = Date.now();
-      const last = S.lastSignalLogAt.get(logKey) || 0;
-      if (now - last < minIntervalMs) return;
-      S.lastSignalLogAt.set(logKey, now);
-      logConsoleLine(formatStatus('signal_text_snippet', { snippet }));
-    }
 
     function recordTradeStats(outcome) {
       S.tradeStats.total += 1;
@@ -1853,8 +2441,6 @@
     }
 
     function getDebugInfoLines() {
-      const now = new Date();
-      const utc3 = new Date(Date.now() - 3 * 60 * 60 * 1000);
       const driftValue = typeof S.clockDriftSec === 'number' ? S.clockDriftSec : null;
       const driftLabel = driftValue != null ? `${driftValue}s` : '—';
       const lagValue = typeof S.lastSignalLagSec === 'number' ? S.lastSignalLagSec : null;
@@ -1886,7 +2472,7 @@
 
       const lines = [
         { key: 'авто', value: S.autoTrade ? 'Да' : 'Не', severity: '' },
-        { key: 'анализ', value: S.analysisEnabled ? 'Да' : 'Не', severity: '' },
+        { key: 'анализ', value: isSniperMode() ? 'Снайпер' : (S.analysisEnabled ? 'Да' : 'Не'), severity: '' },
         { key: 'посока', value: S.analysisDirection || '-', severity: '' },
         { key: 'увереност', value: confidence.toFixed(2), severity: confidenceSeverity },
         { key: 'праг', value: threshold != null ? threshold.toFixed(2) : '-', severity: '' },
@@ -1898,10 +2484,7 @@
         { key: 'тик възраст', value: lastTickLabel, severity: tickSeverity },
         { key: 'обновен', value: analysisUpdatedLabel, severity: analysisUpdatedSeverity },
         { key: 'следваща', value: getNextEtaLabel(), severity: '' },
-        { key: 'последен пропуск', value: S.lastSkipReason || '—', severity: lastSkipSeverity },
-        { key: 'часовник', value: driftLabel, severity: driftSeverity },
-        { key: 'локално', value: now.toLocaleTimeString(), severity: '' },
-        { key: 'utc-3', value: utc3.toUTCString().split(' ')[4], severity: '' }
+        { key: 'последен пропуск', value: S.lastSkipReason || '—', severity: lastSkipSeverity }
       ];
       return lines;
     }
@@ -1916,7 +2499,8 @@
       const content = $id('iaa-debug-content');
       if (!content) return;
       const lines = getDebugInfoLines();
-      content.innerHTML = lines.map((line) => {
+      const scannerLine = '<div class="iaa-debug-line"><span class="iaa-debug-key" style="color:#ef4444;font-weight:700;">[SCAN V5-FIXED]</span><span class="iaa-debug-value" style="color:#ef4444;font-weight:700;">RUNNING</span></div>';
+      content.innerHTML = scannerLine + lines.map((line) => {
         const severityClass = line.severity ? ` iaa-debug-value--${line.severity}` : '';
         return `<div class="iaa-debug-line"><span class="iaa-debug-key">${line.key}:</span><span class="iaa-debug-value${severityClass}">${line.value}</span></div>`;
       }).join('');
@@ -2034,12 +2618,28 @@
         lastPriceAt: S.lastPriceAt,
         lastPriceAgeMs: S.lastPriceAt ? Date.now() - S.lastPriceAt : null,
         currentAssetPrice: S.currentAssetPrice,
+        wsLastPrice: S.wsLastPrice,
+        wsLastPriceAgeMs: S.wsLastPriceAt ? Date.now() - S.wsLastPriceAt : null,
+        wsPacketsSeen: S.wsPacketsSeen || 0,
+        wsBridgeFramesSeen: S.wsBridgeFramesSeen || 0,
+        wsTapInstalled: !!S.wsTapInstalled,
+        wsBridgeListener: !!S.wsBridgeListener,
+        wsBridgeInjected: !!S.wsBridgeInjected,
+        wsBridgeReady: !!S.wsBridgeReady,
+        httpFramesSeen: S.httpFramesSeen || 0,
+        feedState: S.feedState || 'NO_FEED',
+        lastPriceRejectReason: S.lastPriceRejectReason || null,
+        lastFeedSource: S.lastFeedSource || null,
+        bridgeInjectError: window.__iaaBridgeInjectError || null,
+        priceSource: (S.wsLastPrice && (Date.now() - S.wsLastPriceAt <= WS_PRICE_SAMPLE_TTL_MS)) ? 'ws' : (S.currentAssetPrice != null ? 'dom' : 'none'),
         priceHistoryLen: S.priceHistory?.length || 0,
         lastPayoutPercent: S.lastPayoutPercent,
         lastPayoutAt: S.lastPayoutAt,
         lastPayoutSource: S.lastPayoutSource,
         analysisDirection: S.analysisDirection,
         analysisConfidence: S.analysisConfidence,
+        strategyKey: S.currentStrategyKey || null,
+        decisionSnapshot: S.lastDecisionSnapshot || null,
         sniperThreshold: S.sniperThreshold,
         sniperVwapWeight: S.sniperVwapWeight,
         sniperMomentumWeight: S.sniperMomentumWeight,
@@ -2051,7 +2651,47 @@
         sniperEntryWindowSec: S.sniperEntryWindowSec,
         sniperTfStatus: S.sniperTfStatus
       };
-      el.dataset.state = JSON.stringify(state);
+      const rawState = JSON.stringify(state);
+      el.dataset.state = rawState;
+      el.textContent = rawState;
+      el.dataset.updatedAt = String(Date.now());
+      document.documentElement?.setAttribute('data-iaa-debug-updated', el.dataset.updatedAt);
+    }
+
+    function installPageDebugBridge() {
+      try {
+        if (window.__IAA_DEBUG__) return;
+        const readState = () => {
+          const host = document.getElementById('iaa-debug-state');
+          const raw = host?.dataset?.state || host?.textContent;
+          if (!raw) return null;
+          try { return JSON.parse(raw); } catch { return null; }
+        };
+        const readTimeframes = () => {
+          const tfs = ['3s', '15s', '30s', '1m', '3m', '5m', '15m', '30m'];
+          return tfs.reduce((acc, tf) => {
+            const text = document.getElementById('iaa-tf-' + tf);
+            const dot = document.getElementById('iaa-tf-dot-' + tf);
+            acc[tf] = {
+              text: text?.textContent || null,
+              dotClass: dot?.className || null
+            };
+            return acc;
+          }, {});
+        };
+        window.__IAA_DEBUG__ = {
+          version: 2,
+          readState,
+          readTimeframes,
+          ping: () => ({
+            hasPanel: !!document.getElementById('infinity-ai-agent-shell'),
+            hasDebugState: !!document.getElementById('iaa-debug-state'),
+            updatedAt: Number(document.getElementById('iaa-debug-state')?.dataset?.updatedAt || 0) || null
+          })
+        };
+      } catch {
+        // ignore debug bridge failures
+      }
     }
 
     async function copyDebugInfo() {
@@ -2163,7 +2803,7 @@
 
         if (status.state === 'ready') {
           dotEl.classList.add('iaa-tf-dot--ok');
-        } else if (['weak', 'late', 'chop', 'payout', 'warmup', 'nodata', 'trend', 'volume'].includes(status.state)) {
+        } else if (['weak', 'late', 'chop', 'vwap', 'momentum', 'payout', 'tf_wait', 'warmup', 'nodata', 'trend', 'volume', 'ai'].includes(status.state)) {
           dotEl.classList.add('iaa-tf-dot--warn');
         } else if (status.state === 'off') {
           dotEl.classList.add('iaa-tf-dot--bad');
@@ -2429,6 +3069,7 @@
     }
 
     async function maybeSwitchIdleAsset() {
+      if (true) return;
       if (!S.idleSwitchEnabled || S.assetSelecting || hasActiveTrade()) return;
       const idleMinutes = Number.isFinite(S.idleSwitchMinutes) ? Math.max(1, S.idleSwitchMinutes) : 60;
       const lastTradeAt = S.lastTradeTime || S.botStartAt || Date.now();
@@ -2605,174 +3246,212 @@
 
     /* ========================= FIXED PRICE DETECTION - NO CANVAS OVERLOAD ========================= */
     function collectPriceCandidates() {
-      const candidates = [];
-      const balanceCents = readBalanceCents?.();
-      const balanceValue = Number.isFinite(balanceCents) ? balanceCents / 100 : null;
-      const attributeSelectors = [
-        '[data-price]',
-        '[data-last-price]',
-        '[data-quote]',
-        '[data-rate]',
-        '[data-value]',
-        '[data-price-value]'
-      ];
-      const isBotUiElement = (el) => !!(el?.closest?.('#iaa-panel')
-        || el?.closest?.('#iaa-settings-panel')
-        || el?.closest?.('#iaa-strategies-panel')
-        || el?.closest?.('#iaa-debug-panel')
-        || el?.closest?.('#iaa-calibration-panel')
-        || el?.closest?.('#iaa-mouse-panel')
-        || el?.closest?.(`#${LOGIN_SHELL_ID}`));
-      const isBalanceElement = (el) => {
-        if (!el) return false;
-        if (el.closest?.('.balance-info-block__data, .balance-info-block__balance')) return true;
-        if (el.matches?.('span.js-balance-demo, span[class*="js-balance-real-"], span.js-hd.js-balance-demo, span.js-hd.no-animation.js-balance-demo')) return true;
-        const attr = `${el.className || ''} ${el.id || ''}`.toLowerCase();
-        return attr.includes('balance') || attr.includes('deposit') || attr.includes('account');
-      };
-      const hasBalanceContext = (el) => {
-        if (!el) return false;
-        const context = `${el.className || ''} ${el.id || ''} ${el.getAttribute?.('data-test') || ''} ${el.getAttribute?.('data-testid') || ''}`.toLowerCase();
-        return /balance|deposit|account|wallet|fund|payment|cashier/.test(context);
-      };
-      const isTradingAreaElement = (el) => {
-        if (!el) return false;
-        if (el.closest?.('.chart, .chart-container, .chart-page, .chart-widget, .trading-panel, [class*="chart" i], [class*="trading" i], [data-test*="chart" i], [data-testid*="chart" i], [data-test*="asset" i], [data-testid*="asset" i], [data-test*="ticker" i], [data-testid*="ticker" i], [data-test*="quote" i], [data-testid*="quote" i]')) {
-          return true;
-        }
-        const context = `${el.className || ''} ${el.id || ''} ${el.getAttribute?.('data-test') || ''} ${el.getAttribute?.('data-testid') || ''}`.toLowerCase();
-        return /chart|trade|ticker|quote|asset|pair|symbol|candle/.test(context);
-      };
+      return [];
+    }
 
-      const priceSelectors = [
-        '[data-test="current-price"]',
-        '[data-test*="price" i]',
-        '[data-testid*="price" i]',
-        '[data-qa*="price" i]',
-        '[data-test*="quote" i]',
-        '[data-testid*="quote" i]',
-        '[data-qa*="quote" i]',
-        '[data-test*="rate" i]',
-        '[data-testid*="rate" i]',
-        '[data-qa*="rate" i]',
-        '[id*="price" i]',
-        '[id*="quote" i]',
-        '[id*="rate" i]',
-        '[id*="ticker" i]',
-        '[class*="price" i]',
-        '[class*="quote" i]',
-        '[class*="rate" i]',
-        '[class*="ticker" i]',
-        '.current-price',
-        '.price-value',
-        '.rate-value',
-        '.ticker-price',
-        '.last-price',
+    function isLikelyTradePrice(value, decimals, prevPrice = null) {
+      if (!Number.isFinite(value) || value <= 0 || value >= 10000) return false;
+      if (value < 0.01) return false;
+      const d = Number.isFinite(decimals) ? decimals : 0;
+      if (d < 2) return false;
+      const asset = getCurrentAssetLabel() || '';
+      const isForex = /[A-Z]{3}\/[A-Z]{3}/i.test(asset);
+      if (isForex && d < 3) return false;
+      if (Number.isFinite(prevPrice) && prevPrice > 0) {
+        const jump = Math.abs(value - prevPrice) / prevPrice;
+        if (jump > 0.5 && d <= 2) return false;
+      }
+      return true;
+    }
 
-        // PocketOption specific selectors
-        '.rate-block__rate',
-        '.rate-block__value',
-        '.price-block__value',
-        '.currency-rate',
-        '.pair-rate',
+    function hasFeedPrice() {
+      return Number.isFinite(S.wsLastPrice) || (Array.isArray(S.priceHistory) && S.priceHistory.length > 0);
+    }
 
-        // Chart price indicators
-        '.chart-price',
-        '.chart-rate',
-        '.tradingview-price',
+    function extractLivePriceFromText(text, context = {}) {
+      if (!text) return null;
+      const clean = String(text)
+        .replace(/@keyframes[^}]+}/g, '')
+        .replace(/transform:[^;]+;/g, '')
+        .replace(/translate\([^)]+\)/g, '')
+        .replace(/scale\([^)]+\)/g, '')
+        .replace(/opacity:[^;]+;/g, '')
+        .trim();
+      if (!clean) return null;
+      if (/(payout|profit|balance|amount|stake|bonus|deposit|withdraw|roi|demo|real|wallet|account)/i.test(clean)) return null;
+      const m = clean.match(/\b\d+[.,]\d{2,6}\b/);
+      if (!m) return null;
+      const raw = String(m[0]);
+      const decimals = raw.includes('.') ? raw.split('.')[1].length : (raw.includes(',') ? raw.split(',')[1].length : 0);
+      const v = Number(raw.replace(',', '.'));
+      if (!Number.isFinite(v) || v <= 0 || v >= 10000) return null;
 
-        // General price areas
-        '.price',
-        '.rate',
-        '.value',
-        '.ticker',
-        '.quote'
-      ];
+      const assetLabel = String(context.assetLabel || getCurrentAssetLabel() || '');
+      const forexLike = /[A-Z]{3}\/?[A-Z]{3}|OTC/i.test(assetLabel);
+      if (forexLike && decimals < 4) return null;
+      if (!forexLike && decimals < 2) return null;
 
-      for (const selector of attributeSelectors) {
-        const elements = $$(selector);
-        for (const el of elements) {
-          if (!visible(el) || isBotUiElement(el) || isBalanceElement(el)) continue;
-          const attrs = [
-            el.getAttribute?.('data-price'),
-            el.getAttribute?.('data-last-price'),
-            el.getAttribute?.('data-quote'),
-            el.getAttribute?.('data-rate'),
-            el.getAttribute?.('data-value'),
-            el.getAttribute?.('data-price-value')
-          ].filter(Boolean);
-          for (const attr of attrs) {
-            const priceInfo = extractValidPriceInfo(String(attr));
-            if (priceInfo) {
-              if (Number.isFinite(balanceValue) && Math.abs(priceInfo.value - balanceValue) < 0.01) continue;
-              const areaBoost = isTradingAreaElement(el) ? 2 : 0;
-              if (!areaBoost && hasBalanceContext(el)) continue;
-              candidates.push({ ...priceInfo, priority: 3 + areaBoost, selector, text: String(attr).slice(0, 80) });
-            }
+      const balanceFloat = Number.isFinite(S.balance) ? (S.balance / 100) : null;
+      if (Number.isFinite(balanceFloat) && Math.abs(v - balanceFloat) < 0.05) return null;
+
+      return v;
+    }
+
+    function getGeoZoneDomPrice() {
+      try {
+        const canvas = document.querySelector('#chart-1 > canvas.layer.plot') || document.querySelector('#chart-1 > canvas');
+        if (!canvas) return null;
+        const r = canvas.getBoundingClientRect();
+        if (!r || !Number.isFinite(r.width) || !Number.isFinite(r.height)) return null;
+        const centerY = r.top + r.height / 2;
+
+        // Keep scan narrow around the chart right-side price lane to avoid balance/header numbers.
+        const minX = r.right - Math.max(140, r.width * 0.33);
+        const maxX = r.right + Math.max(36, r.width * 0.08);
+        const minY = r.top - 10;
+        const maxY = r.bottom + 10;
+
+        const nodes = $$('div,span,p,li,strong,b');
+        let best = null;
+        for (const el of nodes) {
+          if (!visible(el)) continue;
+          if (el.closest?.('[class*="balance"], [id*="balance"], [class*="payout"], [id*="payout"], [class*="profit"], [id*="profit"], [class*="amount"], [id*="amount"]')) continue;
+          const rr = el.getBoundingClientRect();
+          if (!rr || rr.width < 8 || rr.height < 8) continue;
+          if (rr.left > maxX || rr.right < minX || rr.top > maxY || rr.bottom < minY) continue;
+          const price = extractLivePriceFromText(T(el), { assetLabel: getCurrentAssetLabel() || '' });
+          if (!Number.isFinite(price)) continue;
+
+          const xCenter = rr.left + rr.width / 2;
+          const yCenter = rr.top + rr.height / 2;
+          const xPenalty = Math.abs(xCenter - r.right) * 1.8;
+          const yPenalty = Math.abs(yCenter - centerY);
+          const score = xPenalty + yPenalty;
+          if (!best || score < best.score) {
+            best = { value: price, score };
           }
         }
+        return best?.value ?? null;
+      } catch {
+        return null;
       }
+    }
 
-      for (const selector of priceSelectors) {
-        const elements = $$(selector);
-        for (const el of elements) {
-          if (visible(el) && !isBotUiElement(el) && !isBalanceElement(el)) {
-            const text = T(el);
-            const priceInfo = extractValidPriceInfo(text);
-            if (priceInfo) {
-              if (Number.isFinite(balanceValue) && Math.abs(priceInfo.value - balanceValue) < 0.01) continue;
-              const areaBoost = isTradingAreaElement(el) ? 2 : 0;
-              if (!areaBoost && hasBalanceContext(el)) continue;
-              candidates.push({ ...priceInfo, priority: 2 + areaBoost, selector, text: text.slice(0, 80) });
-            }
+    function getRealtimeOpenPriceMenuValue() {
+      try {
+        const selectors = [
+          '#pending-trades_open-price > div.current-time > span > span.open-time-number',
+          '#pending-trades_open-price > div.current-time > span.open-time-number',
+          '#pending-trades_open-price > div.current-time > span',
+          '#pending-trades_open-price .open-time-number',
+          '#pending-trades_open-price span.open-time-number',
+          'span.open-time-number'
+        ];
+        for (const selector of selectors) {
+          const nodes = $$(selector);
+          for (const el of nodes) {
+            if (!el || !el.isConnected) continue;
+            const text = (el.textContent || '').trim();
+            if (!text) continue;
+            const price = extractLivePriceFromText(text, {
+              assetLabel: getCurrentAssetLabel() || '',
+              source: 'menu_open_price'
+            });
+            if (Number.isFinite(price)) return price;
           }
         }
+        return null;
+      } catch {
+        return null;
       }
+    }
 
-      const priceLikeSelectors = [
-        'div', 'span', 'td', 'li', 'p'
-      ];
-
-      for (const selector of priceLikeSelectors) {
-        const elements = $$(selector);
-        for (const el of elements) {
-          if (!visible(el) || isBotUiElement(el) || isBalanceElement(el)) continue;
-
-          const text = T(el);
-          if (text.length > 5 && text.length < 24) {
-            const priceInfo = extractValidPriceInfo(text);
-            if (priceInfo) {
-              if (Number.isFinite(balanceValue) && Math.abs(priceInfo.value - balanceValue) < 0.01) continue;
-              const areaBoost = isTradingAreaElement(el) ? 2 : 0;
-              if (!areaBoost && hasBalanceContext(el)) continue;
-              candidates.push({ ...priceInfo, priority: 1 + areaBoost, selector, text: text.slice(0, 80) });
-            }
+    
+    function getOrderPanelLivePrice() {
+      try {
+        const selectors = [
+          '[class*="asset-price" i]',
+          '[data-test*="asset-price" i]',
+          '[data-testid*="asset-price" i]',
+          '[class*="current-price" i]',
+          '[class*="price-value" i]',
+          '#put-call-buttons [class*="price" i]',
+          '.purchase-form [class*="price" i]'
+        ];
+        const assetLabel = getCurrentAssetLabel() || '';
+        for (const sel of selectors) {
+          for (const el of $$(sel)) {
+            if (!visible(el)) continue;
+            const text = (el.textContent || '').trim();
+            if (!text) continue;
+            const price = extractLivePriceFromText(text, { assetLabel, source: 'order_panel' });
+            if (Number.isFinite(price)) return price;
           }
         }
-      }
+      } catch {}
+      return null;
+    }
 
-      return candidates;
+function getMinHistoryWindowForReadinessMs() {
+      const enabled = Object.keys(S.sniperEnabledTimeframes || {}).filter((tf) => !!S.sniperEnabledTimeframes[tf]);
+      if (!enabled.length) return 0;
+      let requiredMs = 0;
+      for (const tf of enabled) {
+        const tfMs = SNIPER_TF_MS[tf];
+        if (!Number.isFinite(tfMs) || tfMs <= 0) continue;
+        let bars = 2;
+        if (tf === '1m') bars = Math.max(1, Math.round(S.partnerReadyBars1m || 10));
+        else if (tf === '3m') bars = Math.max(1, Math.round(S.partnerReadyBars3m || 6));
+        else if (tf === '5m') bars = Math.max(1, Math.round(S.partnerReadyBars5m || 3));
+        else if (tf === '15m') bars = Math.max(1, Math.round(S.partnerReadyBars15m || 2));
+        const need = bars * tfMs + tfMs;
+        if (need > requiredMs) requiredMs = need;
+      }
+      return requiredMs;
     }
 
     function getCurrentAssetPrice() {
-      try {
-        const candidates = collectPriceCandidates();
-        if (!candidates.length) return null;
-        candidates.sort((a, b) => {
-          const scoreA = (a.decimals || 0) + (a.priority || 0) * 2;
-          const scoreB = (b.decimals || 0) + (b.priority || 0) * 2;
-          if (scoreB !== scoreA) return scoreB - scoreA;
-          return (b.value || 0) - (a.value || 0);
-        });
-        const best = candidates[0];
-        if (best) {
-          S.currentAssetPriceDecimals = best.decimals;
-          return best.value;
-        }
-        return null;
-      } catch (error) {
-        return null;
+      const now = Date.now();
+      const wsFresh = Number.isFinite(S.wsLastPrice) && (now - (S.wsLastPriceAt || 0) <= WS_PRICE_SAMPLE_TTL_MS);
+      if (wsFresh) {
+        S.currentAssetPriceDecimals = Number.isFinite(S.wsLastPriceDecimals) ? S.wsLastPriceDecimals : S.currentAssetPriceDecimals;
+        S.feedState = 'READY';
+        S.lastFeedSource = 'ws';
+        return S.wsLastPrice;
       }
+
+      const menuPrice = getRealtimeOpenPriceMenuValue();
+      if (Number.isFinite(menuPrice)) {
+        S.feedState = 'READY';
+        S.lastFeedSource = 'menu_open_price';
+        return menuPrice;
+      }
+
+      const panelPrice = getOrderPanelLivePrice();
+      if (Number.isFinite(panelPrice)) {
+        S.feedState = 'READY';
+        S.lastFeedSource = 'order_panel';
+        return panelPrice;
+      }
+
+      const domPrice = getGeoZoneDomPrice();
+      if (Number.isFinite(domPrice)) {
+        S.feedState = 'STALE';
+        S.lastFeedSource = 'geo_dom';
+        return domPrice;
+      }
+
+      if (Array.isArray(S.priceHistory) && S.priceHistory.length) {
+        const last = S.priceHistory[S.priceHistory.length - 1];
+        if (last && Number.isFinite(last.price)) {
+          S.feedState = (now - (last.timestamp || 0) <= 10000) ? 'STALE' : 'NO_FEED';
+          S.lastFeedSource = S.lastFeedSource || 'history';
+          return last.price;
+        }
+      }
+
+      S.feedState = 'NO_FEED';
+      return null;
     }
 
     function extractValidPriceInfo(text) {
@@ -3098,7 +3777,8 @@
       const baseWindowMs = Math.max(60, S.analysisWindowSec || 60) * 1000;
       const reversalWindowMs = Math.max(2, S.reversalWindowSec || 2) * 1000;
       const sniperWindowMs = Math.max(1, S.sniperWarmupMin || 0) * 60 * 1000;
-      return Math.max(baseWindowMs, reversalWindowMs, sniperWindowMs);
+      const readinessWindowMs = getMinHistoryWindowForReadinessMs();
+      return Math.max(baseWindowMs, reversalWindowMs, sniperWindowMs, readinessWindowMs);
     }
 
     function startPriceMonitoring() {
@@ -3115,20 +3795,17 @@
           S.currentAssetPrice = currentPrice;
           if (wsPrice != null && Number.isFinite(S.wsLastPriceDecimals)) {
             S.currentAssetPriceDecimals = S.wsLastPriceDecimals;
+            S.lastFeedSource = 'ws';
           }
           S.lastPriceAt = now;
 
-          S.priceHistory.push({
-            price: currentPrice,
-            timestamp: now
-          });
+          appendPriceHistoryTick(S, currentPrice, now, 'monitor');
 
           const windowMs = getPriceHistoryWindowMs();
           const cutoff = now - windowMs;
           S.priceHistory = S.priceHistory.filter(p => p.timestamp > cutoff);
-          renderLivePriceCard();
+          trimPriceHistory(S);
         } else {
-          renderLivePriceCard();
         }
       }, C.PRICE_MONITOR_INTERVAL_MS);
     }
@@ -3224,10 +3901,11 @@
     }
 
     function updateBalanceSummary(){
+      const startTimeEl = $id('iaa-balance-start-time');
       const startEl = $id('iaa-balance-start');
       const currentEl = $id('iaa-balance-current');
       const diffEl = $id('iaa-balance-diff');
-      if (!startEl && !currentEl && !diffEl) return;
+      if (!startTimeEl && !startEl && !currentEl && !diffEl) return;
 
       const startBalance = Number.isFinite(S.botStartBalance) ? S.botStartBalance : null;
       const currentBalance = Number.isFinite(S.balance) ? S.balance : null;
@@ -3238,6 +3916,7 @@
         : null;
       const diffText = diffCents != null ? fmtMoney(diffCents) : '—';
 
+      if (startTimeEl) startTimeEl.textContent = S.botStartAt ? new Date(S.botStartAt).toLocaleTimeString('bg-BG', { hour: '2-digit', minute: '2-digit' }) : '—';
       if (startEl) startEl.textContent = startText;
       if (currentEl) currentEl.textContent = currentText;
       if (diffEl) {
@@ -3339,10 +4018,7 @@
           break;
 
         case 'EXECUTING':
-          setStatusOverlay(formatStatus('trade_executed'));
-          if (data.cycleStep > 0) {
-            setStatusOverlay(formatStatus('l_activated', { level: data.cycleStep }));
-          }
+          setStatusOverlay('Изпращане на сделка...');
           stopCountdown();
           hideDirectionIndicator();
           break;
@@ -3439,7 +4115,7 @@
         setSkipReason('Amount');
         return false;
       }
-      const enforceAnalysis = S.analysisEnabled;
+      const enforceAnalysis = !isSniperMode() && S.analysisEnabled;
       const enforceInterval = !isSniperMode();
       const enforcePayout = false;
       const enforceReversal = true;
@@ -3499,7 +4175,7 @@
 
       let resolvedExpiry = normalizeExpiry(signal.expiry) || S.expirySetting;
       const assetScope = getExpiryScopeFromAsset(signal.asset);
-      const useDynamicExpiry = S.dynamicExpiryEnabled;
+      const useDynamicExpiry = false;
       if (useDynamicExpiry && assetScope === 'REAL') {
         const plan = getDynamicExpiryPlan(resolvedExpiry, S.analysisConfidence, assetScope);
         if (plan.expiries.length) {
@@ -3642,6 +4318,7 @@
                 payoutPercent
               };
               S.activeTrades.push(trade);
+              S.pendingTradeConfirmations.push({ trade, at: Date.now() });
               {
                 const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
                 logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
@@ -3692,6 +4369,7 @@
                 payoutPercent
               };
               S.activeTrades.push(trade);
+              S.pendingTradeConfirmations.push({ trade, at: Date.now() });
               {
                 const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
                 logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
@@ -3751,6 +4429,7 @@
             payoutPercent
           };
           S.activeTrades.push(trade);
+          S.pendingTradeConfirmations.push({ trade, at: Date.now() });
           {
             const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
             logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
@@ -3780,6 +4459,46 @@
       } finally {
         S.executing = false;
       }
+    }
+
+
+    function tradeConfirmationExists(trade) {
+      if (!trade) return false;
+      const now = Date.now();
+      const rows = Array.from(document.querySelectorAll('[class*="deal"], [class*="trade"], tr'));
+      const dir = String(trade.direction || '').toUpperCase();
+      const amountStr = (trade.amountCents / 100).toFixed(2);
+      const expiry = String(trade.expiry || '').toUpperCase();
+      for (const row of rows.slice(-120)) {
+        if (!row || !row.isConnected) continue;
+        const txt = (row.textContent || '').replace(/\s+/g, ' ').trim().toUpperCase();
+        if (!txt) continue;
+        if (dir && !txt.includes(dir)) continue;
+        if (expiry && !txt.includes(expiry)) continue;
+        if (!txt.includes(amountStr.toUpperCase()) && !txt.includes(`$${amountStr}`.toUpperCase())) continue;
+        const ts = Number(row.dataset?.timestamp || 0);
+        if (ts && Math.abs(now - ts) > 10 * 60 * 1000) continue;
+        return true;
+      }
+      return false;
+    }
+
+    function processPendingTradeConfirmations() {
+      if (!Array.isArray(S.pendingTradeConfirmations) || !S.pendingTradeConfirmations.length) return;
+      const now = Date.now();
+      S.pendingTradeConfirmations = S.pendingTradeConfirmations.filter((item) => {
+        if (!item?.trade) return false;
+        const confirmed = tradeConfirmationExists(item.trade);
+        if (confirmed) {
+          logConsoleLine(formatStatus('trade_executed'));
+          return false;
+        }
+        if (now - (item.at || now) > 12000) {
+          logConsoleLine('ПРОПУСК: Няма потвърждение за отворена сделка след клик');
+          return false;
+        }
+        return true;
+      });
     }
 
     /* ========================= FIXED: HISTORY-ONLY OUTCOME DETECTION ========================= */
@@ -3837,55 +4556,7 @@
 
     /* ========================= FIXED: MARTINGALE WITH PROPER BALANCE TRACKING ========================= */
     function immediateMartingaleReentry() {
-      // CRITICAL: Only re-enter if the last trade was a LOSS
-      if (S.lastTradeOutcome !== 'LOSS') {
-        debugLog('Skipping martingale re-entry - last trade was not a loss', { lastOutcome: S.lastTradeOutcome });
-        endCycle();
-        return;
-      }
-
-      if (!S.cycleActive || !S.cycleBaseSignal) {
-        endCycle();
-        return;
-      }
-
-      if (S.cycleStep === 0 && !S.l1Active) {
-        endCycle();
-        return;
-      }
-
-      if (S.cycleStep === 1 && !S.l2Active) {
-        endCycle();
-        return;
-      }
-
-      if (S.cycleStep >= 2) {
-        endCycle();
-        return;
-      }
-
-      S.cycleStep++;
-      S.martingaleSequence = S.cycleStep;
-
-      const base = S.cycleBaseSignal;
-      const curMin = getCurrentMinute();
-      const nextSig = cloneSignalForMinute(base, curMin);
-
-      S.currentSignal = nextSig;
-      S.tradeSequenceActive = true;
-      S.assetSelecting = false;
-      S.assetSelectedForSignal = true;
-      S.assetSelectionAttempted = true;
-      S.hasLiveSignal = true;
-      S.forceImmediate = true;
-      S.finalizedTradeId = null;
-      S.tradeOutcomeChecked = false;
-
-      debugLog('Martingale reentry activated', {
-        cycleStep: S.cycleStep,
-        lastOutcome: S.lastTradeOutcome,
-        currentBalance: S.balanceBeforeTrade
-      });
+      endCycle();
     }
 
     function startCycle(sig) {
@@ -3966,7 +4637,7 @@
         });
       }
       if (sig.time) {
-        logConsoleLine(formatStatus('signal_scheduled', { time: sig.time, expiry: sig.expiry || S.expirySetting }));
+        logConsoleLine(`Планиран вход: ${sig.time} (${sig.expiry || S.expirySetting})`);
       }
 
       const expirySecs = secsFromTF(sig.expiry || S.expirySetting);
@@ -4440,7 +5111,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         return false;
       }
 
-      if (S.dynamicExpiryEnabled && scope === 'OTC') {
+      if (false && scope === 'OTC') {
         const opened = await iaaOpenExpiryMenu(scope);
         if (!opened) return false;
         const targetSeconds = secsFromTF(norm);
@@ -4536,9 +5207,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
 
     function calculateTradeAmount(base, seq){
       if (!base) return null;
-      if (seq===0) return base;
-      if (seq===1 && S.l1Active) return Math.round(base*S.l1Multiplier);
-      if (seq===2 && S.l2Active) return Math.round(base*S.l2Multiplier);
       return base;
     }
 
@@ -4768,153 +5436,8 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
     }
 
     /* ========================= ENHANCED SIGNAL FETCHING ========================= */
-    function ensureTelegramWebAccess(source) {
-      if (!source?.url || !source.joinSelector) return;
-      const now = Date.now();
-      if (S.telegramJoinAttempted && now - S.telegramJoinOpenedAt < 60000) return;
-      S.telegramJoinAttempted = true;
-      S.telegramJoinOpenedAt = now;
-      try {
-        const joinWindow = window.open(source.url, '_blank', 'noopener');
-        if (!joinWindow) {
-          logConsoleLine('ПРОПУСК: Telegram табът не може да се отвори автоматично.');
-          return;
-        }
-        setTimeout(() => {
-          try {
-            const btn = joinWindow.document?.querySelector(source.joinSelector);
-            if (btn) {
-              btn.click();
-              logConsoleLine(`Telegram: натиснато ${source.openWebLabel || 'OPEN IN WEB'}.`);
-            } else {
-              logConsoleLine('Telegram: бутонът OPEN IN WEB не е намерен.');
-            }
-          } catch {
-            logConsoleLine('Telegram: достъпът до таба е ограничен. Отвори канала ръчно.');
-          }
-        }, 2000);
-      } catch {
-        logConsoleLine('Telegram: неуспешно отваряне на канала.');
-      }
-    }
-
     async function fetchAPISignals() {
-      const now = Date.now();
-
-      if (S.cycleActive || S.tradeSequenceActive || hasActiveTrade() || S.hasLiveSignal || S.executing || now < S.signalCooldownUntil) {
-        return [];
-      }
-
-      if (now - S.lastSignalPollAt < C.SIGNAL_POLL_MS) return [];
-      S.lastSignalPollAt = now;
-
-      const validSignals = [];
-
-      for (const source of C.SIGNAL_SOURCES) {
-        if (source.key && S.signalSourceEnabled[source.key] === false) {
-          continue;
-        }
-        ensureTelegramWebAccess(source);
-        try {
-          const separator = source.url.includes('?') ? '&' : '?';
-          const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(source.url + `${separator}t=` + Date.now())}`;
-          const response = await fetch(proxyUrl, {
-            method: 'GET',
-            headers: {
-              'Accept': 'text/plain',
-              'Cache-Control': 'no-cache'
-            }
-          });
-
-          if (!response.ok) {
-            logSignalStatus(source, 'signal_fetch_failed');
-            continue;
-          }
-
-          updateClockDriftFromResponse(response);
-
-          const rawText = await response.text();
-          const trimmed = rawText.trim();
-          let parsedJson = null;
-          if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-            try {
-              parsedJson = JSON.parse(trimmed);
-            } catch {}
-          }
-          const text = extractSignalTextFromResponse(rawText);
-
-          if ((!text || text === "No message" || text.includes("No message")) && !parsedJson) {
-            logSignalStatus(source, 'signal_empty', { minIntervalMs: 300000 });
-            continue;
-          }
-
-          const hashSource = text || (parsedJson ? JSON.stringify(parsedJson) : '');
-          const signalHash = createSignalHash(hashSource);
-          const lastHash = S.lastProcessedSignalHashes.get(source.url);
-          if (lastHash === signalHash) {
-            logSignalStatus(source, 'signal_duplicate', { minIntervalMs: 300000 });
-            continue;
-          }
-
-          const delivery = { raw: text, json: parsedJson };
-
-          try {
-            const signal = parseRawSignalInExtension(delivery);
-
-            if (signal) {
-              if (source.expiryOverride) {
-                signal.expiry = source.expiryOverride;
-                const computedMinute = computeSignalMinute(signal.time, signal.expiry, S.signalTimeOffsetMin);
-                if (computedMinute) {
-                  signal.expiry = computedMinute.normalizedExpiry;
-                  signal.minute = computedMinute.totalMinute;
-                  signal.targetTsMs = resolveSignalTargetTs(computedMinute.totalMinute, computedMinute.normalizedExpiry);
-                  signal.signalKey = buildSignalKey(signal);
-                } else {
-                  signal.expiry = normalizeExpiry(signal.expiry) || signal.expiry;
-                }
-              }
-              if (!signal.targetTsMs) {
-                logSignalStatus(source, 'signal_stale', { minIntervalMs: 120000 });
-                continue;
-              }
-              const normalizedExpiry = normalizeExpiry(signal.expiry);
-              if (normalizedExpiry === '1M' && S.signalSourceEnabled['1m'] === false) {
-                continue;
-              }
-              if (normalizedExpiry === '5M' && S.signalSourceEnabled['5m'] === false) {
-                continue;
-              }
-              signal.isSignalSource = true;
-              signal.useCurrentAmount = true;
-              S.lastProcessedSignalHashes.set(source.url, signalHash);
-              S.signalCooldownUntil = Date.now() + 30000;
-              logConsoleLine(formatStatus('signal_received', {
-                source: source.label,
-                asset: signal.asset,
-                direction: signal.direction,
-                expiry: signal.expiry
-              }));
-
-              if (!isDuplicateSignal(signal)) {
-                validSignals.push(signal);
-              }
-            } else {
-              logSignalStatus(source, 'signal_parse_failed', { minIntervalMs: 120000 });
-              const snippet = text || (parsedJson ? JSON.stringify(parsedJson) : '');
-              logSignalSnippet(source, snippet, { force: true });
-            }
-          } catch (error) {
-            debugLog('Error processing signal text', { error: error.message });
-            const snippet = text || (parsedJson ? JSON.stringify(parsedJson) : '');
-            logSignalSnippet(source, snippet, { force: true });
-          }
-        } catch (error) {
-          continue;
-        }
-      }
-
-      return validSignals;
+      return [];
     }
 
     /* ========================= NEW: SIGNAL DEDUPLICATION ========================= */
@@ -5435,7 +5958,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
     }
 
     function shouldAutoSwitchStrategy() {
-      return !!S.autoSwitchStrategy && !isStrategyLearningPhase();
+      return false;
     }
 
     function getStrategyPerformanceWeight(strategyKey) {
@@ -5461,10 +5984,10 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const emaSlow = calcEma(prices, S.sniperEmaSlow || 16);
       let boost = 0;
       if (decision.direction === 'BUY') {
-        if (Number.isFinite(rsi) && rsi <= (S.sniperRsiOversold || 30)) boost += 0.05;
+        if (Number.isFinite(rsi) && rsi <= 35) boost += 0.03;
         if (emaFast != null && emaSlow != null && emaFast > emaSlow) boost += 0.03;
       } else if (decision.direction === 'SELL') {
-        if (Number.isFinite(rsi) && rsi >= (S.sniperRsiOverbought || 70)) boost += 0.05;
+        if (Number.isFinite(rsi) && rsi >= 65) boost += 0.03;
         if (emaFast != null && emaSlow != null && emaFast < emaSlow) boost += 0.03;
       }
       if (boost > 0) {
@@ -5547,6 +6070,40 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const minConf = clamp01(Number.isFinite(S.candlestickPatternMinConfidence) ? S.candlestickPatternMinConfidence : 0.6);
       if (base.confidence < minConf) return null;
       return { ...base, strategyKey: 'candlestick_pattern' };
+    }
+
+
+    function calcAiVisionDecision(windowMs) {
+      if (!S.aiVisionEnabled) return null;
+      const c0 = getCandleAtOffset(windowMs, 0);
+      const c1 = getCandleAtOffset(windowMs, 1);
+      const c2 = getCandleAtOffset(windowMs, 2);
+      if (!c0 || !c1 || !c2) return null;
+      const b0 = Math.abs(c0.close - c0.open);
+      const b1 = Math.abs(c1.close - c1.open);
+      const b2 = Math.abs(c2.close - c2.open);
+      const r1 = Math.max(c1.high - c1.low, 1e-8);
+      const c2Bull = c2.close > c2.open;
+      const c0Bull = c0.close > c0.open;
+      const c2Bear = c2.close < c2.open;
+      const c0Bear = c0.close < c0.open;
+      const middleSmall = b1 / r1 < 0.35;
+      const starGapDown = Math.max(c1.open, c1.close) < c2.close;
+      const starGapUp = Math.min(c1.open, c1.close) > c2.close;
+      const midC2 = c2.open + (c2.close - c2.open) * 0.5;
+      let pattern = null;
+      let direction = null;
+      if (S.aiVisionMorningStar && c2Bear && middleSmall && c0Bull && starGapDown && c0.close > midC2) {
+        pattern = 'MORNING_STAR';
+        direction = 'BUY';
+      }
+      if (S.aiVisionEveningStar && c2Bull && middleSmall && c0Bear && starGapUp && c0.close < midC2) {
+        pattern = 'EVENING_STAR';
+        direction = 'SELL';
+      }
+      if (!pattern) return null;
+      const confidence = clamp01(0.62 + Math.min(0.2, (b0 + b2) / Math.max(c2.open || c0.open || 1, 1e-8)) * 8);
+      return { pattern, direction, confidence };
     }
 
     function calcRsiDivergenceDecision(windowMs) {
@@ -5633,6 +6190,29 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
           strategyKey: 'ema_rsi_pullback',
           direction: 'SELL',
           confidence,
+          rangePct,
+          trendDir,
+          trendAligned: trendDir === 0 || trendDir <= 0,
+          volumeOk: true
+        };
+      }
+      const momentum = prices[prices.length - 1] - prices[Math.max(0, prices.length - 4)];
+      if (emaFastVal > emaSlowVal && rsi >= 52 && momentum > 0) {
+        return {
+          strategyKey: 'ema_rsi_pullback',
+          direction: 'BUY',
+          confidence: clamp01(0.5 + (rsi - 50) / 100 + Math.min(0.15, Math.abs(momentum) / Math.max(prices[prices.length - 1], 1e-8) * 90)),
+          rangePct,
+          trendDir,
+          trendAligned: trendDir === 0 || trendDir >= 0,
+          volumeOk: true
+        };
+      }
+      if (emaFastVal < emaSlowVal && rsi <= 48 && momentum < 0) {
+        return {
+          strategyKey: 'ema_rsi_pullback',
+          direction: 'SELL',
+          confidence: clamp01(0.5 + (50 - rsi) / 100 + Math.min(0.15, Math.abs(momentum) / Math.max(prices[prices.length - 1], 1e-8) * 90)),
           rangePct,
           trendDir,
           trendAligned: trendDir === 0 || trendDir <= 0,
@@ -5774,20 +6354,31 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
     }
 
     function getPartnerTfReadiness() {
-      const req3 = Math.max(1, Math.round(S.partnerReadyBars3m || 6));
-      const req5 = Math.max(1, Math.round(S.partnerReadyBars5m || 3));
-      const req15 = Math.max(1, Math.round(S.partnerReadyBars15m || 2));
-      const bars3 = countReadyBars(SNIPER_TF_MS['3m']);
-      const bars5 = countReadyBars(SNIPER_TF_MS['5m']);
-      const bars15 = countReadyBars(SNIPER_TF_MS['15m']);
-      return {
-        ok: bars3 >= req3 && bars5 >= req5 && bars15 >= req15,
-        details: {
-          '3m': { bars: bars3, required: req3, ready: bars3 >= req3 },
-          '5m': { bars: bars5, required: req5, ready: bars5 >= req5 },
-          '15m': { bars: bars15, required: req15, ready: bars15 >= req15 }
-        }
-      };
+      const checks = [];
+      if (S.sniperEnabledTimeframes?.['1m']) {
+        const req1 = Math.max(1, Math.round(S.partnerReadyBars1m || 10));
+        const bars1 = countReadyBars(SNIPER_TF_MS['1m']);
+        checks.push(['1m', bars1, req1]);
+      }
+      if (S.sniperEnabledTimeframes?.['3m']) {
+        const req3 = Math.max(1, Math.round(S.partnerReadyBars3m || 6));
+        const bars3 = countReadyBars(SNIPER_TF_MS['3m']);
+        checks.push(['3m', bars3, req3]);
+      }
+      if (S.sniperEnabledTimeframes?.['5m']) {
+        const req5 = Math.max(1, Math.round(S.partnerReadyBars5m || 3));
+        const bars5 = countReadyBars(SNIPER_TF_MS['5m']);
+        checks.push(['5m', bars5, req5]);
+      }
+      if (S.sniperEnabledTimeframes?.['15m']) {
+        const req15 = Math.max(1, Math.round(S.partnerReadyBars15m || 2));
+        const bars15 = countReadyBars(SNIPER_TF_MS['15m']);
+        checks.push(['15m', bars15, req15]);
+      }
+      const details = {};
+      checks.forEach(([tf, bars, required]) => { details[tf] = { bars, required, ready: bars >= required }; });
+      const ok = checks.every(([, bars, required]) => bars >= required);
+      return { ok, details };
     }
 
     function calcScalpMicrotrendDecision(windowMs) {
@@ -5799,8 +6390,13 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const emaSlowVal = calcEma(prices, 21);
       const stoch = calcStochastic(prices, 10);
       const vwap = calcSniperVwap(windowMs * 2);
-      const bb = calcBollingerBands(prices, 20, 2);
-      if (emaFastVal == null || emaSlowVal == null || !Number.isFinite(stoch) || !bb) return null;
+      if (emaFastVal == null || emaSlowVal == null || !Number.isFinite(stoch)) return null;
+      const channelPeriod = Math.min(20, prices.length);
+      const recent = prices.slice(-channelPeriod);
+      const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
+      const variance = recent.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / recent.length;
+      const std = Math.sqrt(Math.max(0, variance));
+      const bb = { upper: mean + std * 2, lower: mean - std * 2 };
       const last = prices[prices.length - 1];
       const trendDir = calcTrendDirection(windowMs);
       const rangePct = (nowCandle.high - nowCandle.low) / nowCandle.open;
@@ -5816,7 +6412,18 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         confidence = Math.min(0.98, 0.72 + ((last - bb.upper) / Math.max(last, 1e-8)) * 45 + (stoch - 70) / 100);
         reason = 'RangeRevert(UpperBB)';
       } else {
-        return null;
+        const momentum = prices[prices.length - 1] - prices[Math.max(0, prices.length - 4)];
+        if (emaFastVal > emaSlowVal && stoch >= 52 && momentum > 0) {
+          direction = 'BUY';
+          confidence = 0.54 + Math.min(0.18, Math.abs(momentum) / Math.max(last, 1e-8) * 80);
+          reason = 'MicroTrendFollow(BUY)';
+        } else if (emaFastVal < emaSlowVal && stoch <= 48 && momentum < 0) {
+          direction = 'SELL';
+          confidence = 0.54 + Math.min(0.18, Math.abs(momentum) / Math.max(last, 1e-8) * 80);
+          reason = 'MicroTrendFollow(SELL)';
+        } else {
+          return null;
+        }
       }
       const trendBias = emaFastVal >= emaSlowVal ? 1 : -1;
       const trendAligned = direction === 'BUY' ? trendBias > 0 : trendBias < 0;
@@ -5857,6 +6464,18 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       if (emaRsiPullback?.direction && isStrategyEnabled(emaRsiPullback.strategyKey)) {
         emaRsiPullback.tfKey = tfKey;
         decisions.push(applyConfirmationBoost(emaRsiPullback, windowMs));
+      }
+      const vwapMomentum = calcVwapMomentumDecision(tfKey);
+      if (vwapMomentum?.direction && isStrategyEnabled(vwapMomentum.strategyKey)) {
+        vwapMomentum.tfKey = tfKey;
+        decisions.push(applyConfirmationBoost(vwapMomentum, windowMs));
+      }
+      const candlePattern = S.candlestickPatternEnabled ? calcCandlestickPatternDecision(windowMs) : null;
+      if (candlePattern?.direction && isStrategyEnabled(candlePattern.strategyKey)) {
+        candlePattern.tfKey = tfKey;
+        const w = clamp01(Number.isFinite(S.candlestickPatternWeight) ? S.candlestickPatternWeight : 0.25);
+        candlePattern.confidence = clamp01(candlePattern.confidence * (0.6 + w));
+        decisions.push(applyConfirmationBoost(candlePattern, windowMs));
       }
       return decisions;
     }
@@ -5911,14 +6530,8 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       return payout >= S.sniperMinPayout;
     }
 
-    function getSniperThresholdForScope(scope) {
-      if (scope === 'REAL') {
-        return Number.isFinite(S.sniperThresholdReal) ? S.sniperThresholdReal : S.sniperThreshold;
-      }
-      if (scope === 'OTC') {
-        return Number.isFinite(S.sniperThresholdOtc) ? S.sniperThresholdOtc : S.sniperThreshold;
-      }
-      return S.sniperThreshold;
+    function getSniperThresholdForScope() {
+      return Number.isFinite(S.sniperThreshold) ? S.sniperThreshold : SNIPER_5S_DEFAULTS.threshold;
     }
 
     function getSniperBaseAmountCents() {
@@ -5943,29 +6556,20 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const now = Date.now();
       const prevStatus = S.sniperTfStatus || {};
       const getPrevStatus = (tf) => prevStatus[tf] || {};
-      if (!isSniperWarmupReady()) {
-        const minutesLeft = Math.ceil(sniperWarmupRemainingMs() / 60000);
-        S.analysisUpdatedAt = now;
-        S.analysisConfidence = 0;
-        S.analysisDirection = null;
-        S.tradeQualityScore = 0;
-        setStatusOverlay(formatStatus('sniper_warming_up', { seconds: minutesLeft }), '', false);
-        const warmStatuses = {};
-        for (const tf of Object.keys(SNIPER_TF_MS)) {
-          if (!S.sniperEnabledTimeframes[tf]) {
-            warmStatuses[tf] = { state: 'off', confidence: null, direction: null };
-            continue;
-          }
-          warmStatuses[tf] = { state: 'warmup', confidence: null, direction: null };
-        }
-        S.sniperTfStatus = warmStatuses;
-        renderSniperMatrix();
-        renderPendingTrades();
-        return;
-      }
-
       const feedStaleMs = 5000;
-      if (!S.lastPriceAt || now - S.lastPriceAt > feedStaleMs) {
+      let effectiveLastPriceAt = Number.isFinite(S.lastPriceAt) ? S.lastPriceAt : 0;
+      if (!effectiveLastPriceAt && Number.isFinite(S.wsLastPriceAt)) {
+        effectiveLastPriceAt = S.wsLastPriceAt;
+      }
+      if (!effectiveLastPriceAt && Array.isArray(S.priceHistory) && S.priceHistory.length) {
+        const tail = S.priceHistory[S.priceHistory.length - 1];
+        if (tail?.timestamp) effectiveLastPriceAt = tail.timestamp;
+      }
+      if (effectiveLastPriceAt && (!S.lastPriceAt || S.lastPriceAt < effectiveLastPriceAt)) {
+        S.lastPriceAt = effectiveLastPriceAt;
+      }
+      if (!effectiveLastPriceAt || now - effectiveLastPriceAt > feedStaleMs) {
+        S.feedState = 'NO_FEED';
         const feedStatuses = {};
         for (const tf of Object.keys(SNIPER_TF_MS)) {
           if (!S.sniperEnabledTimeframes[tf]) {
@@ -5985,6 +6589,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         return;
       }
 
+      S.feedState = 'READY';
       const canTrade = S.autoTrade && !S.executing;
 
       const timeframes = getSniperTimeframes();
@@ -6008,6 +6613,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const assetScope = getExpiryScopeFromAsset(getCurrentAssetLabel());
       const requiredThreshold = clamp01(getSniperThresholdForScope(assetScope));
       const partnerReady = getPartnerTfReadiness();
+      const minReadyCount = Math.max(1, Math.round(S.tfReadyMinCount || 1));
 
       let best = null;
       let bestCandidate = null;
@@ -6024,6 +6630,14 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         const nextAllowed = S.sniperNextTradeByTf[tf] || 0;
         if (now < nextAllowed) continue;
 
+        const readiness = partnerReady.details?.[tf];
+        if (readiness && !readiness.ready) {
+          const confPrev = getPrevStatus(tf)?.confidence ?? null;
+          const dirPrev = getPrevStatus(tf)?.direction ?? null;
+          tfStatus[tf] = { state: 'tf_wait', confidence: confPrev, direction: dirPrev };
+          continue;
+        }
+
         const strategyDecisions = getStrategyDecisions(tf);
         const decision = selectBestStrategyDecision(strategyDecisions);
         const regime = detectMarketRegime(windowMs);
@@ -6038,9 +6652,24 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
           decision.entryWindowSec = entryWindowLimit;
           decision.candleStart = candleStart;
         }
+        const aiVision = calcAiVisionDecision(windowMs);
+        if (decision) {
+          decision.aiVision = aiVision;
+          if (S.aiVisionEnabled) {
+            if (aiVision && aiVision.direction === decision.direction) {
+              decision.confidence = Math.min(1, decision.confidence + 0.06);
+            } else if (S.aiVisionRequireMatch) {
+              tfStatus[tf] = { state: 'ai', confidence: decision.confidence, direction: decision.direction };
+              decisionsByTf[tf] = decision;
+              continue;
+            } else {
+              decision.confidence = Math.max(0, decision.confidence - 0.03);
+            }
+          }
+        }
         decisionsByTf[tf] = decision;
         if (!decision) {
-          tfStatus[tf] = { state: 'warmup', confidence: null, direction: null };
+          tfStatus[tf] = { state: 'nodata', confidence: null, direction: null };
           continue;
         }
         if (!decision.direction) {
@@ -6106,6 +6735,20 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
           tfStatus[tf] = { state: 'chop', confidence: decision.confidence, direction: decision.direction };
           continue;
         }
+        if (!allowOverride && S.sniperVwapEnabled && S.featureVwapAnalysis && decision.vwapDist != null) {
+          const reqVwapDist = Math.max(0, Number.isFinite(S.sniperVwapDeviation) ? S.sniperVwapDeviation : 0);
+          if (reqVwapDist > 0 && Math.abs(decision.vwapDist) < reqVwapDist * 0.35) {
+            tfStatus[tf] = { state: 'vwap', confidence: decision.confidence, direction: decision.direction };
+            continue;
+          }
+        }
+        if (!allowOverride && S.sniperMomentumEnabled && decision.momentum != null) {
+          const reqMomentum = Math.max(0, Number.isFinite(S.sniperMomentumThreshold) ? S.sniperMomentumThreshold : 0);
+          if (reqMomentum > 0 && Math.abs(decision.momentum) < reqMomentum * 0.25) {
+            tfStatus[tf] = { state: 'momentum', confidence: decision.confidence, direction: decision.direction };
+            continue;
+          }
+        }
         if (!allowOverride && !decision.trendAligned) {
           tfStatus[tf] = { state: 'trend', confidence: decision.confidence, direction: decision.direction };
           continue;
@@ -6134,6 +6777,25 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         tfStatus[tf] = { state: 'ready', confidence: decision.confidence, direction: decision.direction };
       }
 
+      const readySignalsForVote = Object.keys(tfStatus)
+        .filter((tf) => ['ready', 'risk'].includes(tfStatus[tf]?.state) && decisionsByTf[tf]?.direction)
+        .map((tf) => decisionsByTf[tf]);
+      if (readySignalsForVote.length >= minReadyCount) {
+        let buyScore = 0;
+        let sellScore = 0;
+        for (const sig of readySignalsForVote) {
+          if (sig.direction === 'BUY') buyScore += Number(sig.confidence || 0);
+          if (sig.direction === 'SELL') sellScore += Number(sig.confidence || 0);
+        }
+        if (buyScore > sellScore && best) {
+          best.direction = 'BUY';
+          best.confidence = Math.max(best.confidence, buyScore / readySignalsForVote.length);
+        } else if (sellScore > buyScore && best) {
+          best.direction = 'SELL';
+          best.confidence = Math.max(best.confidence, sellScore / readySignalsForVote.length);
+        }
+      }
+
       for (const tf of Object.keys(SNIPER_TF_MS)) {
         const prev = getPrevStatus(tf);
         if (!S.sniperEnabledTimeframes[tf]) {
@@ -6145,34 +6807,48 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       S.sniperTfStatus = tfStatus;
       renderSniperMatrix();
       renderPendingTrades();
-
-      if (!partnerReady.ok) {
-        S.analysisConfidence = bestCandidate ? bestCandidate.confidence : 0;
-        S.analysisDirection = bestCandidate ? bestCandidate.direction : null;
-        S.tradeQualityScore = bestCandidate ? Math.round((bestCandidate.confidence || 0) * 100) : 0;
-        S.currentStrategyKey = bestCandidate?.strategyKey || null;
-        S.analysisUpdatedAt = now;
-        setStatusOverlay(`Снайпер: TF not ready 3m=${partnerReady.details['3m'].bars}/${partnerReady.details['3m'].required} 5m=${partnerReady.details['5m'].bars}/${partnerReady.details['5m'].required} 15m=${partnerReady.details['15m'].bars}/${partnerReady.details['15m'].required}`, '', false);
-        return;
-      }
-
       if (!best) {
         S.analysisConfidence = bestCandidate ? bestCandidate.confidence : 0;
         S.analysisDirection = bestCandidate ? bestCandidate.direction : null;
         S.tradeQualityScore = bestCandidate ? Math.round((bestCandidate.confidence || 0) * 100) : 0;
         S.currentStrategyKey = bestCandidate?.strategyKey || null;
         S.analysisUpdatedAt = now;
-        setStatusOverlay('Снайпер: няма чист вход', '', false);
+        const notReady = Object.entries(partnerReady.details || {}).filter(([,d]) => !d.ready);
+        const readyCount = Object.entries(partnerReady.details || {}).filter(([,d]) => !!d.ready).length;
+        if (readyCount < minReadyCount && notReady.length) {
+          const tfNotReadySummary = notReady.map(([tf, d]) => `${tf}=${d.bars}/${d.required}`).join(' ');
+          setStatusOverlay(`Снайпер: TF not ready ${tfNotReadySummary}`, '', false);
+        } else {
+          setStatusOverlay('Снайпер: няма чист вход', '', false);
+        }
         renderPendingTrades();
         return;
       }
 
+      if (S.lastStrategyDirection && best.direction && S.lastStrategyDirection !== best.direction) {
+        const sinceFlip = now - (S.lastStrategyDirectionAt || 0);
+        if (sinceFlip < Math.max(500, S.strategyFlipCooldownMs || 2500)) {
+          best.direction = S.lastStrategyDirection;
+          best.confidence = Math.max(0, (best.confidence || 0) - 0.08);
+        }
+      }
+      if (best.direction) {
+        S.lastStrategyDirection = best.direction;
+        S.lastStrategyDirectionAt = now;
+      }
       S.analysisConfidence = best.confidence;
       S.analysisDirection = best.direction;
       S.analysisUpdatedAt = now;
       S.tradeQualityScore = Math.round((best.confidence || 0) * 100);
       S.sniperLastDecision = best;
       S.currentStrategyKey = best.strategyKey || null;
+      S.lastDecisionSnapshot = {
+        at: now,
+        direction: best.direction || null,
+        confidence: Number(best.confidence || 0),
+        strategyKey: best.strategyKey || null,
+        tfStatus: { ...tfStatus }
+      };
 
       if (!canTrade) {
         setStatusOverlay('Снайпер: изчакване', '', false);
@@ -6202,11 +6878,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         return;
       }
 
-      const preferredDirection = best?.direction;
-      const filteredSignals = preferredDirection
-        ? readySignals.filter(sig => sig.direction === preferredDirection)
-        : readySignals;
-      const signalsToExecute = filteredSignals.slice(0, availableSlots);
+      const signalsToExecute = readySignals.slice(0, availableSlots);
       for (const decision of signalsToExecute) {
         const assetLabel = getCurrentAssetLabel() || '—';
         const assetSearch = assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim();
@@ -6253,6 +6925,8 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         S.assetSelectedForSignal = true;
         S.assetSelectionAttempted = true;
 
+        logConsoleLine(`[SCAN V5-FIXED] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
+        if (decision.aiVision?.pattern) logConsoleLine(`[AI VISION] Patterns: ${decision.aiVision.pattern}`);
         const ok = await executeTradeOrder(signal);
         S.baseAmount = prevBase;
         S.tradeSequenceActive = false;
@@ -6309,8 +6983,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
           S.sniperLastDecision = null;
           S.sniperTfStatus = {};
           if (isSniperMode()) {
-            const warmupMs = getSniperWarmupWindowMs();
-            S.sniperWarmupUntil = Date.now() + warmupMs;
+            S.sniperWarmupUntil = Date.now();
           }
         }
         if (!isSniperMode()) {
@@ -6323,6 +6996,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         setStatusOverlay(formatStatus('warming_up', { seconds: Math.ceil((S.analysisReadyAt - Date.now()) / 1000) }), '', false);
       }
 
+      processPendingTradeConfirmations();
       if (hasActiveTrade()) {
         await finalizeActiveTrades();
       }
@@ -6348,14 +7022,14 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       }
 
       if (S.autoTrade && !S.cycleActive && !S.tradeSequenceActive && !hasActiveTrade() && !S.hasLiveSignal && Date.now() >= S.signalCooldownUntil) {
-        const incoming = await fetchAPISignals();
+        const incoming = LEGACY_SIGNAL_MODE_ENABLED ? await fetchAPISignals() : [];
 
         if (incoming.length) {
           for (const sig of incoming) {
             const delayMs = calculateDelay(sig);
 
             if (delayMs < 0) {
-              logSignalStatus({ label: '5m' }, 'signal_stale', { minIntervalMs: 300000 });
+              logConsoleLine('ПРОПУСК: Просрочен legacy сигнал (изключен режим).');
               continue;
             }
 
@@ -6376,7 +7050,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         }
       }
 
-      if (!S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !hasActiveTrade() && S.signalBuffer.length) {
+      if (LEGACY_SIGNAL_MODE_ENABLED && !S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !hasActiveTrade() && S.signalBuffer.length) {
         S.signalBuffer = S.signalBuffer.filter(s => calculateDelay(s) >= 0);
         if (S.signalBuffer.length) {
           S.signalBuffer.sort((a, b) => a.targetTsMs - b.targetTsMs);
@@ -6797,12 +7471,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         .iaa-grid-row{ display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; position:relative; }
         .iaa-grid-row::after{ content:""; position:absolute; top:2px; bottom:2px; left:50%; width:1px; background:rgba(255,255,255,.06); pointer-events:none; }
         .iaa-stats{ display:flex; flex-wrap:nowrap; gap:8px; margin-top:6px; padding-top:6px; border-top:1px solid rgba(255,255,255,.05); }
-        .iaa-live-card{ margin-top:6px; padding:6px 8px; border-radius:10px; border:1px solid rgba(255,255,255,.08); background:#0b1220; display:flex; flex-direction:column; gap:4px; }
-        .iaa-live-asset{ font-size:12px; font-weight:700; color:#e5e7eb; }
-        .iaa-live-price-row{ display:flex; align-items:center; gap:6px; font-size:11px; }
-        .iaa-live-label{ color:#94a3b8; font-size:10px; }
-        .iaa-live-price{ color:#facc15; font-weight:700; letter-spacing:.3px; }
-        .iaa-live-idle{ color:#9ca3af; font-size:10px; }
         .iaa-balance-summary{ display:flex; align-items:center; justify-content:space-between; gap:6px; margin-top:4px; padding-top:4px; border-top:1px solid rgba(255,255,255,.05); flex-wrap:nowrap; font-size:10px; line-height:1.15; }
         .iaa-balance-row{ display:flex; align-items:center; gap:4px; white-space:nowrap; }
         .iaa-balance-row:not(:last-child)::after{ content:';'; margin-left:4px; color:#6b7280; }
@@ -6827,6 +7495,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         .iaa-tf-dot--bad{ background:#ef4444; box-shadow:0 0 6px rgba(239,68,68,.6); }
         .k{ font-size:11px; color:#9ca3af } .v{ font-size:12px; text-align:right } .blue{ color:#60a5fa } .strong{ font-weight:bold; color:#fff } .wr{ color:#e88565 }
         #iaa-warm{ font-size:10px; text-align:center; margin-top:6px } .red{ color:#f87171 }
+        #iaa-feed-cloud{ align-self:flex-end; font-size:10px; color:#d1d5db; background:rgba(17,24,39,.9); border:1px solid rgba(96,165,250,.35); border-radius:999px; padding:4px 8px; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
         /* Settings Panel */
         #iaa-settings-panel{
@@ -6967,22 +7636,11 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
             <div class="k">Следваща</div><div id="iaa-next-trade" class="v">—</div>
           </div>
         </div>
-        <div class="iaa-stats">
-          <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="start_label">Start</span><span id="iaa-start-time" class="iaa-stat-value">—</span></div>
-          <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="total_label">Total</span><span id="iaa-total-trades" class="iaa-stat-value">0</span></div>
-          <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="win_label">Win</span><span id="iaa-win-trades" class="iaa-stat-value">0</span></div>
-          <div class="iaa-stat-row"><span class="iaa-stat-label" data-status-key="loss_label">Loss</span><span id="iaa-loss-trades" class="iaa-stat-value">0</span></div>
-          <div class="iaa-stat-row">
-            <span class="iaa-stat-label" data-status-key="win_rate_label">%</span>
-            <span id="iaa-win-rate" class="iaa-stat-value">0%</span>
-          </div>
-        </div>
-        <div class="iaa-live-card">
-          <div id="iaa-live-asset" class="iaa-live-asset">—</div>
-          <div class="iaa-live-price-row"><span class="iaa-live-label">PRICE:</span><span id="iaa-live-price" class="iaa-live-price">—</span></div>
-          <div id="iaa-live-idle" class="iaa-live-idle">idle —</div>
-        </div>
         <div class="iaa-balance-summary">
+          <div class="iaa-balance-row">
+            <span class="iaa-balance-label" style="font-weight:700;">Начало</span>
+            <span id="iaa-balance-start-time" class="iaa-balance-value">—</span>
+          </div>
           <div class="iaa-balance-row">
             <span class="iaa-balance-label">Старт</span>
             <span id="iaa-balance-start" class="iaa-balance-value">—</span>
@@ -7007,6 +7665,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
           <div class="iaa-tf-cell" data-tf="30m"><span id="iaa-tf-dot-30m" class="iaa-tf-dot"></span><span id="iaa-tf-30m">30m —</span></div>
         </div>
         <div id="iaa-warm" class="warmup red">ENGINE 0% ЗАГРЯВА</div>
+        <div id="iaa-feed-cloud">Цена: — • История: 0</div>
 
         <div class="iaa-controls">
           <button id="iaa-mouse-toggle" class="iaa-control-btn" title="Mouse Mapping">🖱</button>
@@ -7137,6 +7796,11 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
                   <span class="iaa-field-label">Базова сума ($)</span>
                   <input type="number" id="iaa-sniper-base" min="1" step="1" value="100">
                 </div>
+                <div class="iaa-field-row iaa-field-toggle" title="Когато е OFF ботът не променя сумата в платформата и използва текущата зададена сума.">
+                  <span class="iaa-field-label">Синхронизирай сума с платформата</span>
+                  <label class="iaa-checkbox"><input type="checkbox" id="iaa-amount-sync-enabled" checked> ON/OFF</label>
+                </div>
+                </div>
                 <div class="iaa-field-row" title="Минимален payout за допускане на сделка.">
                   <span class="iaa-field-label">Мин. изплащане %</span>
                   <input type="number" id="iaa-sniper-min-payout" min="0" max="100" step="1" value="70">
@@ -7144,14 +7808,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
                 <div class="iaa-field-row" title="Макс. време за вход в секунда след началото на свещ.">
                   <span class="iaa-field-label">Прозорец за вход (сек)</span>
                   <input type="number" id="iaa-sniper-entry-window" min="0" max="300" step="1" value="5">
-                </div>
-                <div class="iaa-field-row" title="Ниво RSI за препродаденост.">
-                  <span class="iaa-field-label">RSI Препродаден</span>
-                  <input type="number" id="iaa-sniper-rsi-oversold" min="5" max="50" step="1" value="22">
-                </div>
-                <div class="iaa-field-row" title="Ниво RSI за прекупеност.">
-                  <span class="iaa-field-label">RSI Прекупен</span>
-                  <input type="number" id="iaa-sniper-rsi-overbought" min="50" max="95" step="1" value="78">
                 </div>
                 <div class="iaa-field-row" title="Макс. сделки на минута.">
                   <span class="iaa-field-label">Макс. сделки/мин</span>
@@ -7168,10 +7824,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
               </div>
 
               <div id="iaa-tab-advanced" class="iaa-tab-body" style="display:none;">
-                <div class="iaa-field-row" title="Минимален обемен импулс за валиден сигнал.">
-                  <span class="iaa-field-label">Праг обем (0–1)</span>
-                  <input type="number" inputmode="decimal" id="iaa-sniper-volume-threshold" min="0" max="1" step="0.01" value="0.25">
-                </div>
                 <div class="iaa-field-row" title="Минимално отклонение от VWAP за активиране на вход.">
                   <span class="iaa-field-label">VWAP отклонение (0–0.003)</span>
                   <input type="number" inputmode="decimal" id="iaa-sniper-vwap" min="0" max="0.003" step="0.0001" value="0.0012">
@@ -7201,14 +7853,11 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
                   <label title="Филтър за ниска волатилност (chop)."><input type="checkbox" id="iaa-sniper-chop-enabled"> Chop Вкл/Изкл</label>
                   <input type="number" id="iaa-sniper-chop" min="0" max="1" step="0.01" value="0.7">
                 </div>
-                <div class="iaa-field-row" title="Праг на увереност за OTC пазари.">
-                  <span class="iaa-field-label">Праг OTC (0–1)</span>
-                  <input type="number" id="iaa-sniper-threshold-otc" min="0" max="1" step="0.01" value="0.65">
-                </div>
-                <div class="iaa-field-row" title="Праг на увереност за REAL пазари.">
-                  <span class="iaa-field-label">Праг REAL (0–1)</span>
-                  <input type="number" id="iaa-sniper-threshold-real" min="0" max="1" step="0.01" value="0.65">
-                </div>
+                <div class="iaa-subtitle">AI VISION</div>
+                <label class="iaa-checkbox" title="Активира pattern разпознаване за Morning/Evening Star."><input type="checkbox" id="iaa-ai-vision-enabled"> AI Vision активен</label>
+                <label class="iaa-checkbox" title="Разпознава bullish обръщащ pattern Morning Star."><input type="checkbox" id="iaa-ai-vision-morning-star"> Morning Star</label>
+                <label class="iaa-checkbox" title="Разпознава bearish обръщащ pattern Evening Star."><input type="checkbox" id="iaa-ai-vision-evening-star"> Evening Star</label>
+                <label class="iaa-checkbox" title="При включено, вход се допуска само при съвпадащ pattern."><input type="checkbox" id="iaa-ai-vision-require-match"> Изисквай pattern за вход</label>
                 <div class="iaa-field-row" title="Лимит за максимална загуба за сесия.">
                   <span class="iaa-field-label">Стоп при загуба (€)</span>
                   <input type="number" id="iaa-sniper-max-session-loss" min="0" step="1" value="0">
@@ -7250,37 +7899,29 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
                   <label title="Включва 15m в анализите."><input type="checkbox" id="iaa-feature-tf-15m"> 15m</label>
                   <label title="Включва 30m в анализите."><input type="checkbox" id="iaa-feature-tf-30m"> 30m</label>
                 </div>
-                <label class="iaa-checkbox" title="Автоматично синхронизиране на времето на сделки."><input type="checkbox" id="iaa-dynamic-time-toggle-settings"> Динамично време (OTC/REAL)</label>
                 <label class="iaa-checkbox" title="Предотвратява приспиване на таба."><input type="checkbox" id="iaa-sniper-keep-alive"> Дръж таба активен</label>
-                <label class="iaa-checkbox" title="Сменя актив при липса на сделка за зададените минути (OTC списък)."><input type="checkbox" id="iaa-idle-switch-enabled"> Авто смяна на актив при застой</label>
-                <div class="iaa-field-row" title="След колко минути без сделка да смени актив.">
-                  <span class="iaa-field-label">Застой (мин) (5–240)</span>
-                  <input type="number" id="iaa-idle-switch-min" min="5" max="240" step="1" value="60">
-                </div>
               </div>
 
               <div id="iaa-tab-analyses" class="iaa-tab-body" style="display:none;">
-                <label class="iaa-checkbox" title="Автоматично избира стратегия с най-добри резултати."><input type="checkbox" id="iaa-strategy-auto-switch"> Авто смяна на стратегия</label>
-                <div class="iaa-field-row" title="Тежест на Win Rate при избор на стратегия.">
-                  <span class="iaa-field-label">Тежест WR (0–1)</span>
-                  <input type="text" inputmode="decimal" id="iaa-strategy-weight-wr" min="0" max="1" step="0.05" value="0.6">
-                </div>
-                <div class="iaa-field-row" title="Тежест на PnL при избор на стратегия.">
-                  <span class="iaa-field-label">Тежест PnL (0–1)</span>
-                  <input type="text" inputmode="decimal" id="iaa-strategy-weight-pnl" min="0" max="1" step="0.05" value="0.4">
-                </div>
-                <div class="iaa-field-row" title="Минимален брой сделки за оценка на стратегия.">
-                  <span class="iaa-field-label">Обучение (брой) (0–50)</span>
-                  <input type="number" id="iaa-strategy-learning-trades" min="0" max="50" step="1" value="12">
-                </div>
-                <div class="iaa-field-row" title="Максимална серия загуби преди авто-пауза.">
-                  <span class="iaa-field-label">Лимит загуби (1–10)</span>
-                  <input type="number" id="iaa-strategy-loss-streak" min="1" max="10" step="1" value="3">
-                </div>
                 <div class="iaa-subtitle">Стратегии (Partner mode)</div>
                 <label class="iaa-checkbox"><input type="checkbox" id="iaa-strategy-ema-rsi-pullback-enabled"> EMA+RSI Pullback</label>
                 <label class="iaa-checkbox"><input type="checkbox" id="iaa-strategy-scalp-microtrend-enabled"> SCALP Microtrend</label>
+
+                <div class="iaa-subtitle">Candlestick Pattern</div>
+                <label class="iaa-checkbox"><input type="checkbox" id="iaa-candle-pattern-enabled"> Candlestick Pattern On/Off</label>
+                <div class="iaa-field-row" title="Минимална увереност за candle pattern филтъра.">
+                  <span class="iaa-field-label">Candle min confidence (0–1)</span>
+                  <input type="number" id="iaa-candle-pattern-min-conf" min="0" max="1" step="0.01" value="0.6">
+                </div>
+                <div class="iaa-field-row" title="Тежест на candle pattern в общото решение.">
+                  <span class="iaa-field-label">Candle weight (0–1)</span>
+                  <input type="number" id="iaa-candle-pattern-weight" min="0" max="1" step="0.01" value="0.25">
+                </div>
                 <div class="iaa-subtitle">TF readiness gate</div>
+                <div class="iaa-field-row" title="Минимални готови барове за 1m потвърждение.">
+                  <span class="iaa-field-label">1m ready bars</span>
+                  <input type="number" id="iaa-partner-ready-1m" min="1" max="40" step="1" value="10">
+                </div>
                 <div class="iaa-field-row" title="Минимални готови барове за 3m потвърждение.">
                   <span class="iaa-field-label">3m ready bars</span>
                   <input type="number" id="iaa-partner-ready-3m" min="1" max="40" step="1" value="6">
@@ -7449,10 +8090,26 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const consoleClear = $id('iaa-console-clear');
       const calibrationFromMouse = $id('iaa-calibration-open');
 
+      const openSettingsPanel = () => {
+        hidePopups();
+        showPopup('iaa-settings-panel');
+        S.settingsPanelOpen = true;
+        captureSettingsSnapshot();
+        renderSettingsPanel();
+      };
+      const openMousePanel = () => {
+        hidePopups();
+        showPopup('iaa-mouse-panel');
+        S.mousePanelOpen = true;
+        renderMousePanel();
+      };
+
       if (settingsToggle) {
-        settingsToggle.addEventListener('click', () => {
+        settingsToggle.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
           if (S.settingsPanelOpen) hidePopups();
-          else { hidePopups(); showPopup('iaa-settings-panel'); S.settingsPanelOpen = true; captureSettingsSnapshot(); renderSettingsPanel(); }
+          else openSettingsPanel();
         });
       }
 setTimeout(() => {
@@ -7491,9 +8148,11 @@ setTimeout(() => {
 
 
       if (mouseToggle) {
-        mouseToggle.addEventListener('click', () => {
+        mouseToggle.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
           if (S.mousePanelOpen) hidePopups();
-          else { hidePopups(); showPopup('iaa-mouse-panel'); S.mousePanelOpen = true; renderMousePanel(); }
+          else openMousePanel();
         });
       }
       if (calibrationFromMouse) {
@@ -7583,23 +8242,13 @@ setTimeout(() => {
       const prevStatus = S.currentStatus;
       const changed = nextText !== prevStatus;
       const now = Date.now();
-      if (changed && S.lastStatusAt && now - S.lastStatusAt < 800) {
-        return;
-      }
       S.currentStatus = nextText;
       if (changed) {
         S.lastStatusAt = now;
       }
       const el = $id('iaa-status-overlay');
-      if (el) {
-        if (el.textContent !== nextText) {
-          el.textContent = nextText;
-          // Add smooth transition only when the text changes
-          el.style.opacity = '0';
-          setTimeout(() => {
-            el.style.opacity = '1';
-          }, 50);
-        }
+      if (el && el.textContent !== nextText) {
+        el.textContent = nextText;
       }
       if (logToConsole && changed && nextText !== fallback) {
         logConsoleLine(nextText);
@@ -7625,27 +8274,6 @@ setTimeout(() => {
     }
 
 
-    function renderLivePriceCard() {
-      const assetEl = $id('iaa-live-asset');
-      const priceEl = $id('iaa-live-price');
-      const idleEl = $id('iaa-live-idle');
-      const asset = getCurrentAssetLabel() || '—';
-      if (assetEl) assetEl.textContent = asset;
-      const decimals = Number.isFinite(S.currentAssetPriceDecimals) ? Math.max(2, Math.min(8, S.currentAssetPriceDecimals)) : 5;
-      if (priceEl) {
-        if (Number.isFinite(S.currentAssetPrice)) priceEl.textContent = Number(S.currentAssetPrice).toFixed(decimals);
-        else priceEl.textContent = '—';
-      }
-      if (idleEl) {
-        if (S.lastPriceAt) {
-          const ageMs = Date.now() - S.lastPriceAt;
-          idleEl.textContent = `tick ${Math.max(0, ageMs)} ms`;
-        } else {
-          idleEl.textContent = 'idle —';
-        }
-      }
-    }
-
     function renderPendingTrades(){
       const execEl = $id('iaa-exec');
       if (S.currentSignal && execEl) execEl.textContent = fmtHHMMSSLocal(new Date(S.currentSignal.targetTsMs));
@@ -7664,22 +8292,35 @@ setTimeout(() => {
 
       const etaEl = $id('iaa-next-trade');
       if (etaEl) etaEl.textContent = getNextEtaLabel();
-      renderLivePriceCard();
       renderSniperMatrix();
+
+      const feedEl = $id('iaa-feed-cloud');
+      if (feedEl) {
+        const price = Number.isFinite(S.currentAssetPrice) ? String(S.currentAssetPrice) : '—';
+        const historyLen = S.priceHistory?.length || 0;
+        const acceptedTicks = Number.isFinite(S.historyAcceptedTicks) ? S.historyAcceptedTicks : 0;
+        const duplicateTicks = Number.isFinite(S.historyDuplicateTicks) ? S.historyDuplicateTicks : 0;
+        const wsSeen = Number.isFinite(S.wsPacketsSeen) ? S.wsPacketsSeen : 0;
+        const bridgeSeen = Number.isFinite(S.wsBridgeFramesSeen) ? S.wsBridgeFramesSeen : 0;
+        const httpSeen = Number.isFinite(S.httpFramesSeen) ? S.httpFramesSeen : 0;
+        const bridgeState = S.wsBridgeReady ? 'ON' : 'OFF';
+        const source = S.lastFeedSource || 'none';
+        feedEl.textContent = `Цена: ${price} • История: ${historyLen} (✓${acceptedTicks}/dup:${duplicateTicks}) • WS: ${wsSeen} • BR: ${bridgeSeen} • HTTP: ${httpSeen} • Bridge:${bridgeState} • Src:${source}`;
+      }
     }
 
     async function restoreSettings(){
       const base = await storage.get(BASE_AMOUNT_KEY);
       if (typeof base === 'number' && base > 0) S.baseAmount = base;
       if (!Number.isFinite(S.baseAmount) || S.baseAmount <= 0) {
-        S.baseAmount = 100;
+        S.baseAmount = 1;
       }
       const ex  = await storage.get(EXPIRY_KEY); if (typeof ex === 'string') S.expirySetting = normalizeExpiry(ex) || '1M';
       const analysisEnabled = await storage.get(ANALYSIS_ENABLED_KEY); if (typeof analysisEnabled === 'boolean') S.analysisEnabled = analysisEnabled;
       const analysisConfidence = await storage.get(ANALYSIS_CONFIDENCE_KEY); if (typeof analysisConfidence === 'number') S.analysisConfidenceThreshold = analysisConfidence;
       const tradeIntervalMin = await storage.get(TRADE_INTERVAL_MIN_KEY); if (typeof tradeIntervalMin === 'number') S.tradeIntervalMin = tradeIntervalMin;
-      const maxTradesPerMinute = await storage.get(MAX_TRADES_PER_MIN_KEY); if (typeof maxTradesPerMinute === 'number') S.maxTradesPerMinute = maxTradesPerMinute;
-      const maxOpenTrades = await storage.get(MAX_OPEN_TRADES_KEY); if (typeof maxOpenTrades === 'number') S.maxOpenTrades = maxOpenTrades;
+      const maxTradesPerMinute = await storage.get(MAX_TRADES_PER_MIN_KEY); if (typeof maxTradesPerMinute === 'number') S.maxTradesPerMinute = maxTradesPerMinute; else if (!Number.isFinite(S.maxTradesPerMinute)) S.maxTradesPerMinute = 5;
+      const maxOpenTrades = await storage.get(MAX_OPEN_TRADES_KEY); if (typeof maxOpenTrades === 'number') S.maxOpenTrades = maxOpenTrades; else if (!Number.isFinite(S.maxOpenTrades)) S.maxOpenTrades = 5;
       const payoutMin = await storage.get(PAYOUT_MIN_KEY); if (typeof payoutMin === 'number') S.payoutMin = payoutMin;
       const payoutMax = await storage.get(PAYOUT_MAX_KEY); if (typeof payoutMax === 'number') S.payoutMax = payoutMax;
       const payoutRequired = await storage.get(PAYOUT_REQUIRED_KEY); if (typeof payoutRequired === 'boolean') S.payoutRequired = payoutRequired;
@@ -7765,6 +8406,10 @@ setTimeout(() => {
       if (typeof featureVwapAnalysis === 'boolean') S.featureVwapAnalysis = featureVwapAnalysis;
       const featureSessionBoost = await storage.get(FEATURE_SESSION_BOOST_KEY);
       if (typeof featureSessionBoost === 'boolean') S.featureSessionBoost = featureSessionBoost;
+      const aiVisionEnabled = await storage.get(AI_VISION_ENABLED_KEY); if (typeof aiVisionEnabled === 'boolean') S.aiVisionEnabled = aiVisionEnabled;
+      const aiVisionMorning = await storage.get(AI_VISION_MORNING_STAR_KEY); if (typeof aiVisionMorning === 'boolean') S.aiVisionMorningStar = aiVisionMorning;
+      const aiVisionEvening = await storage.get(AI_VISION_EVENING_STAR_KEY); if (typeof aiVisionEvening === 'boolean') S.aiVisionEveningStar = aiVisionEvening;
+      const aiVisionRequire = await storage.get(AI_VISION_REQUIRE_MATCH_KEY); if (typeof aiVisionRequire === 'boolean') S.aiVisionRequireMatch = aiVisionRequire;
       const featureTimeframes = await storage.get(FEATURE_TIMEFRAMES_KEY);
       if (featureTimeframes && typeof featureTimeframes === 'object') {
         S.featureTimeframes = Object.assign({}, S.featureTimeframes, featureTimeframes);
@@ -7793,6 +8438,10 @@ setTimeout(() => {
       if (typeof rsiDivergenceRsiWindow === 'number') S.rsiDivergenceRsiWindow = Math.max(5, Math.round(rsiDivergenceRsiWindow));
       const candlestickPatternMinConf = await storage.get(CANDLE_PATTERN_MIN_CONF_KEY);
       if (typeof candlestickPatternMinConf === 'number') S.candlestickPatternMinConfidence = clamp01(candlestickPatternMinConf);
+      const candlestickPatternEnabled = await storage.get(CANDLE_PATTERN_ENABLED_KEY);
+      if (typeof candlestickPatternEnabled === 'boolean') S.candlestickPatternEnabled = candlestickPatternEnabled;
+      const candlestickPatternWeight = await storage.get(CANDLE_PATTERN_WEIGHT_KEY);
+      if (typeof candlestickPatternWeight === 'number') S.candlestickPatternWeight = clamp01(candlestickPatternWeight);
       const emaRsiFast = await storage.get(EMA_RSI_FAST_KEY);
       if (typeof emaRsiFast === 'number') S.emaRsiFast = Math.max(2, Math.round(emaRsiFast));
       const emaRsiSlow = await storage.get(EMA_RSI_SLOW_KEY);
@@ -7803,6 +8452,8 @@ setTimeout(() => {
       if (typeof emaRsiOversold === 'number') S.emaRsiOversold = Math.max(10, Math.min(50, Math.round(emaRsiOversold)));
       const emaRsiOverbought = await storage.get(EMA_RSI_OVERBOUGHT_KEY);
       if (typeof emaRsiOverbought === 'number') S.emaRsiOverbought = Math.max(50, Math.min(90, Math.round(emaRsiOverbought)));
+      const partnerReadyBars1m = await storage.get(PARTNER_READY_1M_BARS_KEY);
+      if (typeof partnerReadyBars1m === 'number') S.partnerReadyBars1m = Math.max(1, Math.min(40, Math.round(partnerReadyBars1m)));
       const partnerReadyBars3m = await storage.get(PARTNER_READY_3M_BARS_KEY);
       if (typeof partnerReadyBars3m === 'number') S.partnerReadyBars3m = Math.max(1, Math.min(40, Math.round(partnerReadyBars3m)));
       const partnerReadyBars5m = await storage.get(PARTNER_READY_5M_BARS_KEY);
@@ -7880,6 +8531,10 @@ setTimeout(() => {
       storage.set(FEATURE_VOLUME_REJECTION_KEY, S.featureVolumeRejection);
       storage.set(FEATURE_VWAP_ANALYSIS_KEY, S.featureVwapAnalysis);
       storage.set(FEATURE_SESSION_BOOST_KEY, S.featureSessionBoost);
+      storage.set(AI_VISION_ENABLED_KEY, S.aiVisionEnabled);
+      storage.set(AI_VISION_MORNING_STAR_KEY, S.aiVisionMorningStar);
+      storage.set(AI_VISION_EVENING_STAR_KEY, S.aiVisionEveningStar);
+      storage.set(AI_VISION_REQUIRE_MATCH_KEY, S.aiVisionRequireMatch);
       storage.set(FEATURE_TIMEFRAMES_KEY, S.featureTimeframes);
       storage.set(STRATEGY_AUTO_SWITCH_KEY, S.autoSwitchStrategy);
       storage.set(STRATEGY_WR_WEIGHT_KEY, S.strategyWeightWr);
@@ -7891,11 +8546,14 @@ setTimeout(() => {
       storage.set(RSI_DIVERGENCE_MIN_DELTA_KEY, S.rsiDivergenceMinDelta);
       storage.set(RSI_DIVERGENCE_RSI_WINDOW_KEY, S.rsiDivergenceRsiWindow);
       storage.set(CANDLE_PATTERN_MIN_CONF_KEY, S.candlestickPatternMinConfidence);
+      storage.set(CANDLE_PATTERN_ENABLED_KEY, S.candlestickPatternEnabled);
+      storage.set(CANDLE_PATTERN_WEIGHT_KEY, S.candlestickPatternWeight);
       storage.set(EMA_RSI_FAST_KEY, S.emaRsiFast);
       storage.set(EMA_RSI_SLOW_KEY, S.emaRsiSlow);
       storage.set(EMA_RSI_RSI_WINDOW_KEY, S.emaRsiWindow);
       storage.set(EMA_RSI_OVERSOLD_KEY, S.emaRsiOversold);
       storage.set(EMA_RSI_OVERBOUGHT_KEY, S.emaRsiOverbought);
+      storage.set(PARTNER_READY_1M_BARS_KEY, S.partnerReadyBars1m);
       storage.set(PARTNER_READY_3M_BARS_KEY, S.partnerReadyBars3m);
       storage.set(PARTNER_READY_5M_BARS_KEY, S.partnerReadyBars5m);
       storage.set(PARTNER_READY_15M_BARS_KEY, S.partnerReadyBars15m);
@@ -7941,6 +8599,10 @@ setTimeout(() => {
         featureVolumeRejection: S.featureVolumeRejection,
         featureVwapAnalysis: S.featureVwapAnalysis,
         featureSessionBoost: S.featureSessionBoost,
+        aiVisionEnabled: S.aiVisionEnabled,
+        aiVisionMorningStar: S.aiVisionMorningStar,
+        aiVisionEveningStar: S.aiVisionEveningStar,
+        aiVisionRequireMatch: S.aiVisionRequireMatch,
         featureTimeframes: { ...(S.featureTimeframes || {}) },
         dynamicExpiryEnabled: S.dynamicExpiryEnabled,
         sniperKeepAliveEnabled: S.sniperKeepAliveEnabled,
@@ -7955,6 +8617,8 @@ setTimeout(() => {
         rsiDivergenceMinDelta: S.rsiDivergenceMinDelta,
         rsiDivergenceRsiWindow: S.rsiDivergenceRsiWindow,
         candlestickPatternMinConfidence: S.candlestickPatternMinConfidence,
+        candlestickPatternEnabled: S.candlestickPatternEnabled,
+        candlestickPatternWeight: S.candlestickPatternWeight,
         emaRsiFast: S.emaRsiFast,
         emaRsiSlow: S.emaRsiSlow,
         emaRsiWindow: S.emaRsiWindow,
@@ -7972,10 +8636,13 @@ setTimeout(() => {
 
     function renderSettingsPanel(){
       const l1 = $id('iaa-l1'), l2 = $id('iaa-l2');
-      if (l1) l1.checked = S.l1Active;
-      if (l2) l2.checked = S.l2Active;
+      if (l1) { l1.checked = false; const row = l1.closest('.iaa-row') || l1.closest('.iaa-field-row'); if (row) row.style.display = 'none'; }
+      if (l2) { l2.checked = false; const row = l2.closest('.iaa-row') || l2.closest('.iaa-field-row'); if (row) row.style.display = 'none'; }
 
+      const modeSignals = $id('iaa-mode-signals');
       const modeSniper = $id('iaa-mode-sniper');
+      if (modeSignals) modeSignals.style.display = 'none';
+      if (modeSniper) modeSniper.style.flex = '1 1 100%';
       const sniperPanel = $id('iaa-settings-sniper');
       const sniper5sSettings = $id('iaa-sniper-5s-settings');
       const sniperSettingsBody = $id('iaa-sniper-settings-body');
@@ -8032,6 +8699,10 @@ setTimeout(() => {
       const featureVolumeRejection = $id('iaa-feature-volume-rejection');
       const featureVwapAnalysis = $id('iaa-feature-vwap-analysis');
       const featureSessionBoost = $id('iaa-feature-session-boost');
+      const aiVisionEnabled = $id('iaa-ai-vision-enabled');
+      const aiVisionMorningStar = $id('iaa-ai-vision-morning-star');
+      const aiVisionEveningStar = $id('iaa-ai-vision-evening-star');
+      const aiVisionRequireMatch = $id('iaa-ai-vision-require-match');
       const featureTf15s = $id('iaa-feature-tf-15s');
       const featureTf1m = $id('iaa-feature-tf-1m');
       const featureTf3m = $id('iaa-feature-tf-3m');
@@ -8047,6 +8718,7 @@ setTimeout(() => {
       const strategyLossStreak = $id('iaa-strategy-loss-streak');
       const emaRsiPullbackEnabled = $id('iaa-strategy-ema-rsi-pullback-enabled');
       const scalpMicrotrendEnabled = $id('iaa-strategy-scalp-microtrend-enabled');
+      const partnerReady1m = $id('iaa-partner-ready-1m');
       const partnerReady3m = $id('iaa-partner-ready-3m');
       const partnerReady5m = $id('iaa-partner-ready-5m');
       const partnerReady15m = $id('iaa-partner-ready-15m');
@@ -8055,6 +8727,11 @@ setTimeout(() => {
       const emaRsiWindow = $id('iaa-ema-rsi-window');
       const emaRsiOversold = $id('iaa-ema-rsi-oversold');
       const emaRsiOverbought = $id('iaa-ema-rsi-overbought');
+      const candlePatternEnabled = $id('iaa-candle-pattern-enabled');
+      const candlePatternMinConf = $id('iaa-candle-pattern-min-conf');
+      const candlePatternWeight = $id('iaa-candle-pattern-weight');
+      const hideFieldRow = (el) => { const row = el?.closest?.('.iaa-field-row'); if (row) row.style.display = 'none'; };
+      hideFieldRow(emaRsiFast); hideFieldRow(emaRsiSlow); hideFieldRow(emaRsiWindow); hideFieldRow(emaRsiOversold); hideFieldRow(emaRsiOverbought);
       const maxTradesPerMinute = $id('iaa-max-trades-per-minute');
       const maxOpenTrades = $id('iaa-max-open-trades');
       const regimeStrength = $id('iaa-regime-strength');
@@ -8080,6 +8757,7 @@ setTimeout(() => {
       const analysisWarmup = $id('iaa-analysis-warmup');
       const selfTradeEnabled = $id('iaa-self-trade-enabled');
       const signalTimeOffset = $id('iaa-signal-time-offset');
+      if (signalTimeOffset) { const row = signalTimeOffset.closest('.iaa-row') || signalTimeOffset.closest('.iaa-field-row'); if (row) row.style.display='none'; }
 
       if (exp) exp.value = S.expirySetting;
       if (base) base.value = (S.baseAmount ?? 100)/100;
@@ -8097,8 +8775,6 @@ setTimeout(() => {
       if (signalTimeOffset) signalTimeOffset.value = S.signalTimeOffsetMin ?? 0;
       if (sniper5sSettings) sniper5sSettings.style.display = 'block';
       if (sniperThreshold) sniperThreshold.value = S.sniperThreshold ?? 0.7;
-      if (sniperThresholdOtc) sniperThresholdOtc.value = S.sniperThresholdOtc ?? S.sniperThreshold ?? 0.7;
-      if (sniperThresholdReal) sniperThresholdReal.value = S.sniperThresholdReal ?? S.sniperThreshold ?? 0.7;
       if (sniperBase) sniperBase.value = (S.sniperBaseAmount ?? 10000) / 100;
       if (sniperMinPayout) sniperMinPayout.value = S.sniperMinPayout ?? 85;
       if (sniperEntryWindow) sniperEntryWindow.value = S.sniperEntryWindowSec ?? 5;
@@ -8119,8 +8795,6 @@ setTimeout(() => {
       if (sniperVolumeWeight) sniperVolumeWeight.value = S.sniperVolumeWeight ?? 0.1;
       if (sniperEmaFast) sniperEmaFast.value = S.sniperEmaFast ?? SNIPER_5S_DEFAULTS.emaFast;
       if (sniperEmaSlow) sniperEmaSlow.value = S.sniperEmaSlow ?? SNIPER_5S_DEFAULTS.emaSlow;
-      if (sniperRsiOversold) sniperRsiOversold.value = S.sniperRsiOversold ?? SNIPER_5S_DEFAULTS.rsiOversold;
-      if (sniperRsiOverbought) sniperRsiOverbought.value = S.sniperRsiOverbought ?? SNIPER_5S_DEFAULTS.rsiOverbought;
       if (sniperOverrideConfidence) {
         const overrideValue = S.sniperOverrideConfidencePct ?? 90;
         sniperOverrideConfidence.value = overrideValue;
@@ -8138,25 +8812,22 @@ setTimeout(() => {
       if (sniperMultiCount) sniperMultiCount.value = S.sniperMultiCount ?? 2;
       if (sniperMultiAmount) sniperMultiAmount.value = S.sniperMultiAmountPct ?? 50;
       if (sniperMultiEnabled) sniperMultiEnabled.checked = !!S.sniperMultiEnabled;
-      if (dynamicTimeToggleSettings) dynamicTimeToggleSettings.checked = !!S.dynamicExpiryEnabled;
       if (featureVolumeRejection) featureVolumeRejection.checked = !!S.featureVolumeRejection;
       if (featureVwapAnalysis) featureVwapAnalysis.checked = !!S.featureVwapAnalysis;
       if (featureSessionBoost) featureSessionBoost.checked = !!S.featureSessionBoost;
+      if (aiVisionEnabled) aiVisionEnabled.checked = !!S.aiVisionEnabled;
+      if (aiVisionMorningStar) aiVisionMorningStar.checked = !!S.aiVisionMorningStar;
+      if (aiVisionEveningStar) aiVisionEveningStar.checked = !!S.aiVisionEveningStar;
+      if (aiVisionRequireMatch) aiVisionRequireMatch.checked = !!S.aiVisionRequireMatch;
       if (featureTf15s) featureTf15s.checked = !!S.featureTimeframes?.['15s'];
       if (featureTf1m) featureTf1m.checked = !!S.featureTimeframes?.['1m'];
       if (featureTf3m) featureTf3m.checked = !!S.featureTimeframes?.['3m'];
       if (featureTf5m) featureTf5m.checked = !!S.featureTimeframes?.['5m'];
       if (featureTf15m) featureTf15m.checked = !!S.featureTimeframes?.['15m'];
       if (featureTf30m) featureTf30m.checked = !!S.featureTimeframes?.['30m'];
-      if (idleSwitchEnabled) idleSwitchEnabled.checked = !!S.idleSwitchEnabled;
-      if (idleSwitchMin) idleSwitchMin.value = S.idleSwitchMinutes ?? 60;
-      if (strategyAutoSwitch) strategyAutoSwitch.checked = !!S.autoSwitchStrategy;
-      if (strategyWeightWr) strategyWeightWr.value = (S.strategyWeightWr ?? STRATEGY_DEFAULTS.wrWeight).toFixed(2);
-      if (strategyWeightPnl) strategyWeightPnl.value = (S.strategyWeightPnl ?? STRATEGY_DEFAULTS.pnlWeight).toFixed(2);
-      if (strategyLearningTrades) strategyLearningTrades.value = S.strategyLearningTrades ?? STRATEGY_DEFAULTS.learningTrades;
-      if (strategyLossStreak) strategyLossStreak.value = S.strategyLossStreakLimit ?? STRATEGY_DEFAULTS.lossStreakLimit;
       if (emaRsiPullbackEnabled) emaRsiPullbackEnabled.checked = isStrategyEnabled('ema_rsi_pullback');
       if (scalpMicrotrendEnabled) scalpMicrotrendEnabled.checked = isStrategyEnabled('scalp_microtrend');
+      if (partnerReady1m) partnerReady1m.value = S.partnerReadyBars1m ?? 10;
       if (partnerReady3m) partnerReady3m.value = S.partnerReadyBars3m ?? 6;
       if (partnerReady5m) partnerReady5m.value = S.partnerReadyBars5m ?? 3;
       if (partnerReady15m) partnerReady15m.value = S.partnerReadyBars15m ?? 2;
@@ -8165,8 +8836,11 @@ setTimeout(() => {
       if (emaRsiWindow) emaRsiWindow.value = S.emaRsiWindow ?? 14;
       if (emaRsiOversold) emaRsiOversold.value = S.emaRsiOversold ?? 35;
       if (emaRsiOverbought) emaRsiOverbought.value = S.emaRsiOverbought ?? 65;
-      if (maxTradesPerMinute) maxTradesPerMinute.value = S.maxTradesPerMinute ?? 0;
-      if (maxOpenTrades) maxOpenTrades.value = S.maxOpenTrades ?? 1;
+      if (candlePatternEnabled) candlePatternEnabled.checked = !!S.candlestickPatternEnabled;
+      if (candlePatternMinConf) candlePatternMinConf.value = Number(S.candlestickPatternMinConfidence ?? 0.6).toFixed(2);
+      if (candlePatternWeight) candlePatternWeight.value = Number(S.candlestickPatternWeight ?? 0.25).toFixed(2);
+      if (maxTradesPerMinute) maxTradesPerMinute.value = S.maxTradesPerMinute ?? 5;
+      if (maxOpenTrades) maxOpenTrades.value = S.maxOpenTrades ?? 5;
       if (regimeStrength) regimeStrength.value = (S.regimeStrength ?? 0.6).toFixed(2);
       if (confirmationStrength) confirmationStrength.value = (S.confirmationStrength ?? 0.7).toFixed(2);
       if (biasStrength) biasStrength.value = (S.biasStrength ?? 0.6).toFixed(2);
@@ -8178,8 +8852,6 @@ setTimeout(() => {
       const vwapMax = (SNIPER_5S_DEFAULTS.vwapDeviation || 0.0012) * 2;
       const momentumMax = (SNIPER_5S_DEFAULTS.momentumThreshold || 0.0014) * 2;
       if (sniperThreshold) applyStrictnessColor(sniperThreshold, parseNumberFlexible(sniperThreshold.value), { min: 0, max: 1, highIsStrict: true });
-      if (sniperThresholdOtc) applyStrictnessColor(sniperThresholdOtc, parseNumberFlexible(sniperThresholdOtc.value), { min: 0, max: 1, highIsStrict: true });
-      if (sniperThresholdReal) applyStrictnessColor(sniperThresholdReal, parseNumberFlexible(sniperThresholdReal.value), { min: 0, max: 1, highIsStrict: true });
       if (sniperVwap) applyStrictnessColor(sniperVwap, parseNumberFlexible(sniperVwap.value), { min: 0, max: vwapMax, highIsStrict: true });
       if (sniperMomentum) applyStrictnessColor(sniperMomentum, parseNumberFlexible(sniperMomentum.value), { min: 0, max: momentumMax, highIsStrict: true });
       if (sniperVwapWeight) applyStrictnessColor(sniperVwapWeight, parseNumberFlexible(sniperVwapWeight.value), { min: 0, max: 1, highIsStrict: true });
@@ -8187,8 +8859,6 @@ setTimeout(() => {
       if (sniperVolumeWeight) applyStrictnessColor(sniperVolumeWeight, parseNumberFlexible(sniperVolumeWeight.value), { min: 0, max: 1, highIsStrict: false });
       if (sniperChop) applyStrictnessColor(sniperChop, parseNumberFlexible(sniperChop.value), { min: 0, max: 1, highIsStrict: true });
       if (sniperVolumeThreshold) applyStrictnessColor(sniperVolumeThreshold, parseNumberFlexible(sniperVolumeThreshold.value), { min: 0, max: 1, highIsStrict: true });
-      if (strategyWeightWr) applyStrictnessColor(strategyWeightWr, parseNumberFlexible(strategyWeightWr.value), { min: 0, max: 1, highIsStrict: false });
-      if (strategyWeightPnl) applyStrictnessColor(strategyWeightPnl, parseNumberFlexible(strategyWeightPnl.value), { min: 0, max: 1, highIsStrict: false });
       if (regimeStrength) applyStrictnessColor(regimeStrength, parseNumberFlexible(regimeStrength.value), { min: 0, max: 1, highIsStrict: true });
       if (confirmationStrength) applyStrictnessColor(confirmationStrength, parseNumberFlexible(confirmationStrength.value), { min: 0, max: 1, highIsStrict: true });
       if (biasStrength) applyStrictnessColor(biasStrength, parseNumberFlexible(biasStrength.value), { min: 0, max: 1, highIsStrict: true });
@@ -8221,6 +8891,9 @@ setTimeout(() => {
         features: $id('iaa-tab-features'),
         analyses: $id('iaa-tab-analyses')
       };
+      if (!tabBodies[S.sniperSettingsTab]) {
+        S.sniperSettingsTab = 'basic';
+      }
       $$('.iaa-tab-btn').forEach((btn) => {
         const tab = btn.getAttribute('data-tab');
         const isActive = tab === S.sniperSettingsTab;
@@ -8308,6 +8981,56 @@ setTimeout(() => {
         }, true);
       }
 
+      const settingsToggleBtn = $id('iaa-settings-toggle');
+      if (settingsToggleBtn && !settingsToggleBtn.dataset.boundPopupClick) {
+        settingsToggleBtn.dataset.boundPopupClick = '1';
+        settingsToggleBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          handlePanelPopupAction('settings');
+        });
+      }
+
+      const mouseToggleBtn = $id('iaa-mouse-toggle');
+      if (mouseToggleBtn && !mouseToggleBtn.dataset.boundPopupClick) {
+        mouseToggleBtn.dataset.boundPopupClick = '1';
+        mouseToggleBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          handlePanelPopupAction('mouse');
+        });
+      }
+
+      const settingsPanel = $id('iaa-settings-panel');
+      if (settingsPanel && !settingsPanel.dataset.tabDelegated) {
+        settingsPanel.dataset.tabDelegated = '1';
+        settingsPanel.addEventListener('click', (event) => {
+          const target = event.target;
+          if (!(target instanceof Element)) return;
+          const tabBtn = target.closest('.iaa-tab-btn');
+          if (!tabBtn) return;
+          const tab = tabBtn.getAttribute('data-tab');
+          if (!tab) return;
+          event.preventDefault();
+          event.stopPropagation();
+          S.sniperSettingsTab = tab;
+          renderSettingsPanel();
+        });
+      }
+
+      $$('.iaa-tab-btn').forEach((btn) => {
+        if (btn.dataset.boundTabClick) return;
+        btn.dataset.boundTabClick = '1';
+        btn.addEventListener('click', (event) => {
+          const tab = btn.getAttribute('data-tab');
+          if (!tab) return;
+          event.preventDefault();
+          event.stopPropagation();
+          S.sniperSettingsTab = tab;
+          renderSettingsPanel();
+        });
+      });
+
       const closeSettingsPanel = () => {
         const panel = $id('iaa-settings-panel');
         if (panel) panel.style.display = 'none';
@@ -8337,7 +9060,7 @@ setTimeout(() => {
             S.analysisReadyAt = S.analysisEnabled
               ? Date.now() + Math.max(1, S.analysisWarmupMin) * 60 * 1000
               : 0;
-            S.sniperWarmupUntil = Date.now() + getSniperWarmupWindowMs();
+            S.sniperWarmupUntil = Date.now();
             S.sniperLastTradeByTf = {};
             S.sniperNextTradeByTf = {};
             logConsoleLine(formatStatus('bot_started'));
@@ -8423,16 +9146,8 @@ setTimeout(() => {
       if (dynamicTimeToggle) {
         dynamicTimeToggle.checked = !!S.dynamicExpiryEnabled;
         dynamicTimeToggle.addEventListener('change', () => {
-          S.dynamicExpiryEnabled = dynamicTimeToggle.checked;
+          S.dynamicExpiryEnabled = false;
           if (dynamicTimeToggleSettings) dynamicTimeToggleSettings.checked = S.dynamicExpiryEnabled;
-          persistSettings();
-        });
-      }
-      if (dynamicTimeToggleSettings) {
-        dynamicTimeToggleSettings.checked = !!S.dynamicExpiryEnabled;
-        dynamicTimeToggleSettings.addEventListener('change', () => {
-          S.dynamicExpiryEnabled = dynamicTimeToggleSettings.checked;
-          if (dynamicTimeToggle) dynamicTimeToggle.checked = S.dynamicExpiryEnabled;
           persistSettings();
         });
       }
@@ -8505,6 +9220,9 @@ setTimeout(() => {
       const FEATURE_VOLUME_REJECTION = $id('iaa-feature-volume-rejection');
       const FEATURE_VWAP_ANALYSIS = $id('iaa-feature-vwap-analysis');
       const FEATURE_SESSION_BOOST = $id('iaa-feature-session-boost');
+      const CANDLE_PATTERN_ENABLED = $id('iaa-candle-pattern-enabled');
+      const CANDLE_PATTERN_MIN_CONF = $id('iaa-candle-pattern-min-conf');
+      const CANDLE_PATTERN_WEIGHT = $id('iaa-candle-pattern-weight');
       const FEATURE_TF_15S = $id('iaa-feature-tf-15s');
       const FEATURE_TF_1M = $id('iaa-feature-tf-1m');
       const FEATURE_TF_3M = $id('iaa-feature-tf-3m');
@@ -8520,6 +9238,7 @@ setTimeout(() => {
       const STRATEGY_LOSS_STREAK = $id('iaa-strategy-loss-streak');
       const STRATEGY_EMA_RSI_PULLBACK = $id('iaa-strategy-ema-rsi-pullback-enabled');
       const STRATEGY_SCALP_MICROTREND = $id('iaa-strategy-scalp-microtrend-enabled');
+      const PARTNER_READY_1M = $id('iaa-partner-ready-1m');
       const PARTNER_READY_3M = $id('iaa-partner-ready-3m');
       const PARTNER_READY_5M = $id('iaa-partner-ready-5m');
       const PARTNER_READY_15M = $id('iaa-partner-ready-15m');
@@ -8541,15 +9260,6 @@ setTimeout(() => {
       const BIAS_TF_30M = $id('iaa-bias-tf-30m');
       const CONFLICT_STRENGTH = $id('iaa-conflict-strength');
 
-      $$('.iaa-tab-btn').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const tab = btn.getAttribute('data-tab');
-          if (!tab) return;
-          S.sniperSettingsTab = tab;
-          renderSettingsPanel();
-        });
-      });
-
       if (SETTINGS_SAVE) {
         SETTINGS_SAVE.addEventListener('click', () => {
           persistSettings();
@@ -8563,10 +9273,10 @@ setTimeout(() => {
         });
       }
 
-      if (L1) L1.addEventListener('change',()=>{ S.l1Active=L1.checked; persistSettings(); });
-      if (L2) L2.addEventListener('change',()=>{ S.l2Active=L2.checked; if (S.l2Active && !S.l1Active){ L1.checked=true; S.l1Active=true; } persistSettings(); });
-      if (L1M) L1M.addEventListener('input',()=>{ S.l1Multiplier=parseNumberFlexible(L1M.value)||2; persistSettings(); });
-      if (L2M) L2M.addEventListener('input',()=>{ S.l2Multiplier=parseNumberFlexible(L2M.value)||4; persistSettings(); });
+      if (L1) L1.addEventListener('change',()=>{ S.l1Active=false; persistSettings(); });
+      if (L2) L2.addEventListener('change',()=>{ S.l2Active=false; persistSettings(); });
+      if (L1M) { const row = L1M.closest('.iaa-row') || L1M.closest('.iaa-field-row'); if (row) row.style.display='none'; L1M.addEventListener('input',()=>{ S.l1Multiplier=1; persistSettings(); }); }
+      if (L2M) { const row = L2M.closest('.iaa-row') || L2M.closest('.iaa-field-row'); if (row) row.style.display='none'; L2M.addEventListener('input',()=>{ S.l2Multiplier=1; persistSettings(); }); }
       if (EXP) EXP.addEventListener('change',()=>{ S.expirySetting=normalizeExpiry(EXP.value)||'1M'; persistSettings(); });
       if (BASE) BASE.addEventListener('input',()=>{ const d=parseNumberFlexible(BASE.value)||1; S.baseAmount = Math.max(1, Math.round(d))*100; persistSettings(); });
       if (SNIPER_MAX_SESSION_LOSS) {
@@ -8688,22 +9398,6 @@ setTimeout(() => {
           persistSettings();
         });
       }
-      if (SNIPER_THRESHOLD_OTC) {
-        SNIPER_THRESHOLD_OTC.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_THRESHOLD_OTC.value) || 0;
-          S.sniperThresholdOtc = Math.max(0, Math.min(1, d));
-          applyStrictnessColor(SNIPER_THRESHOLD_OTC, S.sniperThresholdOtc, { min: 0, max: 1, highIsStrict: true });
-          persistSettings();
-        });
-      }
-      if (SNIPER_THRESHOLD_REAL) {
-        SNIPER_THRESHOLD_REAL.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_THRESHOLD_REAL.value) || 0;
-          S.sniperThresholdReal = Math.max(0, Math.min(1, d));
-          applyStrictnessColor(SNIPER_THRESHOLD_REAL, S.sniperThresholdReal, { min: 0, max: 1, highIsStrict: true });
-          persistSettings();
-        });
-      }
       if (SNIPER_BASE) {
         SNIPER_BASE.addEventListener('input', () => {
           const d = parseNumberFlexible(SNIPER_BASE.value) || 1;
@@ -8758,20 +9452,6 @@ setTimeout(() => {
         SNIPER_EMA_SLOW.addEventListener('input', () => {
           const d = parseNumberFlexible(SNIPER_EMA_SLOW.value) || SNIPER_5S_DEFAULTS.emaSlow;
           S.sniperEmaSlow = Math.max(5, Math.min(60, Math.round(d)));
-          persistSettings();
-        });
-      }
-      if (SNIPER_RSI_OVERSOLD) {
-        SNIPER_RSI_OVERSOLD.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_RSI_OVERSOLD.value) || SNIPER_5S_DEFAULTS.rsiOversold;
-          S.sniperRsiOversold = Math.max(5, Math.min(50, Math.round(d)));
-          persistSettings();
-        });
-      }
-      if (SNIPER_RSI_OVERBOUGHT) {
-        SNIPER_RSI_OVERBOUGHT.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_RSI_OVERBOUGHT.value) || SNIPER_5S_DEFAULTS.rsiOverbought;
-          S.sniperRsiOverbought = Math.max(50, Math.min(95, Math.round(d)));
           persistSettings();
         });
       }
@@ -9026,6 +9706,34 @@ setTimeout(() => {
           persistSettings();
         });
       }
+      if (CANDLE_PATTERN_ENABLED) {
+        CANDLE_PATTERN_ENABLED.addEventListener('change', () => {
+          S.candlestickPatternEnabled = CANDLE_PATTERN_ENABLED.checked;
+          persistSettings();
+        });
+      }
+      if (CANDLE_PATTERN_MIN_CONF) {
+        CANDLE_PATTERN_MIN_CONF.addEventListener('input', () => {
+          const d = parseNumberFlexible(CANDLE_PATTERN_MIN_CONF.value) || 0;
+          S.candlestickPatternMinConfidence = clamp01(d);
+          persistSettings();
+        });
+      }
+      if (CANDLE_PATTERN_WEIGHT) {
+        CANDLE_PATTERN_WEIGHT.addEventListener('input', () => {
+          const d = parseNumberFlexible(CANDLE_PATTERN_WEIGHT.value) || 0;
+          S.candlestickPatternWeight = clamp01(d);
+          persistSettings();
+        });
+      }
+      const AI_VISION_ENABLED = $id('iaa-ai-vision-enabled');
+      const AI_VISION_MORNING = $id('iaa-ai-vision-morning-star');
+      const AI_VISION_EVENING = $id('iaa-ai-vision-evening-star');
+      const AI_VISION_REQUIRE = $id('iaa-ai-vision-require-match');
+      if (AI_VISION_ENABLED) AI_VISION_ENABLED.addEventListener('change', () => { S.aiVisionEnabled = AI_VISION_ENABLED.checked; persistSettings(); });
+      if (AI_VISION_MORNING) AI_VISION_MORNING.addEventListener('change', () => { S.aiVisionMorningStar = AI_VISION_MORNING.checked; persistSettings(); });
+      if (AI_VISION_EVENING) AI_VISION_EVENING.addEventListener('change', () => { S.aiVisionEveningStar = AI_VISION_EVENING.checked; persistSettings(); });
+      if (AI_VISION_REQUIRE) AI_VISION_REQUIRE.addEventListener('change', () => { S.aiVisionRequireMatch = AI_VISION_REQUIRE.checked; persistSettings(); });
       if (FEATURE_TF_15S) {
         FEATURE_TF_15S.addEventListener('change', () => {
           S.featureTimeframes['15s'] = FEATURE_TF_15S.checked;
@@ -9074,57 +9782,6 @@ setTimeout(() => {
           renderSniperMatrix();
         });
       }
-      if (IDLE_SWITCH_ENABLED) {
-        IDLE_SWITCH_ENABLED.addEventListener('change', () => {
-          S.idleSwitchEnabled = IDLE_SWITCH_ENABLED.checked;
-          persistSettings();
-        });
-      }
-      if (IDLE_SWITCH_MIN) {
-        IDLE_SWITCH_MIN.addEventListener('input', () => {
-          const d = parseNumberFlexible(IDLE_SWITCH_MIN.value) || 0;
-          S.idleSwitchMinutes = Math.max(5, Math.min(240, Math.round(d)));
-          IDLE_SWITCH_MIN.value = String(S.idleSwitchMinutes);
-          persistSettings();
-        });
-      }
-      if (STRATEGY_AUTO_SWITCH) {
-        STRATEGY_AUTO_SWITCH.addEventListener('change', () => {
-          setAutoSwitchStrategy(STRATEGY_AUTO_SWITCH.checked);
-        });
-      }
-      if (STRATEGY_WEIGHT_WR) {
-        STRATEGY_WEIGHT_WR.addEventListener('input', () => {
-          const d = parseNumberFlexible(STRATEGY_WEIGHT_WR.value) || 0;
-          S.strategyWeightWr = clamp01(d);
-          applyStrictnessColor(STRATEGY_WEIGHT_WR, S.strategyWeightWr, { min: 0, max: 1, highIsStrict: false });
-          persistSettings();
-        });
-      }
-      if (STRATEGY_WEIGHT_PNL) {
-        STRATEGY_WEIGHT_PNL.addEventListener('input', () => {
-          const d = parseNumberFlexible(STRATEGY_WEIGHT_PNL.value) || 0;
-          S.strategyWeightPnl = clamp01(d);
-          applyStrictnessColor(STRATEGY_WEIGHT_PNL, S.strategyWeightPnl, { min: 0, max: 1, highIsStrict: false });
-          persistSettings();
-        });
-      }
-      if (STRATEGY_LEARNING) {
-        STRATEGY_LEARNING.addEventListener('input', () => {
-          const d = parseNumberFlexible(STRATEGY_LEARNING.value) || 0;
-          S.strategyLearningTrades = Math.max(0, Math.min(50, Math.round(d)));
-          STRATEGY_LEARNING.value = String(S.strategyLearningTrades);
-          persistSettings();
-        });
-      }
-      if (STRATEGY_LOSS_STREAK) {
-        STRATEGY_LOSS_STREAK.addEventListener('input', () => {
-          const d = parseNumberFlexible(STRATEGY_LOSS_STREAK.value) || STRATEGY_DEFAULTS.lossStreakLimit;
-          S.strategyLossStreakLimit = Math.max(1, Math.min(10, Math.round(d)));
-          STRATEGY_LOSS_STREAK.value = String(S.strategyLossStreakLimit);
-          persistSettings();
-        });
-      }
       if (STRATEGY_EMA_RSI_PULLBACK) {
         STRATEGY_EMA_RSI_PULLBACK.addEventListener('change', () => {
           const current = getStrategyConfig('ema_rsi_pullback');
@@ -9139,6 +9796,14 @@ setTimeout(() => {
           S.strategyConfigs = { ...S.strategyConfigs, scalp_microtrend: { ...current, enabled: STRATEGY_SCALP_MICROTREND.checked } };
           persistSettings();
           renderStrategiesPanel();
+        });
+      }
+      if (PARTNER_READY_1M) {
+        PARTNER_READY_1M.addEventListener('input', () => {
+          const d = parseNumberFlexible(PARTNER_READY_1M.value) || 10;
+          S.partnerReadyBars1m = Math.max(1, Math.min(40, Math.round(d)));
+          PARTNER_READY_1M.value = String(S.partnerReadyBars1m);
+          persistSettings();
         });
       }
       if (PARTNER_READY_3M) {
@@ -9350,9 +10015,25 @@ setTimeout(() => {
     /* ========================= BOOT ========================= */
     api.boot = async function(){
       installWebSocketPriceTap();
+      installHttpPriceTap();
       await restoreSettings();
+      S.wsTapInstalled = true;
+      if (WS_FEED_BUFFER.packetsSeen) S.wsPacketsSeen = WS_FEED_BUFFER.packetsSeen;
+      S.wsBridgeFramesSeen = WS_FEED_BUFFER.bridgeFramesSeen || 0;
+      S.httpFramesSeen = WS_FEED_BUFFER.httpFramesSeen || 0;
+      S.wsBridgeListener = !!window.__iaaBridgeListenerReady;
+      S.wsBridgeInjected = !!window.__iaaBridgeInjectOk;
+      S.wsBridgeReady = !!WS_FEED_BUFFER.bridgeReady;
+      S.lastPriceRejectReason = WS_FEED_BUFFER.lastRejectReason || null;
+      S.lastFeedSource = WS_FEED_BUFFER.lastSource || null;
+      if (Number.isFinite(WS_FEED_BUFFER.lastPrice)) {
+        S.wsLastPrice = WS_FEED_BUFFER.lastPrice;
+        S.wsLastPriceDecimals = WS_FEED_BUFFER.lastDecimals;
+        S.wsLastPriceAt = WS_FEED_BUFFER.lastAt || Date.now();
+      }
       ensurePanelInit();
       ensureMouseHandlers();
+      installPageDebugBridge();
       logConsoleLine(formatStatus('bot_loaded'));
       const sess = await getSession();
       if (sess && sess.ok) {
@@ -9375,7 +10056,6 @@ setTimeout(() => {
     api.xpathLocator = xpathLocator;
     api.parseRawSignalInExtension = parseRawSignalInExtension;
     api.parseInfinityAISignalFormat = parseInfinityAISignalFormat;
-    api.fetchAPISignals = fetchAPISignals;
     api.debugLog = debugLog;
     api.logConsole = logConsoleLine;
     api.formatStatus = formatStatus;
@@ -9384,28 +10064,31 @@ setTimeout(() => {
   })();
 
   /* ========================= AUTO-START ========================= */
-  (async function(){
-    const start = async () => {
-      const sess = await getSession();
-      if (sess && sess.ok) {
-        setTimeout(() => {
-          if (window.InfinityBot) {
-            window.InfinityBot.boot().then(() => {
-              window.InfinityBot?.logConsole?.(window.InfinityBot?.formatStatus?.('login_accepted') || 'Login accepted.');
-            });
-          } else {
-            console.error('InfinityBot not found!');
-          }
-        }, 300);
-      } else {
+  (function(){
+    const start = () => {
+      getSession().then((sess) => {
+        if (sess && sess.ok) {
+          setTimeout(() => {
+            if (window.InfinityBot) {
+              window.InfinityBot.boot().then(() => {
+                window.InfinityBot?.logConsole?.(window.InfinityBot?.formatStatus?.('login_accepted') || 'Login accepted.');
+              });
+            } else {
+              console.error('InfinityBot not found!');
+            }
+          }, 300);
+        } else {
+          injectLoginPanel();
+        }
+      }).catch(() => {
         injectLoginPanel();
-      }
+      });
     };
 
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', start);
     } else {
-      await start();
+      start();
     }
   })();
 })();
