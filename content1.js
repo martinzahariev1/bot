@@ -1198,6 +1198,11 @@
       balanceBeforeTrade: null,
       balanceSignalBaseline: null,
 
+
+      // balance event ledger
+      lastBalanceCents: null,
+      balanceEvents: [],
+      balanceEventsMax: 500,
       // selection guards
       assetSelectionAttempted: false,
 
@@ -2863,46 +2868,14 @@
     }
 
     function readBalanceCents() {
-      const accountType = detectAccountType();
-      let balanceEl = null;
+      const accountText = document.querySelector(BALANCE_SEL)?.textContent;
+      if (!accountText) return null;
 
-      if (accountType === 'DEMO') {
-        balanceEl = $(C.BALANCE_DEMO_SELECTOR);
-      } else if (accountType === 'REAL') {
-        balanceEl = $(C.BALANCE_REAL_SELECTOR);
-      }
-
-      if (balanceEl) {
-        const text = T(balanceEl);
-        const cleanText = text.replace(/,/g, '');
-        const cents = parseMoneyToCents(cleanText);
-        if (cents !== null && cents > 0) {
-          return cents;
-        }
-      }
-
-      // Fallback
-      const balanceSelectors = [
-        'body > div.wrapper > div.wrapper__top > header > div.right-block.js-right-block > div.right-block__item.js-drop-down-modal-open > div > div.balance-info-block__data > div.balance-info-block__balance > span',
-        '.balance-info-block__balance span',
-        '.right-block__item span',
-        '[class*="balance"] span',
-        '.balance-info-block span',
-        '.balance span'
-      ];
-
-      for (const selector of balanceSelectors) {
-        const balanceEl = $(selector);
-        if (balanceEl) {
-          const text = T(balanceEl).replace(/,/g, '');
-          const cents = parseMoneyToCents(text);
-          if (cents !== null && cents > 0) {
-            return cents;
-          }
-        }
-      }
-
-      return null;
+      // IMPORTANT: Pocket Option може да показва десетичен разделител '.' (DEMO) или ',' (REAL).
+      // parseMoneyToCents() вече го нормализира — не махаме запетаи тук.
+      const raw = String(accountText).trim();
+      const cents = parseMoneyToCents(raw);
+      return Number.isFinite(cents) ? cents : null;
     }
 
     /* ========================= SMART XPATH LOCATOR ========================= */
@@ -3862,11 +3835,36 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     /* ------------------------- BALANCE OBSERVER --------------------------- */
+    function ensureBalancePoller() {
+      if (S.balancePoller) return;
+      // Polling is the most robust way to capture balance debits/credits without depending on a specific DOM node.
+      S.balancePoller = setInterval(() => {
+        const cur = readBalanceCents();
+        if (cur == null || cur <= 0) return;
+
+        const prev = Number.isFinite(S.lastBalanceCents) ? S.lastBalanceCents : cur;
+        const delta = cur - prev;
+
+        S.lastBalanceCents = cur;
+        S.balance = cur;
+
+        if (delta !== 0) {
+          S.balanceEvents = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
+          S.balanceEvents.push({ t: Date.now(), balanceCents: cur, deltaCents: delta, used: false });
+          const maxEv = Math.max(2000, Number(S.maxBalanceEvents || 0) || 0);
+          if (S.balanceEvents.length > maxEv) S.balanceEvents.splice(0, S.balanceEvents.length - maxEv);
+        }
+      }, 250);
+    }
+
     function ensureBalanceObserver() {
+      // Always keep a balance poller running — it powers trade open/settle verification.
+      ensureBalancePoller();
       if (S.balObs) return;
 
       const balanceEl = $(C.BALANCE_DEMO_SELECTOR) || $(C.BALANCE_REAL_SELECTOR);
       if (!balanceEl) {
+        // We'll still retry attaching the MutationObserver, but polling already covers correctness.
         setTimeout(ensureBalanceObserver, 1000);
         return;
       }
@@ -3874,10 +3872,23 @@ function getMinHistoryWindowForReadinessMs() {
       S.balObs = new MutationObserver(() => {
         const cur = readBalanceCents();
         if (cur != null && cur > 0) {
+          const prev = Number.isFinite(S.lastBalanceCents) ? S.lastBalanceCents : cur;
+          const delta = cur - prev;
+          S.lastBalanceCents = cur;
           S.balance = cur;
+
+          if (delta !== 0) {
+            S.balanceEvents = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
+            S.balanceEvents.push({ t: Date.now(), balanceCents: cur, deltaCents: delta, used: false });
+            const maxEv = Math.max(50, Number.isFinite(S.balanceEventsMax) ? S.balanceEventsMax : 500);
+            if (S.balanceEvents.length > maxEv) S.balanceEvents.splice(0, S.balanceEvents.length - maxEv);
+          }
+
           updateBalanceSummary();
         }
       });
+
+      S.lastBalanceCents = readBalanceCents() || S.lastBalanceCents;
 
       S.balObs.observe(balanceEl, {
         childList: true,
@@ -4462,96 +4473,192 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
 
-    function tradeConfirmationExists(trade) {
-      if (!trade) return false;
-      const now = Date.now();
-      const rows = Array.from(document.querySelectorAll('[class*="deal"], [class*="trade"], tr'));
-      const dir = String(trade.direction || '').toUpperCase();
-      const amountStr = (trade.amountCents / 100).toFixed(2);
-      const expiry = String(trade.expiry || '').toUpperCase();
-      for (const row of rows.slice(-120)) {
-        if (!row || !row.isConnected) continue;
-        const txt = (row.textContent || '').replace(/\s+/g, ' ').trim().toUpperCase();
-        if (!txt) continue;
-        if (dir && !txt.includes(dir)) continue;
-        if (expiry && !txt.includes(expiry)) continue;
-        if (!txt.includes(amountStr.toUpperCase()) && !txt.includes(`$${amountStr}`.toUpperCase())) continue;
-        const ts = Number(row.dataset?.timestamp || 0);
-        if (ts && Math.abs(now - ts) > 10 * 60 * 1000) continue;
-        return true;
+    
+    /* -------------------- BALANCE-LEDGER CONFIRMATION (NO TRADES TAB) -------------------- */
+
+    function findBalanceEvent(afterTs, beforeTs, predicate) {
+      const evs = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
+      const a = Number.isFinite(afterTs) ? afterTs : 0;
+      const b = Number.isFinite(beforeTs) ? beforeTs : 0;
+      // Search oldest-to-newest so we get the earliest matching event.
+      for (let i = 0; i < evs.length; i += 1) {
+        const e = evs[i];
+        if (!e || e.used) continue;
+        if (e.t < a) continue;
+        if (b && e.t > b) continue;
+        if (predicate(e)) return e;
       }
-      return false;
+      return null;
     }
 
+    function markBalanceEventUsed(ev) {
+      if (ev) ev.used = true;
+    }
+
+    function confirmTradeByBalance(trade, clickedAt) {
+      return (async () => {
+        // Четем баланса директно от DOM (и това после се отразява и в нашия ред "Старт/Сега/Резултат").
+        // 1) REAL може да е с ',' и parse-а да се чупи → оправено е в readBalanceCents().
+        // 2) Ако не потвърдим "open" навреме, сделката НЕ трябва да остава висяща, иначе няма settle.
+        const stakeCents = Math.max(0, trade.stakeCents || 0);
+
+        // baseline
+        if (trade.balanceBefore == null) trade.balanceBefore = readBalanceCents();
+
+        const before = trade.balanceBefore;
+        if (before == null || !Number.isFinite(before)) {
+          // Без baseline: приемаме отворена, за да може да се сетълва по-късно.
+          trade.openConfirmed = true;
+          trade.openConfirmedBy = 'ASSUMED_NO_BASELINE';
+          trade.balanceAfterOpen = null;
+          trade.openAt = trade.openAt || clickedAt || Date.now();
+          return true;
+        }
+
+        const timeoutMs = 9000;
+        const stepMs = 120;
+        const minDebit = stakeCents ? Math.max(10, Math.floor(stakeCents * 0.75)) : 10;
+
+        const t0 = Date.now();
+        let last = before;
+
+        while (Date.now() - t0 < timeoutMs) {
+          await sleep(stepMs);
+          const now = readBalanceCents();
+          if (now == null || !Number.isFinite(now)) continue;
+
+          last = now;
+          const debit = before - now;
+
+          if (debit >= minDebit) {
+            trade.openConfirmed = true;
+            trade.openConfirmedBy = 'BALANCE_DEBIT';
+            trade.balanceAfterOpen = now;
+            return true;
+          }
+        }
+
+        // Timeout: приемаме сделката за ОТВОРЕНА, за да не блокира settle логиката.
+        trade.openConfirmed = true;
+        trade.openConfirmedBy = 'ASSUMED_TIMEOUT';
+        trade.balanceAfterOpen = last;
+
+        log(`[SCAN V5-FIXED] ВНИМАНИЕ: Няма баланс-потвърждение за отворена сделка (приемам я за ОТВОРЕНА)`);
+        return true;
+      })();
+    }
     function processPendingTradeConfirmations() {
       if (!Array.isArray(S.pendingTradeConfirmations) || !S.pendingTradeConfirmations.length) return;
       const now = Date.now();
       S.pendingTradeConfirmations = S.pendingTradeConfirmations.filter((item) => {
         if (!item?.trade) return false;
-        const confirmed = tradeConfirmationExists(item.trade);
-        if (confirmed) {
+
+        // Try confirm via balance ledger (preferred)
+        const ev = confirmTradeByBalance(item.trade, item.at);
+        if (ev) {
           logConsoleLine(formatStatus('trade_executed'));
           return false;
         }
-        if (now - (item.at || now) > 12000) {
-          logConsoleLine('ПРОПУСК: Няма потвърждение за отворена сделка след клик');
-          return false;
+
+        // Hard timeout: never deadlock the engine on missing confirm.
+        if (now - (item.at || now) > 6000) {
+          item.trade.openConfirmed = true;
+          item.trade.openConfirmedBy = item.trade.openConfirmedBy || 'ASSUMED_TIMEOUT';
+          item.trade.openConfirmedAt = item.at || now;
+          item.trade.balanceAfterOpen = Number.isFinite(S.balance) ? S.balance : item.trade.balanceBefore;
+          logConsoleLine('ВНИМАНИЕ: Няма баланс-потвърждение за отворена сделка (приемам ОТВОРЕНА)');
+          return true;
         }
         return true;
       });
     }
-
     /* ========================= FIXED: HISTORY-ONLY OUTCOME DETECTION ========================= */
+    
+    /* ========================= BALANCE-LEDGER OUTCOME DETECTION (NO TRADES TAB) ========================= */
     async function finalizeActiveTrades() {
       if (!S.activeTrades || !S.activeTrades.length) return;
+
       const now = Date.now();
       const remaining = [];
-      const maxHistoryWaitMs = 60000;
 
-      for (const trade of S.activeTrades) {
+      // Process in expectedEnd order (FIFO for settlement matching)
+      const tradesSorted = [...S.activeTrades].sort((a, b) => (a.expectedEnd || 0) - (b.expectedEnd || 0));
+
+      const settlementWindowMs = 45000; // safety window after expected end
+      const earlySettleLeewayMs = 1200;
+
+      for (const trade of tradesSorted) {
+        if (!trade) continue;
+
         const expiryMs = trade.expiryMs || secsFromTF(trade.expiry) * 1000;
         const expectedEnd = trade.expectedEnd || (trade.startTime + expiryMs + C.SETTLEMENT_DELAY_MS);
         trade.expectedEnd = expectedEnd;
-        if (now < expectedEnd || trade.outcomeChecked) {
-          remaining.push(trade);
-          continue;
+
+        // 1) Ensure open confirmation via balance debit (best effort)
+        if (!trade.openConfirmed && !trade.confirmedAt) {
+          confirmTradeByBalance(trade, trade.startTime);
         }
-        if (trade.nextHistoryCheckAt && now < trade.nextHistoryCheckAt) {
+
+        // 2) Too early to settle
+        if (now < expectedEnd - earlySettleLeewayMs) {
           remaining.push(trade);
           continue;
         }
 
-        const historyResult = detectHistoryOutcome(trade);
-        if (historyResult) {
+        // 3) Try match a payout credit event within window
+        const amountCents = Number(trade.amountCents || 0);
+        const settleStart = expectedEnd - earlySettleLeewayMs;
+        const settleEnd = expectedEnd + settlementWindowMs;
+
+        const ev = findBalanceEvent(settleStart, settleEnd, (e) => {
+          const d = Number(e.deltaCents || 0);
+          return d > 0;
+        });
+
+        if (ev) {
+          markBalanceEventUsed(ev);
+          const credit = Number(ev.deltaCents || 0);
+          const profitCents = credit - amountCents; // net profit (stake already debited)
+          const outcome = profitCents > 0 ? 'WIN' : 'EVEN';
+
           trade.outcomeChecked = true;
-          const profitCents = Number.isFinite(historyResult.profitCents)
-            ? historyResult.profitCents
-            : (historyResult.outcome === 'LOSS' ? -trade.totalAmountCents : trade.totalAmountCents);
-          const payoutProfitCents = calculatePayoutProfitCents(trade, historyResult.outcome, profitCents);
-          S.lastTradeOutcome = historyResult.outcome;
-          S.tradeProfitLoss += profitCents;
-          recordTradeOutcomeForRisk(historyResult.outcome, profitCents);
-          recordTradeOutcomeStats(trade, historyResult.outcome, payoutProfitCents);
-          recordTradeHistoryEntry(trade, historyResult.outcome, payoutProfitCents);
-          logTradeOutcome(trade, historyResult.outcome, payoutProfitCents);
-          setUIState('RESULTS', { outcome: historyResult.outcome });
-          applyRiskLimits();
+          trade.outcome = outcome;
+          trade.settledAt = ev.t;
+          trade.profitCents = profitCents;
+
+          recordTradeStats(outcome);
+          recordStrategyOutcome(trade.strategyKey, outcome, profitCents);
+          recordTradeHistoryEntry(trade, outcome, profitCents);
+          recordLossAnalysis(trade, outcome, profitCents);
+
           continue;
         }
 
-        if (now < expectedEnd + maxHistoryWaitMs) {
-          trade.historyCheckAttempts = (trade.historyCheckAttempts || 0) + 1;
-          trade.nextHistoryCheckAt = now + 500;
-          remaining.push(trade);
+        // 4) If window exceeded and no credit → LOSS
+        if (now > settleEnd) {
+          const profitCents = -amountCents;
+          const outcome = 'LOSS';
+
+          trade.outcomeChecked = true;
+          trade.outcome = outcome;
+          trade.settledAt = now;
+          trade.profitCents = profitCents;
+
+          recordTradeStats(outcome);
+          recordStrategyOutcome(trade.strategyKey, outcome, profitCents);
+          recordTradeHistoryEntry(trade, outcome, profitCents);
+          recordLossAnalysis(trade, outcome, profitCents);
+
           continue;
         }
 
-        trade.historyCheckAttempts = (trade.historyCheckAttempts || 0) + 1;
-        trade.nextHistoryCheckAt = now + 2000;
+        // still waiting
         remaining.push(trade);
       }
 
+      // Keep only unsettled trades
       S.activeTrades = remaining;
+      renderPendingTrades();
     }
 
     /* ========================= FIXED: MARTINGALE WITH PROPER BALANCE TRACKING ========================= */
@@ -6556,6 +6663,42 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const now = Date.now();
       const prevStatus = S.sniperTfStatus || {};
       const getPrevStatus = (tf) => prevStatus[tf] || {};
+
+      // Per-TF direction smoothing for the matrix (“светофарите”).
+      // Goal: show the bot's current intention per TF, but avoid fast flip-flops (BUY↔SELL) caused by momentary noise.
+      // IMPORTANT: This only stabilizes what is shown in the TF matrix + the direction field stored into tfStatus.
+      // The actual trade decision still runs through the normal filters + the pre-trade recheck.
+      const TF_DIR_FLIP_COOLDOWN_MS = Math.max(800, Number.isFinite(S.tfDirectionFlipCooldownMs) ? S.tfDirectionFlipCooldownMs : 2000);
+      S.tfDirectionMemory = S.tfDirectionMemory || {};
+      const applyTfDirectionSmoothing = (tf, decision) => {
+        if (!decision || !decision.direction) return decision;
+        const mem = S.tfDirectionMemory[tf] || {};
+        const prevDir = mem.dir || null;
+        const prevAt = mem.at || 0;
+
+        // First observation.
+        if (!prevDir) {
+          S.tfDirectionMemory[tf] = { dir: decision.direction, at: now };
+          return decision;
+        }
+
+        // Same direction => refresh timestamp.
+        if (prevDir === decision.direction) {
+          S.tfDirectionMemory[tf] = { dir: prevDir, at: now };
+          return decision;
+        }
+
+        // Different direction => if too soon, keep previous direction for display + slightly punish confidence.
+        if (now - prevAt < TF_DIR_FLIP_COOLDOWN_MS) {
+          decision._smoothedDirection = prevDir;
+          decision.confidence = Math.max(0, Number(decision.confidence || 0) - 0.07);
+          return decision;
+        }
+
+        // Cooldown passed => accept new direction.
+        S.tfDirectionMemory[tf] = { dir: decision.direction, at: now };
+        return decision;
+      };
       const feedStaleMs = 5000;
       let effectiveLastPriceAt = Number.isFinite(S.lastPriceAt) ? S.lastPriceAt : 0;
       if (!effectiveLastPriceAt && Number.isFinite(S.wsLastPriceAt)) {
@@ -6680,8 +6823,13 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
           };
           continue;
         }
+
+        // Smooth TF direction for UI (avoid rapid BUY↔SELL flicker in the matrix).
+        // We keep the real trade direction in decision.direction; the UI uses decision._smoothedDirection when present.
+        applyTfDirectionSmoothing(tf, decision);
+        const displayDir = decision._smoothedDirection || decision.direction;
         if (S.regimeStrength > 0 && regime?.state && ['volatility'].includes(regime.state) && S.regimeStrength >= 0.6) {
-          tfStatus[tf] = { state: 'regime', confidence: decision.confidence, direction: decision.direction };
+          tfStatus[tf] = { state: 'regime', confidence: decision.confidence, direction: displayDir };
           continue;
         }
         if (S.regimeStrength > 0 && regime?.state === 'chop') {
@@ -6690,7 +6838,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         if (S.regimeStrength > 0 && regime?.state === 'trend' && regime.trendDir !== 0) {
           const regimeDir = regime.trendDir > 0 ? 'BUY' : 'SELL';
           if (decision.direction !== regimeDir && S.regimeStrength >= 0.7) {
-            tfStatus[tf] = { state: 'regime', confidence: decision.confidence, direction: decision.direction };
+            tfStatus[tf] = { state: 'regime', confidence: decision.confidence, direction: displayDir };
             continue;
           }
           if (decision.direction !== regimeDir) {
@@ -6705,7 +6853,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         }
         if (S.biasStrength > 0 && biasDirection && decision.direction !== biasDirection) {
           if (S.biasStrength >= 0.5) {
-            tfStatus[tf] = { state: 'bias', confidence: decision.confidence, direction: decision.direction };
+            tfStatus[tf] = { state: 'bias', confidence: decision.confidence, direction: displayDir };
             continue;
           }
           decision.confidence = Math.max(0, decision.confidence - 0.05 * clamp01(S.biasStrength));
@@ -6713,7 +6861,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         if (S.confirmationStrength > 0.1) {
           const required = S.confirmationStrength >= 0.7 ? 2 : 1;
           if (confirmation.matched < required && S.confirmationStrength >= 0.7) {
-            tfStatus[tf] = { state: 'confirm', confidence: decision.confidence, direction: decision.direction };
+            tfStatus[tf] = { state: 'confirm', confidence: decision.confidence, direction: displayDir };
             continue;
           }
           if (confirmation.matched < required) {
@@ -6727,42 +6875,42 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         const overrideThreshold = Math.max(0, Math.min(100, Number.isFinite(S.sniperOverrideConfidencePct) ? S.sniperOverrideConfidencePct : SNIPER_5S_DEFAULTS.overrideConfidencePct));
         const allowOverride = overrideThreshold > 0 && confidencePct >= overrideThreshold;
         if (!allowOverride && !allowLateEntries && entryWindowLimit > 0 && timeInCandle > entryWindowLimit) {
-          tfStatus[tf] = { state: 'late', confidence: decision.confidence, direction: decision.direction };
+          tfStatus[tf] = { state: 'late', confidence: decision.confidence, direction: displayDir };
           continue;
         }
         const chopThreshold = Math.max(0, Number.isFinite(S.sniperChopThreshold) ? S.sniperChopThreshold : 0);
         if (!allowOverride && !allowLateEntries && S.sniperChopEnabled && chopThreshold > 0 && decision.rangePct < chopThreshold) {
-          tfStatus[tf] = { state: 'chop', confidence: decision.confidence, direction: decision.direction };
+          tfStatus[tf] = { state: 'chop', confidence: decision.confidence, direction: displayDir };
           continue;
         }
         if (!allowOverride && S.sniperVwapEnabled && S.featureVwapAnalysis && decision.vwapDist != null) {
           const reqVwapDist = Math.max(0, Number.isFinite(S.sniperVwapDeviation) ? S.sniperVwapDeviation : 0);
           if (reqVwapDist > 0 && Math.abs(decision.vwapDist) < reqVwapDist * 0.35) {
-            tfStatus[tf] = { state: 'vwap', confidence: decision.confidence, direction: decision.direction };
+            tfStatus[tf] = { state: 'vwap', confidence: decision.confidence, direction: displayDir };
             continue;
           }
         }
         if (!allowOverride && S.sniperMomentumEnabled && decision.momentum != null) {
           const reqMomentum = Math.max(0, Number.isFinite(S.sniperMomentumThreshold) ? S.sniperMomentumThreshold : 0);
           if (reqMomentum > 0 && Math.abs(decision.momentum) < reqMomentum * 0.25) {
-            tfStatus[tf] = { state: 'momentum', confidence: decision.confidence, direction: decision.direction };
+            tfStatus[tf] = { state: 'momentum', confidence: decision.confidence, direction: displayDir };
             continue;
           }
         }
         if (!allowOverride && !decision.trendAligned) {
-          tfStatus[tf] = { state: 'trend', confidence: decision.confidence, direction: decision.direction };
+          tfStatus[tf] = { state: 'trend', confidence: decision.confidence, direction: displayDir };
           continue;
         }
         if (!allowOverride && S.featureVolumeRejection && !decision.volumeOk) {
-          tfStatus[tf] = { state: 'volume', confidence: decision.confidence, direction: decision.direction };
+          tfStatus[tf] = { state: 'volume', confidence: decision.confidence, direction: displayDir };
           continue;
         }
         if (!allowOverride && decision.confidence < requiredThreshold) {
-          tfStatus[tf] = { state: 'weak', confidence: decision.confidence, direction: decision.direction };
+          tfStatus[tf] = { state: 'weak', confidence: decision.confidence, direction: displayDir };
           continue;
         }
         if (!allowOverride && !allowLateEntries && !payoutOk) {
-          tfStatus[tf] = { state: 'payout', confidence: decision.confidence, direction: decision.direction };
+          tfStatus[tf] = { state: 'payout', confidence: decision.confidence, direction: displayDir };
           continue;
         }
 
@@ -6774,7 +6922,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
             candleStart
           };
         }
-        tfStatus[tf] = { state: 'ready', confidence: decision.confidence, direction: decision.direction };
+        tfStatus[tf] = { state: 'ready', confidence: decision.confidence, direction: displayDir };
       }
 
       const readySignalsForVote = Object.keys(tfStatus)
@@ -6879,7 +7027,41 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       }
 
       const signalsToExecute = readySignals.slice(0, availableSlots);
-      for (const decision of signalsToExecute) {
+
+      for (let i = 0; i < signalsToExecute.length; i += 1) {
+        const decision = signalsToExecute[i];
+
+        // Fixed pre-trade recheck delay (anti-fake-signal)
+        const preDelayMs = Math.max(600, Number.isFinite(S.preTradeRecheckDelayMs) ? S.preTradeRecheckDelayMs : 1200);
+        await new Promise(r => setTimeout(r, preDelayMs));
+        // Recompute decision using the currently enabled strategy (not a fixed strategy),
+        // and use the same threshold scaling as the main scan (0..1).
+        const assetScopePre = getExpiryScopeFromAsset(getCurrentAssetLabel());
+        const requiredThresholdPre = clamp01(getSniperThresholdForScope(assetScopePre));
+        const strategyDecisionsPre = getStrategyDecisions(decision.tfKey);
+        const latestPre = selectBestStrategyDecision(strategyDecisionsPre);
+
+        if (!latestPre || !latestPre.direction || latestPre.direction !== decision.direction || Number(latestPre.confidence || 0) < requiredThresholdPre) {
+                    const preReasonParts = [];
+          if (!latestPre || !latestPre.direction) preReasonParts.push('няма сигнал');
+          else {
+            if (latestPre.direction !== decision.direction) preReasonParts.push(`посока ${decision.direction}→${latestPre.direction}`);
+            const preConf = Number(latestPre.confidence || 0);
+            const oldConf = Number(decision.confidence || 0);
+            if (preConf + 1e-9 < requiredThresholdPre) preReasonParts.push(`увереност ${Math.round(preConf*100)}% < праг ${Math.round(requiredThresholdPre*100)}%`);
+            if (Math.abs(preConf - oldConf) >= 0.08) preReasonParts.push(`увереност ${Math.round(oldConf*100)}%→${Math.round(preConf*100)}%`);
+          }
+          const preReason = preReasonParts.length ? preReasonParts.join(', ') : 'промяна след повторна проверка';
+          logConsoleLine(`[SCAN V5-FIXED] ПРОПУСК: ${decision.tfKey} повторна проверка (${preReason})`);
+          continue;
+        }
+
+        if (i > 0) {
+          const delayMs = Math.max(800, Number.isFinite(S.multiSignalDelayMs) ? S.multiSignalDelayMs : 1500);
+          await new Promise(r => setTimeout(r, delayMs));
+        }
+
+
         const assetLabel = getCurrentAssetLabel() || '—';
         const assetSearch = assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim();
         const signal = {
@@ -7817,11 +7999,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
                   <span class="iaa-field-label">Макс. отворени сделки</span>
                   <input type="number" id="iaa-max-open-trades" min="1" step="1" value="1">
                 </div>
-                <div class="iaa-action-row">
-                  <button id="iaa-settings-save" type="button">Запази</button>
-                  <button id="iaa-settings-cancel" type="button">Откажи</button>
-                </div>
-              </div>
+</div>
 
               <div id="iaa-tab-advanced" class="iaa-tab-body" style="display:none;">
                 <div class="iaa-field-row" title="Минимално отклонение от VWAP за активиране на вход.">
