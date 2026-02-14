@@ -189,6 +189,9 @@
   const SNIPER_THRESHOLD_REAL_KEY = 'IAA_SNIPER_THRESHOLD_REAL';
   const SNIPER_MIN_PAYOUT_KEY = 'IAA_SNIPER_MIN_PAYOUT';
   const SNIPER_ENTRY_WINDOW_SEC_KEY = 'IAA_SNIPER_ENTRY_WINDOW_SEC';
+  const ENTRYWIN_TF_ENABLED_KEY = 'IAA_ENTRYWIN_TF_ENABLED';
+  const ENTRYWIN_1M_SEC_KEY = 'IAA_ENTRYWIN_1M_SEC';
+  const ENTRYWIN_3M_SEC_KEY = 'IAA_ENTRYWIN_3M_SEC';
   const SNIPER_WARMUP_MIN_KEY = 'IAA_SNIPER_WARMUP_MIN';
   const SNIPER_VWAP_DEV_KEY = 'IAA_SNIPER_VWAP_DEV';
   const SNIPER_VWAP_LOOKBACK_KEY = 'IAA_SNIPER_VWAP_LOOKBACK';
@@ -223,6 +226,9 @@
   const FILTER_IMPULSECAP_ENABLED_KEY = 'IAA_FILTER_IMPULSECAP_ENABLED';
   const FILTER_IMPULSECAP_MAX_KEY = 'IAA_FILTER_IMPULSECAP_MAX';
 
+
+  const RANGE_OSC_PENALTY_ENABLED_KEY = 'IAA_RANGE_OSC_PENALTY_ENABLED';
+  const RANGE_OSC_PENALTY_PCT_KEY = 'IAA_RANGE_OSC_PENALTY_PCT';
   const FEATURE_VOLUME_REJECTION_KEY = 'IAA_FEATURE_VOLUME_REJECTION';
   const FEATURE_VWAP_ANALYSIS_KEY = 'IAA_FEATURE_VWAP_ANALYSIS';
   const FEATURE_SESSION_BOOST_KEY = 'IAA_FEATURE_SESSION_BOOST';
@@ -1374,6 +1380,9 @@
       sniperThresholdReal: SNIPER_5S_DEFAULTS.threshold,
       sniperMinPayout: SNIPER_5S_DEFAULTS.minPayout,
       sniperEntryWindowSec: SNIPER_5S_DEFAULTS.entryWindowSec,
+      entryWindowTfEnabled: true,
+      entryWindowSec1m: 15,
+      entryWindowSec3m: 35,
       sniperWarmupMin: SNIPER_5S_DEFAULTS.warmupMin,
       sniperVwapDeviation: SNIPER_5S_DEFAULTS.vwapDeviation,
       sniperVwapLookbackMin: SNIPER_5S_DEFAULTS.vwapLookbackMin,
@@ -1423,6 +1432,8 @@
       currentStrategyKey: null,
       lastStrategyKey: null,
       sniperNextTradeByTf: {},
+      sniperInFlightKey: null,
+      sniperInFlightUntil: 0,
       sniperTfStatus: {},
       strategyStats: {},
       sniperSettingsCollapsed: false,
@@ -1431,6 +1442,8 @@
       sniperSmartCollapsed: false,
       sniperEngineCollapsed: false,
       sniperRiskCollapsed: false,
+      sniperVwapCollapsed: true,
+      sniperNewFiltersCollapsed: true,
       sniperSettingsTab: 'basic',
       debugTab: 'status',
 
@@ -3635,7 +3648,12 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     function applyRiskLimits() {
-      const hitLossLimit = S.maxSessionLossCents > 0 && S.sessionLossCents >= S.maxSessionLossCents;
+      const start = Number.isFinite(S.botStartBalance) ? S.botStartBalance : null;
+      const cur = Number.isFinite(S.balance) ? S.balance : readBalanceCents();
+      const diff = (start != null && cur != null) ? (cur - start) : null;
+
+      // "Стоп при загуба" трябва да следи директно Резултат (Start → Now), не TRADES/WS.
+      const hitLossLimit = (S.maxSessionLossCents > 0) && (diff != null) && (diff <= -S.maxSessionLossCents);
       const hitStreakLimit = S.maxConsecutiveLosses > 0 && S.lossStreak >= S.maxConsecutiveLosses;
 
       if (hitLossLimit || hitStreakLimit) {
@@ -4671,31 +4689,30 @@ function getMinHistoryWindowForReadinessMs() {
         return true;
       })();
     }
-    function processPendingTradeConfirmations() {
-      if (!Array.isArray(S.pendingTradeConfirmations) || !S.pendingTradeConfirmations.length) return;
-      const now = Date.now();
-      S.pendingTradeConfirmations = S.pendingTradeConfirmations.filter((item) => {
-        if (!item?.trade) return false;
+    async function processPendingTradeConfirmations() {
+      const pending = Array.isArray(S.pendingTradeConfirmations) ? S.pendingTradeConfirmations : [];
+      if (!pending.length) return;
 
-        // Try confirm via balance ledger (preferred)
-        const ev = confirmTradeByBalance(item.trade, item.at);
-        if (ev) {
+      const remaining = [];
+      for (const item of pending) {
+        if (!item || !item.trade) continue;
+
+        // Hard timeout so we never block the engine
+        if ((Date.now() - Number(item.at || 0)) > 10000) {
+          logConsoleLine(formatStatus('trade_executed', { note: 'timeout' }));
+          continue;
+        }
+
+        const ok = await confirmTradeByBalance(item.trade, item.at);
+        if (ok) {
           logConsoleLine(formatStatus('trade_executed'));
-          return false;
+          continue;
         }
-
-        // Hard timeout: never deadlock the engine on missing confirm.
-        if (now - (item.at || now) > 6000) {
-          item.trade.openConfirmed = true;
-          item.trade.openConfirmedBy = item.trade.openConfirmedBy || 'ASSUMED_TIMEOUT';
-          item.trade.openConfirmedAt = item.at || now;
-          item.trade.balanceAfterOpen = Number.isFinite(S.balance) ? S.balance : item.trade.balanceBefore;
-          logConsoleLine('ВНИМАНИЕ: Няма баланс-потвърждение за отворена сделка (приемам ОТВОРЕНА)');
-          return true;
-        }
-        return true;
-      });
+        remaining.push(item);
+      }
+      S.pendingTradeConfirmations = remaining;
     }
+
     /* ========================= FIXED: HISTORY-ONLY OUTCOME DETECTION ========================= */
     
     /* ========================= BALANCE-LEDGER OUTCOME DETECTION (NO TRADES TAB) ========================= */
@@ -4709,7 +4726,7 @@ function getMinHistoryWindowForReadinessMs() {
       const tradesSorted = [...S.activeTrades].sort((a, b) => (a.expectedEnd || 0) - (b.expectedEnd || 0));
 
       const settlementWindowMs = 45000; // safety window after expected end
-      const earlySettleLeewayMs = 1200;
+      const earlySettleLeewayMs = 5000;
 
       for (const trade of tradesSorted) {
         if (!trade) continue;
@@ -4754,6 +4771,15 @@ function getMinHistoryWindowForReadinessMs() {
           recordStrategyOutcome(trade.strategyKey, outcome, profitCents);
           recordTradeHistoryEntry(trade, outcome, profitCents);
           recordLossAnalysis(trade, outcome, profitCents);
+          recordTradeOutcomeForRisk(outcome, profitCents);
+          applyRiskLimits();
+
+          // Human-readable outcome log
+          try {
+            const p = (profitCents || 0) / 100;
+            const sign = p > 0 ? '+' : '';
+            log(`[LEDGER] ${outcome === 'WIN' ? 'ПЕЧАЛБА' : 'РЕЗУЛТАТ'}: ${sign}$${p.toFixed(2)} | ${trade.asset || ''} ${trade.direction || ''} ${trade.expiry || ''}`);
+          } catch {}
 
           continue;
         }
@@ -4772,6 +4798,14 @@ function getMinHistoryWindowForReadinessMs() {
           recordStrategyOutcome(trade.strategyKey, outcome, profitCents);
           recordTradeHistoryEntry(trade, outcome, profitCents);
           recordLossAnalysis(trade, outcome, profitCents);
+          recordTradeOutcomeForRisk(outcome, profitCents);
+          applyRiskLimits();
+
+          // Human-readable outcome log
+          try {
+            const p = (profitCents || 0) / 100;
+            log(`[LEDGER] ЗАГУБА: -$${Math.abs(p).toFixed(2)} | ${trade.asset || ''} ${trade.direction || ''} ${trade.expiry || ''}`);
+          } catch {}
 
           continue;
         }
@@ -6935,7 +6969,13 @@ if (!weights.length) return 0;
       for (const tf of timeframes) {
         const windowMs = SNIPER_TF_MS[tf];
         const timeInCandle = getTimeInCandleSec(windowMs);
-        const entryWindowLimit = Math.min(Math.max(0, S.sniperEntryWindowSec), Math.floor(windowMs / 1000));
+        let entryWindowLimit = 0;
+        if (S.entryWindowTfEnabled) {
+          const baseLimit = (tf === '1m') ? (S.entryWindowSec1m ?? 15)
+            : (tf === '3m') ? (S.entryWindowSec3m ?? 35)
+            : (S.sniperEntryWindowSec ?? 0);
+          entryWindowLimit = Math.min(Math.max(0, baseLimit), Math.floor(windowMs / 1000));
+        }
         const candleStart = getCandleStart(windowMs);
         if (S.sniperLastTradeByTf[tf] === candleStart) continue;
 
@@ -7003,7 +7043,13 @@ if (!weights.length) return 0;
           continue;
         }
         if (S.regimeStrength > 0 && regime?.state === 'chop') {
-          decision.confidence = Math.max(0, decision.confidence - 0.08 * clamp01(S.regimeStrength));
+          // Chop режим: не е абсолютен стоп. Просто изискваме по-чиста картина.
+          // Ако потвържденията са слаби → пропускаме. Иначе допускаме, но с по-силен penalty.
+          if (S.regimeStrength >= 0.55 && (confirmation?.matched || 0) < 2) {
+            tfStatus[tf] = { state: 'chop', confidence: decision.confidence, direction: displayDir };
+            continue;
+          }
+          decision.confidence = Math.max(0, decision.confidence - 0.10 * clamp01(S.regimeStrength));
         }
         if (S.regimeStrength > 0 && regime?.state === 'trend' && regime.trendDir !== 0) {
           const regimeDir = regime.trendDir > 0 ? 'BUY' : 'SELL';
@@ -7015,10 +7061,18 @@ if (!weights.length) return 0;
             decision.confidence = Math.max(0, decision.confidence - 0.06 * clamp01(S.regimeStrength));
           }
         }
-        if (S.regimeStrength > 0 && regime?.state === 'range' && regime.trendDir !== 0) {
-          const regimePref = regime.trendDir > 0 ? 'SELL' : 'BUY';
-          if (decision.direction !== regimePref) {
-            decision.confidence = Math.max(0, decision.confidence - 0.05 * clamp01(S.regimeStrength));
+        if (S.regimeStrength > 0 && regime?.state === 'range') {
+          // Range режим: ако осцилаторът е срещу посоката → наказание (без да "убиваме" бота със 100% стоп).
+          const osc = (confirmation?.details || []).find((d) => typeof d === 'string' && d.startsWith('osc:'));
+          const oscDir = osc ? osc.split(':')[1] : null;
+          if (oscDir && decision.direction && oscDir !== decision.direction) {
+            decision.confidence = Math.max(0, decision.confidence - (S.rangeOscPenaltyEnabled ? (clamp(parseNumberFlexible(S.rangeOscPenaltyPct) || 0, 0, 50) / 100) : 0));}
+          // Лека корекция спрямо предпочитание на режима (ако има ясно изразен trendDir).
+          if (regime.trendDir !== 0) {
+            const regimePref = regime.trendDir > 0 ? 'SELL' : 'BUY';
+            if (decision.direction !== regimePref) {
+              decision.confidence = Math.max(0, decision.confidence - 0.05 * clamp01(S.regimeStrength));
+            }
           }
         }
         if (S.biasStrength > 0 && biasDirection && decision.direction !== biasDirection) {
@@ -7065,7 +7119,7 @@ if (!weights.length) return 0;
         const confidencePct = Math.round((decision.confidence || 0) * 100);
         const overrideThreshold = Math.max(0, Math.min(100, Number.isFinite(S.sniperOverrideConfidencePct) ? S.sniperOverrideConfidencePct : SNIPER_5S_DEFAULTS.overrideConfidencePct));
         const allowOverride = overrideThreshold > 0 && confidencePct >= overrideThreshold;
-        if (!allowOverride && !allowLateEntries && entryWindowLimit > 0 && timeInCandle > entryWindowLimit) {
+        if (!allowLateEntries && entryWindowLimit > 0 && timeInCandle > entryWindowLimit) {
           tfStatus[tf] = { state: 'late', confidence: decision.confidence, direction: displayDir };
           continue;
         }
@@ -7370,9 +7424,17 @@ const signal = {
         S.assetSelectedForSignal = true;
         S.assetSelectionAttempted = true;
 
+        const inFlightKey = `${signal.asset}|${decision.tfKey}|${signal.direction}|${decision.candleStart}`;
+        if (S.sniperInFlightKey === inFlightKey && Date.now() < (S.sniperInFlightUntil || 0)) {
+          logConsoleLine('[SCAN V5-FIXED] ПРОПУСК: In-flight (двоен вход)');
+          continue;
+        }
+        S.sniperInFlightKey = inFlightKey;
+        S.sniperInFlightUntil = Date.now() + 1500;
         logConsoleLine(`[SCAN V5-FIXED] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
         if (decision.aiVision?.pattern) logConsoleLine(`[AI VISION] Patterns: ${decision.aiVision.pattern}`);
         const ok = await executeTradeOrder(signal);
+        S.sniperInFlightUntil = 0;
         S.baseAmount = prevBase;
         S.tradeSequenceActive = false;
         S.hasLiveSignal = false;
@@ -7441,7 +7503,7 @@ const signal = {
         setStatusOverlay(formatStatus('warming_up', { seconds: Math.ceil((S.analysisReadyAt - Date.now()) / 1000) }), '', false);
       }
 
-      processPendingTradeConfirmations();
+      await processPendingTradeConfirmations();
       if (hasActiveTrade()) {
         await finalizeActiveTrades();
       }
@@ -7964,6 +8026,21 @@ const signal = {
         .iaa-tab-btn.active{ background:#16a34a; color:#052e16; font-weight:700; }
         .iaa-tab-body{ display:block; }
         .iaa-field-row{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 0; }
+
+        .iaa-field-row.iaa-inline-newfilter{ justify-content:flex-start; flex-wrap:nowrap; }
+        .iaa-field-row.iaa-inline-newfilter .iaa-checkbox{ flex:1 1 auto; }
+        .iaa-field-row.iaa-inline-newfilter .iaa-field-label{ width:auto; white-space:nowrap; opacity:.9; }
+        .iaa-field-row.iaa-inline-newfilter input{ width:46px; }
+        .iaa-field-row.iaa-max-row{ flex-wrap:nowrap; }
+        .iaa-field-row.iaa-max-row input{ width:46px; }
+        .iaa-field-row.iaa-compact-row{ margin:0; }
+        .iaa-grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:6px 0 10px; }
+        .iaa-checkbox-row{ display:flex; flex-wrap:wrap; gap:10px; margin:6px 0 10px; }
+        .iaa-max-row{ justify-content:flex-start; flex-wrap:wrap; }
+        .iaa-max-row .iaa-field-label{ flex:0 0 auto; white-space:nowrap; }
+        .iaa-max-row .iaa-mini-label{ opacity:.85; font-size:11px; white-space:nowrap; }
+        .iaa-max-row input{ width:64px; }
+
         .iaa-field-row input{ width:90px; padding:4px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:rgba(0,0,0,.3); color:#fff; font-weight:700; }
         .iaa-field-label{ font-size:11px; color:#9ca3af; }
         .iaa-mini-bar{ font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:10px; color:#6b7280; margin-left:6px; margin-right:6px; white-space:nowrap; flex:0 0 auto; }
@@ -8239,28 +8316,32 @@ const signal = {
                 </div>
                 <div class="iaa-field-row iaa-field-toggle" title="Когато е OFF ботът не променя сумата в платформата и използва текущата зададена сума.">
                   <span class="iaa-field-label">Синхронизирай сума с платформата</span>
-                  <label class="iaa-checkbox"><input type="checkbox" id="iaa-amount-sync-enabled" checked> ON/OFF</label>
+                  <label class="iaa-checkbox"><input type="checkbox" id="iaa-amount-sync-enabled" checked> </label>
                 </div>
                 <div class="iaa-field-row iaa-field-toggle" title="Минимален payout за допускане на сделка. (60–92%)">
   <span class="iaa-field-label">Мин. Payout %</span>
-  <label class="iaa-checkbox"><input type="checkbox" id="iaa-sniper-min-payout-enabled" checked> ON/OFF</label>
+  <label class="iaa-checkbox"><input type="checkbox" id="iaa-sniper-min-payout-enabled" checked> </label>
   <input type="number" id="iaa-sniper-min-payout" min="60" max="92" step="1" value="70">
 </div>
-                <div class="iaa-field-row" title="Макс. време за вход в секунда след началото на свещ.">
-                  <span class="iaa-field-label">Прозорец за вход (сек)</span>
-                  <input type="number" id="iaa-sniper-entry-window" min="0" max="300" step="1" value="5">
+                <div class="iaa-field-row iaa-field-toggle iaa-max-row" title="Филтър за късен вход: ограничава влизането до определени секунди след началото на свещта (по TF).">
+                  <span class="iaa-field-label">Ранен вход </span>
+                  <label class="iaa-checkbox"><input type="checkbox" id="iaa-entrywin-enabled" checked> </label>
+                  <span class="iaa-mini-label">1m</span>
+                  <input type="number" id="iaa-entrywin-1m" min="0" max="60" step="1" value="15">
+                  <span class="iaa-mini-label">3m</span>
+                  <input type="number" id="iaa-entrywin-3m" min="0" max="180" step="1" value="35">
                 </div>
-                <div class="iaa-field-row" title="Макс. сделки на минута.">
-                  <span class="iaa-field-label">Макс. сделки/мин</span>
+
+                <div class="iaa-field-row iaa-max-row" title="Лимити: макс. сделки на минута и макс. отворени сделки.">
+                  <span class="iaa-field-label">Макс:</span>
+                  <span class="iaa-mini-label">/мин</span>
                   <input type="number" id="iaa-max-trades-per-minute" min="0" step="1" value="0">
-                </div>
-                <div class="iaa-field-row" title="Макс. отворени сделки едновременно.">
-                  <span class="iaa-field-label">Макс. отворени сделки</span>
+                  <span class="iaa-mini-label">отворени</span>
                   <input type="number" id="iaa-max-open-trades" min="1" step="1" value="1">
                 </div>
 
                 <div class="iaa-subtitle">Таймфрейми</div>
-                <div class="iaa-checkbox-grid">                  <label title="Включва 1m в анализите."><input type="checkbox" id="iaa-feature-tf-1m"> 1m</label>
+                <div class="iaa-checkbox-row">                  <label title="Включва 1m в анализите."><input type="checkbox" id="iaa-feature-tf-1m"> 1m</label>
                   <label title="Включва 3m в анализите."><input type="checkbox" id="iaa-feature-tf-3m"> 3m</label>
                   <label title="Включва 5m в анализите."><input type="checkbox" id="iaa-feature-tf-5m"> 5m</label>
                   <label title="Включва 15m в анализите."><input type="checkbox" id="iaa-feature-tf-15m"> 15m</label>                </div>
@@ -8274,7 +8355,12 @@ const signal = {
                  <div class="iaa-subtitle iaa-subtitle-new" title="Нови опции за тайминг (влизане по-рано и след pullback).">TIMING (ново)</div>
                  <label class="iaa-checkbox iaa-new-setting" title="Catch the move: позволява по-ранен вход когато увереността расте бързо и има тренд. Не променя стратегията, само тайминга."><input type="checkbox" id="iaa-phase-catch-move"> Catch the move</label>
                  <label class="iaa-checkbox iaa-new-setting" title="Snipe after reload: позволява вход след кратък pullback/колебание, когато сигналът се върне в посоката на тренда. Не променя стратегията, само тайминга."><input type="checkbox" id="iaa-phase-reload-snipe"> Snipe after reload</label>
-                <div class="iaa-field-row" title="VWAP (Volume Weighted Average Price) = средна цена, претеглена по обем. Прагът задава минималното отклонение от VWAP за вход. Диапазон: 0.00–0.30%. Препоръчано (default): 0.12%.">
+                                <div class="iaa-field-row">
+                  <span class="iaa-field-label">VWAP/Momentum (рядко)</span>
+                  <button id="iaa-sniper-vwap-toggle" type="button" class="iaa-toggle-btn">▾</button>
+                </div>
+                <div id="iaa-sniper-vwap-body">
+<div class="iaa-field-row" title="VWAP (Volume Weighted Average Price) = средна цена, претеглена по обем. Прагът задава минималното отклонение от VWAP за вход. Диапазон: 0.00–0.30%. Препоръчано (default): 0.12%.">
                   <span class="iaa-field-label">VWAP % (0.00–0.30)</span>
                   <span class="iaa-mini-bar" id="iaa-bar-vwapdev"></span>
                   <input type="number" inputmode="decimal" id="iaa-sniper-vwap" min="0" max="0.30" step="0.01" value="0.12">
@@ -8304,42 +8390,46 @@ const signal = {
                   <label title="Филтър за ниска волатилност (chop)."><input type="checkbox" id="iaa-sniper-chop-enabled"> Chop Вкл/Изкл</label>
                   <input type="number" id="iaa-sniper-chop" min="1" max="100" step="1" value="70">
                 </div>
+                </div>
                 
-        <div class="iaa-subtitle iaa-subtitle-new">НОВО • ФИЛТРИ</div>
+        <div class="iaa-field-row"><span class="iaa-field-label">НОВИ • ФИЛТРИ</span><button id="iaa-newfilters-toggle" type="button" class="iaa-toggle-btn">${S.sniperNewFiltersCollapsed ? '▸' : '▾'}</button></div>
+                <div id="iaa-newfilters-body" style="${S.sniperNewFiltersCollapsed ? 'display:none;' : ''}">
 
-        <div class="iaa-field-row">
-          <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-spread-enabled"> Spread filter (BUY vs SELL)</label>
-        </div>
-        <div class="iaa-field-row iaa-inline-bar">
-          <span class="iaa-field-label iaa-new-setting">Spread праг % (0–100)</span>
+
+        <div class="iaa-field-row iaa-inline-newfilter">
+          <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-spread-enabled"> Spread/цена разлика (BUYvsSELL)</label>
+          <span class="iaa-field-label iaa-new-setting">%</span>
           <input id="iaa-spread-threshold" type="number" min="0" max="100" step="1" value="20"/>
           <span class="iaa-mini-bar" id="iaa-spread-bar"></span>
         </div>
 
-        <div class="iaa-field-row">
-          <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-drift-enabled"> Drift detector (изтощаване)</label>
-        </div>
-        <div class="iaa-field-row iaa-inline-bar">
-          <span class="iaa-field-label iaa-new-setting">Drift праг % (0–100)</span>
+        <div class="iaa-field-row iaa-inline-newfilter">
+          <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-drift-enabled"> Drift/трейдинг отклонение</label>
+          <span class="iaa-field-label iaa-new-setting">%</span>
           <input id="iaa-drift-threshold" type="number" min="0" max="100" step="1" value="10"/>
           <span class="iaa-mini-bar" id="iaa-drift-bar"></span>
         </div>
 
-        <div class="iaa-field-row">
-          <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-flipdelay-enabled"> Flip delay</label>
+
+        <div class="iaa-field-row iaa-inline-newfilter">
+          <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-range-osc-penalty-enabled"> Range osc наказание</label>
+          <span class="iaa-field-label iaa-new-setting">%</span>
+          <input id="iaa-range-osc-penalty" type="number" min="0" max="50" step="1" value="20"/>
         </div>
-        <div class="iaa-field-row">
-          <span class="iaa-field-label iaa-new-setting">Flip delay (сек)</span>
+        <div class="iaa-field-row iaa-inline-newfilter">
+          <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-flipdelay-enabled"> Flip delay/импулс обръщане</label>
+          <span class="iaa-field-label iaa-new-setting">сек</span>
           <input id="iaa-flipdelay-sec" type="number" min="0" max="300" step="1" value="20"/>
         </div>
 
-        <div class="iaa-field-row">
-          <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-impulsecap-enabled"> Impulse Entry Cap</label>
-        </div>
-        <div class="iaa-field-row iaa-inline-bar">
-          <span class="iaa-field-label iaa-new-setting">Макс входа/свещ (1m/3m/5m)</span>
+        <div class="iaa-field-row iaa-inline-newfilter">
+          <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-impulsecap-enabled"> Impulse/лимит входове/свещ</label>
+          <span class="iaa-field-label iaa-new-setting">макс</span>
           <input id="iaa-impulsecap-max" type="number" min="1" max="5" step="1" value="2"/>
           <span class="iaa-mini-bar" id="iaa-impulsecap-bar"></span>
+        </div>
+
+
         </div>
 
 <div class="iaa-subtitle">AI VISION</div>
@@ -8394,21 +8484,23 @@ const signal = {
                   <input type="number" id="iaa-candle-pattern-weight" min="1" max="100" step="1" value="25">
                 </div>
                 <div class="iaa-subtitle">TF readiness gate</div>
-                <div class="iaa-field-row" title="Минимални готови барове за 1m потвърждение.">
-                  <span class="iaa-field-label">1m ready bars</span>
-                  <input type="number" id="iaa-partner-ready-1m" min="1" max="40" step="1" value="10">
-                </div>
-                <div class="iaa-field-row" title="Минимални готови барове за 3m потвърждение.">
-                  <span class="iaa-field-label">3m ready bars</span>
-                  <input type="number" id="iaa-partner-ready-3m" min="1" max="40" step="1" value="6">
-                </div>
-                <div class="iaa-field-row" title="Минимални готови барове за 5m потвърждение.">
-                  <span class="iaa-field-label">5m ready bars</span>
-                  <input type="number" id="iaa-partner-ready-5m" min="1" max="40" step="1" value="3">
-                </div>
-                <div class="iaa-field-row" title="Минимални готови барове за 15m потвърждение.">
-                  <span class="iaa-field-label">15m ready bars</span>
-                  <input type="number" id="iaa-partner-ready-15m" min="1" max="40" step="1" value="2">
+                <div class="iaa-grid-2">
+                  <div class="iaa-field-row iaa-compact-row" title="Минимални готови барове за 1m потвърждение.">
+                    <span class="iaa-field-label">1m bars</span>
+                    <input type="number" id="iaa-partner-ready-1m" min="1" max="40" step="1" value="10">
+                  </div>
+                  <div class="iaa-field-row iaa-compact-row" title="Минимални готови барове за 3m потвърждение.">
+                    <span class="iaa-field-label">3m bars</span>
+                    <input type="number" id="iaa-partner-ready-3m" min="1" max="40" step="1" value="6">
+                  </div>
+                  <div class="iaa-field-row iaa-compact-row" title="Минимални готови барове за 5m потвърждение.">
+                    <span class="iaa-field-label">5m bars</span>
+                    <input type="number" id="iaa-partner-ready-5m" min="1" max="40" step="1" value="3">
+                  </div>
+                  <div class="iaa-field-row iaa-compact-row" title="Минимални готови барове за 15m потвърждение.">
+                    <span class="iaa-field-label">15m bars</span>
+                    <input type="number" id="iaa-partner-ready-15m" min="1" max="40" step="1" value="2">
+                  </div>
                 </div>
                 <div class="iaa-field-row" title="EMA fast период.">
                   <span class="iaa-field-label">EMA Fast (2–30)</span>
@@ -8580,6 +8672,20 @@ const signal = {
         renderMousePanel();
       };
 
+
+      // Robust binding: ensure Mouse Mapping toggle always works even after UI re-renders
+      if (!S._mouseToggleDelegated) {
+        S._mouseToggleDelegated = true;
+        document.addEventListener('click', (event) => {
+          const t = event && event.target;
+          const btn = t && t.closest ? t.closest('#iaa-mouse-toggle') : null;
+          if (!btn) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (S.mousePanelOpen) hidePopups();
+          else openMousePanel();
+        }, true);
+      }
       if (settingsToggle) {
         settingsToggle.addEventListener('click', (event) => {
           event.preventDefault();
@@ -8811,6 +8917,12 @@ setTimeout(() => {
       const tradeIntervalMin = await storage.get(TRADE_INTERVAL_MIN_KEY); if (typeof tradeIntervalMin === 'number') S.tradeIntervalMin = tradeIntervalMin;
       const maxTradesPerMinute = await storage.get(MAX_TRADES_PER_MIN_KEY); if (typeof maxTradesPerMinute === 'number') S.maxTradesPerMinute = maxTradesPerMinute; else if (!Number.isFinite(S.maxTradesPerMinute)) S.maxTradesPerMinute = 5;
       const maxOpenTrades = await storage.get(MAX_OPEN_TRADES_KEY); if (typeof maxOpenTrades === 'number') S.maxOpenTrades = maxOpenTrades; else if (!Number.isFinite(S.maxOpenTrades)) S.maxOpenTrades = 5;
+      const ewEnabled = await storage.get(ENTRYWIN_TF_ENABLED_KEY);
+      if (typeof ewEnabled === 'boolean') S.entryWindowTfEnabled = ewEnabled;
+      const ew1m = await storage.get(ENTRYWIN_1M_SEC_KEY);
+      if (typeof ew1m === 'number') S.entryWindowSec1m = Math.max(0, Math.min(60, Math.round(ew1m)));
+      const ew3m = await storage.get(ENTRYWIN_3M_SEC_KEY);
+      if (typeof ew3m === 'number') S.entryWindowSec3m = Math.max(0, Math.min(180, Math.round(ew3m)));
       const payoutMin = await storage.get(PAYOUT_MIN_KEY); if (typeof payoutMin === 'number') S.payoutMin = payoutMin;
       const payoutMax = await storage.get(PAYOUT_MAX_KEY); if (typeof payoutMax === 'number') S.payoutMax = payoutMax;
       const payoutRequired = await storage.get(PAYOUT_REQUIRED_KEY); if (typeof payoutRequired === 'boolean') S.payoutRequired = payoutRequired;
@@ -8996,6 +9108,9 @@ setTimeout(() => {
     S.impulseCapEnabled = !!(await storage.get(FILTER_IMPULSECAP_ENABLED_KEY, false));
     S.impulseCapMaxPerCandle = clamp(parseNumberFlexible(await storage.get(FILTER_IMPULSECAP_MAX_KEY, 2)) || 2, 1, 5);
 
+
+    S.rangeOscPenaltyEnabled = !!(await storage.get(RANGE_OSC_PENALTY_ENABLED_KEY, true));
+    S.rangeOscPenaltyPct = clamp(parseNumberFlexible(await storage.get(RANGE_OSC_PENALTY_PCT_KEY, 20)) || 20, 0, 50);
     // paint UI (if present)
     const SPREAD_ENABLED = $id('iaa-spread-enabled');
     const SPREAD_THRESHOLD = $id('iaa-spread-threshold');
@@ -9012,6 +9127,9 @@ setTimeout(() => {
     const IMPULSECAP_MAX = $id('iaa-impulsecap-max');
     const IMPULSECAP_BAR = $id('iaa-impulsecap-bar');
 
+
+    const RANGE_OSC_PENALTY_ENABLED = $id('iaa-range-osc-penalty-enabled');
+    const RANGE_OSC_PENALTY = $id('iaa-range-osc-penalty');
     const paintBar = (el, v, min, max)=>{
       if (!el) return;
       const pct = Math.max(0, Math.min(1, (v-min)/(max-min)));
@@ -9041,6 +9159,9 @@ setTimeout(() => {
     if (IMPULSECAP_MAX) IMPULSECAP_MAX.value = String(S.impulseCapMaxPerCandle);
     paintBar(IMPULSECAP_BAR, S.impulseCapMaxPerCandle, 1, 5);
 
+
+    if (RANGE_OSC_PENALTY_ENABLED) RANGE_OSC_PENALTY_ENABLED.checked = !!S.rangeOscPenaltyEnabled;
+    if (RANGE_OSC_PENALTY) RANGE_OSC_PENALTY.value = String(S.rangeOscPenaltyPct);
     const hookCheckbox = (el, onChange)=>{
       if (!el) return;
       el.addEventListener('change', ()=>{ onChange(); persistSettings(); });
@@ -9068,6 +9189,10 @@ setTimeout(() => {
     hookCheckbox(IMPULSECAP_ENABLED, ()=>{ S.impulseCapEnabled = !!IMPULSECAP_ENABLED.checked; });
     hookInput(IMPULSECAP_MAX, ()=>{
       S.impulseCapMaxPerCandle = clamp(parseNumberFlexible(IMPULSECAP_MAX.value) || 2, 1, 5);
+
+
+    hookCheckbox(RANGE_OSC_PENALTY_ENABLED, ()=>{ S.rangeOscPenaltyEnabled = !!RANGE_OSC_PENALTY_ENABLED.checked; });
+    hookInput(RANGE_OSC_PENALTY, ()=>{ S.rangeOscPenaltyPct = clamp(parseNumberFlexible(RANGE_OSC_PENALTY.value) || 0, 0, 50); });
       paintBar(IMPULSECAP_BAR, S.impulseCapMaxPerCandle, 1, 5);
     });
 }
@@ -9080,6 +9205,9 @@ setTimeout(() => {
       storage.set(TRADE_INTERVAL_MIN_KEY, S.tradeIntervalMin);
       storage.set(MAX_TRADES_PER_MIN_KEY, S.maxTradesPerMinute);
       storage.set(MAX_OPEN_TRADES_KEY, S.maxOpenTrades);
+      storage.set(ENTRYWIN_TF_ENABLED_KEY, !!S.entryWindowTfEnabled);
+      storage.set(ENTRYWIN_1M_SEC_KEY, Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15);
+      storage.set(ENTRYWIN_3M_SEC_KEY, Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35);
       storage.set(PAYOUT_MIN_KEY, S.payoutMin);
       storage.set(PAYOUT_MAX_KEY, S.payoutMax);
       storage.set(PAYOUT_REQUIRED_KEY, S.payoutRequired);
@@ -9174,6 +9302,9 @@ setTimeout(() => {
       await storage.set(FILTER_IMPULSECAP_MAX_KEY, Number(S.impulseCapMaxPerCandle || 2));
 
 
+
+      await storage.set(RANGE_OSC_PENALTY_ENABLED_KEY, !!S.rangeOscPenaltyEnabled);
+      await storage.set(RANGE_OSC_PENALTY_PCT_KEY, Number(S.rangeOscPenaltyPct || 0));
     }
     function captureSettingsSnapshot() {
       S.settingsSnapshot = {
@@ -9261,6 +9392,24 @@ setTimeout(() => {
       const sniperWeightsBody = $id('iaa-sniper-weights-body');
       const sniperMultiToggle = $id('iaa-sniper-multi-toggle');
       const sniperMultiBody = $id('iaa-sniper-multi-body');
+      const sniperVwapToggle = $id('iaa-sniper-vwap-toggle');
+      const newFiltersBody = $id('iaa-newfilters-body');
+      const newFiltersToggle = $id('iaa-newfilters-toggle');
+
+      if (newFiltersToggle && newFiltersBody) {
+        // Toggle without full re-render (prevents losing the click handler).
+        newFiltersToggle.addEventListener('click', () => {
+          S.sniperNewFiltersCollapsed = !S.sniperNewFiltersCollapsed;
+          persistSettings();
+          newFiltersBody.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
+          newFiltersToggle.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
+        });
+        // Initial paint
+        newFiltersBody.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
+        newFiltersToggle.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
+      }
+
+      const sniperVwapBody = $id('iaa-sniper-vwap-body');
       const sniperSmartToggle = $id('iaa-sniper-smart-toggle');
       const sniperSmartBody = $id('iaa-sniper-smart-body');
       const sniperEngineToggle = $id('iaa-sniper-engine-toggle');
@@ -9276,7 +9425,9 @@ setTimeout(() => {
       const SNIPER_MIN_PAYOUT = sniperMinPayout;
       const SNIPER_MIN_PAYOUT_ENABLED = $id('iaa-sniper-min-payout-enabled');
 
-      const sniperEntryWindow = $id('iaa-sniper-entry-window');
+      const ENTRYWIN_ENABLED = $id('iaa-entrywin-enabled');
+      const ENTRYWIN_1M = $id('iaa-entrywin-1m');
+      const ENTRYWIN_3M = $id('iaa-entrywin-3m');
       const sniperChop = $id('iaa-sniper-chop');
       const sniperWarmup = $id('iaa-sniper-warmup');
       const sniperMaxSessionLoss = $id('iaa-sniper-max-session-loss');
@@ -9395,7 +9546,9 @@ setTimeout(() => {
       const sniperMinPayoutEnabled = $id('iaa-sniper-min-payout-enabled');
       if (sniperMinPayoutEnabled) sniperMinPayoutEnabled.checked = (S.sniperMinPayoutEnabled ?? true);
       if (sniperMinPayout && sniperMinPayoutEnabled) sniperMinPayout.disabled = !sniperMinPayoutEnabled.checked;
-      if (sniperEntryWindow) sniperEntryWindow.value = S.sniperEntryWindowSec ?? 5;
+      if (ENTRYWIN_ENABLED) ENTRYWIN_ENABLED.checked = !!S.entryWindowTfEnabled;
+      if (ENTRYWIN_1M) ENTRYWIN_1M.value = Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15;
+      if (ENTRYWIN_3M) ENTRYWIN_3M.value = Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35;
       if (sniperChop) sniperChop.value = Math.round(((S.sniperChopThreshold ?? 0.7) * 100));
       if (sniperWarmup) sniperWarmup.value = S.sniperWarmupMin ?? 10;
       if (sniperMaxSessionLoss) sniperMaxSessionLoss.value = (S.maxSessionLossCents || 0) / 100;
@@ -9492,6 +9645,10 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       if (sniperWeightsToggle) sniperWeightsToggle.textContent = S.sniperWeightsCollapsed ? '▸' : '▾';
       if (sniperMultiBody) sniperMultiBody.style.display = S.sniperMultiCollapsed ? 'none' : 'block';
       if (sniperMultiToggle) sniperMultiToggle.textContent = S.sniperMultiCollapsed ? '▸' : '▾';
+      if (sniperVwapBody) sniperVwapBody.style.display = S.sniperVwapCollapsed ? 'none' : 'block';
+      if (newFiltersBody) newFiltersBody.style.display = S.sniperNewFiltersCollapsed ? 'none' : 'block';
+      if (sniperVwapToggle) sniperVwapToggle.textContent = S.sniperVwapCollapsed ? '▸' : '▾';
+      if (newFiltersToggle) newFiltersToggle.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
       if (sniperSmartBody) sniperSmartBody.style.display = S.sniperSmartCollapsed ? 'none' : 'block';
       if (sniperSmartToggle) sniperSmartToggle.textContent = S.sniperSmartCollapsed ? '▸' : '▾';
       if (sniperEngineBody) sniperEngineBody.style.display = S.sniperEngineCollapsed ? 'none' : 'block';
@@ -9802,7 +9959,9 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       const SNIPER_THRESHOLD_REAL = $id('iaa-sniper-threshold-real');
       const SNIPER_BASE = $id('iaa-sniper-base');
       const SNIPER_MIN_PAYOUT = $id('iaa-sniper-min-payout');
-      const SNIPER_ENTRY = $id('iaa-sniper-entry-window');
+      const ENTRYWIN_ENABLED = $id('iaa-entrywin-enabled');
+      const ENTRYWIN_1M = $id('iaa-entrywin-1m');
+      const ENTRYWIN_3M = $id('iaa-entrywin-3m');
       const SNIPER_CHOP = $id('iaa-sniper-chop');
       const SNIPER_WARMUP = $id('iaa-sniper-warmup');
       const SNIPER_EMA_FAST = $id('iaa-sniper-ema-fast');
@@ -10036,15 +10195,28 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
           persistSettings();
         });
 }
-      if (SNIPER_ENTRY) {
-        SNIPER_ENTRY.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_ENTRY.value);
-          const normalized = Number.isFinite(d) ? Math.round(d) : 5;
-          S.sniperEntryWindowSec = Math.max(0, Math.min(300, normalized));
+      if (ENTRYWIN_ENABLED || ENTRYWIN_1M || ENTRYWIN_3M) {
+        const updateEntryWinUi = () => {
+          const en = !!(ENTRYWIN_ENABLED && ENTRYWIN_ENABLED.checked);
+          S.entryWindowTfEnabled = en;
+          if (ENTRYWIN_1M) ENTRYWIN_1M.disabled = !en;
+          if (ENTRYWIN_3M) ENTRYWIN_3M.disabled = !en;
+          persistSettings();
+        };
+        if (ENTRYWIN_ENABLED) ENTRYWIN_ENABLED.addEventListener('change', updateEntryWinUi);
+        if (ENTRYWIN_1M) ENTRYWIN_1M.addEventListener('input', () => {
+          const d = parseNumberFlexible(ENTRYWIN_1M.value);
+          S.entryWindowSec1m = Math.max(0, Math.min(60, Math.round(Number.isFinite(d) ? d : 15)));
           persistSettings();
         });
-            }
-      if (true) {
+        if (ENTRYWIN_3M) ENTRYWIN_3M.addEventListener('input', () => {
+          const d = parseNumberFlexible(ENTRYWIN_3M.value);
+          S.entryWindowSec3m = Math.max(0, Math.min(180, Math.round(Number.isFinite(d) ? d : 35)));
+          persistSettings();
+        });
+        updateEntryWinUi();
+      }
+if (true) {
         const _payoutEnabledEl = $id('iaa-sniper-min-payout-enabled');
         const _payoutEl = $id('iaa-sniper-min-payout');
         if (_payoutEnabledEl) {
@@ -10235,6 +10407,29 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperMultiCollapsed = !S.sniperMultiCollapsed;
           renderSettingsPanel();
         });
+      }
+      const SNIPER_VWAP_TOGGLE = $id('iaa-sniper-vwap-toggle');
+      if (SNIPER_VWAP_TOGGLE) {
+        SNIPER_VWAP_TOGGLE.addEventListener('click', () => {
+          S.sniperVwapCollapsed = !S.sniperVwapCollapsed;
+          renderSettingsPanel();
+        });
+      }
+
+      const NEWFILTERS_TOGGLE = $id('iaa-newfilters-toggle');
+      if (NEWFILTERS_TOGGLE) {
+        const NEWFILTERS_BODY = $id('iaa-newfilters-body');
+        if (NEWFILTERS_BODY) {
+          NEWFILTERS_TOGGLE.addEventListener('click', () => {
+            S.sniperNewFiltersCollapsed = !S.sniperNewFiltersCollapsed;
+            persistSettings();
+            NEWFILTERS_BODY.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
+            NEWFILTERS_TOGGLE.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
+          });
+          // Initial paint
+          NEWFILTERS_BODY.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
+          NEWFILTERS_TOGGLE.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
+        }
       }
       if (SNIPER_SMART_TOGGLE) {
         SNIPER_SMART_TOGGLE.addEventListener('click', () => {
