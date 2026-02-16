@@ -284,7 +284,7 @@
   const BIAS_TF_30M_KEY = 'IAA_BIAS_TF_30M';
   const CONFLICT_STRENGTH_KEY = 'IAA_CONFLICT_STRENGTH';
   const SNIPER_5S_DEFAULTS = {
-    baseAmountCents: 10000,
+    baseAmountCents: 100,
     threshold: 0.65,
     minPayout: 70,
     entryWindowSec: 5,
@@ -1213,6 +1213,7 @@
 
       // execution guards
       executing:false,
+      tradeMutex: { active: false, id: null, startedAt: 0 },
       executionAttempts: 0,
       lastExecutedKey:null,
       hasLiveSignal:false,
@@ -2706,6 +2707,32 @@
       input.style.color = color;
     }
 
+
+    function applySettingsInputColors() {
+      const applyById = (id, opts) => {
+        const el = $id(id);
+        if (!el) return;
+        const v = parseNumberFlexible(el.value);
+        if (!Number.isFinite(v)) return;
+        applyStrictnessColor(el, v, opts || {});
+      };
+      applyById('iaa-sniper-threshold', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-sniper-override-confidence', { min: 0, max: 100, highIsStrict: true });
+      applyById('iaa-sniper-vwap', { min: 0, max: 0.30, highIsStrict: true });
+      applyById('iaa-sniper-momentum', { min: 0, max: 0.30, highIsStrict: true });
+      applyById('iaa-sniper-vwap-weight', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-sniper-momentum-weight', { min: 1, max: 100, highIsStrict: false });
+      applyById('iaa-sniper-volume-weight', { min: 1, max: 100, highIsStrict: false });
+      applyById('iaa-sniper-chop', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-candle-pattern-min-conf', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-candle-pattern-weight', { min: 1, max: 100, highIsStrict: false });
+      applyById('iaa-entrywin-1m', { min: 0, max: 60, highIsStrict: false });
+      applyById('iaa-entrywin-3m', { min: 0, max: 180, highIsStrict: false });
+      applyById('iaa-dynamic-score-min', { min: 0, max: 100, highIsStrict: true });
+      applyById('iaa-dynamic-min-conf', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-dynamic-sub30-min-conf', { min: 1, max: 100, highIsStrict: true });
+    }
+
     function buildMiniBar(value, min, max, blocks = 10) {
       if (!Number.isFinite(value)) return '';
       const clamped = Math.max(min, Math.min(max, value));
@@ -2715,10 +2742,17 @@
       const empty = '░'.repeat(Math.max(0, blocks - filled));
       return full + empty;
     }
-    function setMiniBar(id, value, min, max, blocks = 10) {
+    function setMiniBar(id, value, min, max, blocks = 10, options = {}) {
       const el = $id(id);
       if (!el) return;
+      const clamped = Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
+      const ratioRaw = (clamped - min) / ((max - min) || 1);
+      const ratio = Math.max(0, Math.min(1, options.highIsStrict === false ? (1 - ratioRaw) : ratioRaw));
       el.textContent = buildMiniBar(value, min, max, blocks);
+      let color = '#fbbf24';
+      if (ratio <= 0.4) color = '#22c55e';
+      else if (ratio >= 0.7) color = '#f87171';
+      el.style.color = color;
     }
     function setDebugTab(tab) {
       S.debugTab = tab;
@@ -4363,6 +4397,7 @@ function getMinHistoryWindowForReadinessMs() {
     async function executeTradeOrder(signal) {
       if (!S.hasLiveSignal || !S.currentSignal || !S.tradeSequenceActive) return false;
       if (S.executing) return false;
+      if (S.tradeMutex?.active) return false;
       if (!canOpenAnotherTrade()) {
         setSkipReason('MaxOpen');
         return false;
@@ -4435,6 +4470,8 @@ function getMinHistoryWindowForReadinessMs() {
       S.executing = true;
       S.executionAttempts = 1;
       S.executionStartTime = Date.now();
+      const mutexId = `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      S.tradeMutex = { active: true, id: mutexId, startedAt: Date.now() };
 
       let resolvedExpiry = normalizeExpiry(signal.expiry) || S.expirySetting;
       const assetScope = getExpiryScopeFromAsset(signal.asset);
@@ -4745,6 +4782,9 @@ function getMinHistoryWindowForReadinessMs() {
         return false;
       } finally {
         S.executing = false;
+        if (S.tradeMutex?.id === mutexId) {
+          S.tradeMutex = { active: false, id: null, startedAt: 0 };
+        }
       }
     }
 
@@ -4769,6 +4809,33 @@ function getMinHistoryWindowForReadinessMs() {
 
     function markBalanceEventUsed(ev) {
       if (ev) ev.used = true;
+    }
+
+    function resolveLedgerProfitCents(trade, creditCents) {
+      const amountCents = Number(trade?.totalAmountCents || trade?.amountCents || 0);
+      const credit = Number(creditCents || 0);
+      if (!Number.isFinite(amountCents) || amountCents <= 0 || !Number.isFinite(credit) || credit <= 0) {
+        return { profitCents: credit - amountCents, mode: 'gross_fallback' };
+      }
+
+      const payoutPct = Number.isFinite(trade?.payoutPercent) ? trade.payoutPercent : Number(S.lastPayoutPercent || 0);
+      const expectedProfit = payoutPct > 0 ? Math.round(amountCents * (payoutPct / 100)) : null;
+      const expectedGross = expectedProfit != null ? amountCents + expectedProfit : null;
+
+      const grossProfit = credit - amountCents; // credit contains stake + profit
+      const profitOnly = credit;              // credit contains only net profit
+
+      if (expectedProfit != null && expectedGross != null) {
+        const distProfitOnly = Math.abs(credit - expectedProfit);
+        const distGross = Math.abs(credit - expectedGross);
+        if (distProfitOnly + 2 < distGross) return { profitCents: profitOnly, mode: 'profit_credit' };
+        if (distGross + 2 < distProfitOnly) return { profitCents: grossProfit, mode: 'gross_credit' };
+      }
+
+      if (credit <= Math.round(amountCents * 1.2)) {
+        return { profitCents: profitOnly, mode: 'profit_heuristic' };
+      }
+      return { profitCents: grossProfit, mode: 'gross_heuristic' };
     }
 
     function confirmTradeByBalance(trade, clickedAt) {
@@ -4819,7 +4886,7 @@ function getMinHistoryWindowForReadinessMs() {
         trade.openConfirmedBy = 'ASSUMED_TIMEOUT';
         trade.balanceAfterOpen = last;
 
-        log(`[SCAN V5-FIXED] ВНИМАНИЕ: Няма баланс-потвърждение за отворена сделка (приемам я за ОТВОРЕНА)`);
+        logConsoleLine(`[SCAN V5-FIXED] ВНИМАНИЕ: Няма баланс-потвърждение за отворена сделка (приемам я за ОТВОРЕНА)`);
         return true;
       })();
     }
@@ -4887,16 +4954,19 @@ function getMinHistoryWindowForReadinessMs() {
 
         const ev = findBalanceEvent(settleStart, settleEnd, (e) => {
           const d = Number(e.deltaCents || 0);
-          return d > 0;
+          if (!(d > 0)) return false;
+          if (amountCents > 0 && d > Math.round(amountCents * 3.5)) return false;
+          return true;
         });
 
         if (ev) {
           markBalanceEventUsed(ev);
           const credit = Number(ev.deltaCents || 0);
-          const profitCents = credit - amountCents; // net profit (stake already debited)
+          const resolved = resolveLedgerProfitCents(trade, credit);
+          const profitCents = Number(resolved?.profitCents || 0);
           const outcome = profitCents > 0 ? 'WIN' : (profitCents < 0 ? 'LOSS' : 'EVEN');
 
-          finalizeTradeOutcome(trade, outcome, profitCents, ev.t, 'BALANCE_LEDGER');
+          finalizeTradeOutcome(trade, outcome, profitCents, ev.t, `BALANCE_LEDGER:${resolved?.mode || 'unknown'}`);
 
           continue;
         }
@@ -5439,7 +5509,9 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         .filter((v) => v >= minSec && v <= maxSec);
       const base = candidates.length ? candidates : [Math.max(minSec, Math.min(maxSec, secsFromTF(expiry)))];
 
-      const scored = base.map((seconds) => ({
+      const regimeState = String(options?.signal?.entryMeta?.regime?.state || '').toLowerCase();
+      const filteredBase = base.filter((seconds) => !(regimeState !== 'trend' && seconds < 30));
+      const scored = (filteredBase.length ? filteredBase : base).map((seconds) => ({
         seconds,
         breakdown: buildDynamicScoreBreakdown(options.signal || {}, seconds)
       })).sort((a, b) => b.breakdown.total - a.breakdown.total);
@@ -6793,6 +6865,14 @@ if (!weights.length) return 0;
         // We keep the real trade direction in decision.direction; the UI uses decision._smoothedDirection when present.
         applyTfDirectionSmoothing(tf, decision);
         const displayDir = decision._smoothedDirection || decision.direction;
+        if (entryWindowLimit > 0 && Number.isFinite(timeInCandle) && timeInCandle > entryWindowLimit) {
+          tfStatus[tf] = { state: 'late', confidence: decision.confidence, direction: displayDir };
+          continue;
+        }
+        if (S.regimeStrength > 0 && regime?.state && ['chop', 'volatility'].includes(regime.state) && S.regimeStrength >= 0.5) {
+          tfStatus[tf] = { state: 'chop', confidence: decision.confidence, direction: displayDir };
+          continue;
+        }
         if (S.regimeStrength > 0 && regime?.state && ['volatility'].includes(regime.state) && S.regimeStrength >= 0.6) {
           tfStatus[tf] = { state: 'regime', confidence: decision.confidence, direction: displayDir };
           continue;
@@ -8454,7 +8534,7 @@ const signal = {
 
 
       // Robust binding: ensure Mouse Mapping toggle always works even after UI re-renders
-      if (!S._mouseToggleDelegated) {
+      if (false && !S._mouseToggleDelegated) {
         S._mouseToggleDelegated = true;
         document.addEventListener('click', (event) => {
           const t = event && event.target;
@@ -8510,12 +8590,7 @@ setTimeout(() => {
 
 
       if (mouseToggle) {
-        mouseToggle.addEventListener('click', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (S.mousePanelOpen) hidePopups();
-          else openMousePanel();
-        });
+        // handled by central popup delegation in ensurePanelHandlers
       }
       if (calibrationFromMouse) {
         calibrationFromMouse.addEventListener('click', () => {
@@ -8801,11 +8876,11 @@ setTimeout(() => {
       const sniperRsiOverbought = await storage.get(SNIPER_RSI_OVERBOUGHT_KEY);
       if (typeof sniperRsiOverbought === 'number') S.sniperRsiOverbought = Math.max(50, Math.min(95, Math.round(sniperRsiOverbought)));
       const sniperVwapWeight = await storage.get(SNIPER_VWAP_WEIGHT_KEY);
-      if (typeof sniperVwapWeight === 'number') S.sniperVwapWeight = sniperVwapWeight;
+      if (typeof sniperVwapWeight === 'number') S.sniperVwapWeight = sniperVwapWeight > 1 ? clamp01(sniperVwapWeight / 100) : clamp01(sniperVwapWeight);
       const sniperMomentumWeight = await storage.get(SNIPER_MOMENTUM_WEIGHT_KEY);
-      if (typeof sniperMomentumWeight === 'number') S.sniperMomentumWeight = sniperMomentumWeight;
+      if (typeof sniperMomentumWeight === 'number') S.sniperMomentumWeight = sniperMomentumWeight > 1 ? clamp01(sniperMomentumWeight / 100) : clamp01(sniperMomentumWeight);
       const sniperVolumeWeight = await storage.get(SNIPER_VOLUME_WEIGHT_KEY);
-      if (typeof sniperVolumeWeight === 'number') S.sniperVolumeWeight = sniperVolumeWeight;
+      if (typeof sniperVolumeWeight === 'number') S.sniperVolumeWeight = sniperVolumeWeight > 1 ? clamp01(sniperVolumeWeight / 100) : clamp01(sniperVolumeWeight);
       const sniperVwapEnabled = await storage.get(SNIPER_VWAP_ENABLED_KEY);
       if (typeof sniperVwapEnabled === 'boolean') S.sniperVwapEnabled = sniperVwapEnabled;
       const sniperMomentumEnabled = await storage.get(SNIPER_MOMENTUM_ENABLED_KEY);
@@ -8872,11 +8947,11 @@ setTimeout(() => {
       const rsiDivergenceRsiWindow = await storage.get(RSI_DIVERGENCE_RSI_WINDOW_KEY);
       if (typeof rsiDivergenceRsiWindow === 'number') S.rsiDivergenceRsiWindow = Math.max(5, Math.round(rsiDivergenceRsiWindow));
       const candlestickPatternMinConf = await storage.get(CANDLE_PATTERN_MIN_CONF_KEY);
-      if (typeof candlestickPatternMinConf === 'number') S.candlestickPatternMinConfidence = clamp01(candlestickPatternMinConf);
+      if (typeof candlestickPatternMinConf === 'number') S.candlestickPatternMinConfidence = candlestickPatternMinConf > 1 ? clamp01(candlestickPatternMinConf / 100) : clamp01(candlestickPatternMinConf);
       const candlestickPatternEnabled = await storage.get(CANDLE_PATTERN_ENABLED_KEY);
       if (typeof candlestickPatternEnabled === 'boolean') S.candlestickPatternEnabled = candlestickPatternEnabled;
       const candlestickPatternWeight = await storage.get(CANDLE_PATTERN_WEIGHT_KEY);
-      if (typeof candlestickPatternWeight === 'number') S.candlestickPatternWeight = clamp01(candlestickPatternWeight);
+      if (typeof candlestickPatternWeight === 'number') S.candlestickPatternWeight = candlestickPatternWeight > 1 ? clamp01(candlestickPatternWeight / 100) : clamp01(candlestickPatternWeight);
       const emaRsiFast = await storage.get(EMA_RSI_FAST_KEY);
       if (typeof emaRsiFast === 'number') S.emaRsiFast = Math.max(2, Math.round(emaRsiFast));
       const emaRsiSlow = await storage.get(EMA_RSI_SLOW_KEY);
@@ -9236,13 +9311,13 @@ setTimeout(() => {
       const newFiltersToggle = $id('iaa-newfilters-toggle');
 
       if (newFiltersToggle && newFiltersBody) {
-        // Toggle without full re-render (prevents losing the click handler).
-        newFiltersToggle.addEventListener('click', () => {
+        // Single binding (onclick) to avoid double-toggle after re-renders.
+        newFiltersToggle.onclick = () => {
           S.sniperNewFiltersCollapsed = !S.sniperNewFiltersCollapsed;
           persistSettings();
           newFiltersBody.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
           newFiltersToggle.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
-        });
+        };
         // Initial paint
         newFiltersBody.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
         newFiltersToggle.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
@@ -9472,8 +9547,8 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       if (emaRsiOversold) emaRsiOversold.value = S.emaRsiOversold ?? 35;
       if (emaRsiOverbought) emaRsiOverbought.value = S.emaRsiOverbought ?? 65;
       if (candlePatternEnabled) candlePatternEnabled.checked = !!S.candlestickPatternEnabled;
-      if (candlePatternMinConf) candlePatternMinConf.value = Number(S.candlestickPatternMinConfidence ?? 0.6).toFixed(2);
-      if (candlePatternWeight) candlePatternWeight.value = Number(S.candlestickPatternWeight ?? 0.25).toFixed(2);
+      if (candlePatternMinConf) candlePatternMinConf.value = Math.round((S.candlestickPatternMinConfidence ?? 0.6) * 100);
+      if (candlePatternWeight) candlePatternWeight.value = Math.round((S.candlestickPatternWeight ?? 0.25) * 100);
       if (maxTradesPerMinute) maxTradesPerMinute.value = S.maxTradesPerMinute ?? 5;
       if (maxOpenTrades) maxOpenTrades.value = S.maxOpenTrades ?? 5;
       if (regimeStrength) regimeStrength.value = (S.regimeStrength ?? 0.6).toFixed(2);
@@ -9489,18 +9564,19 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       if (sniperThreshold) applyStrictnessColor(sniperThreshold, parseNumberFlexible(sniperThreshold.value), { min: 0, max: 1, highIsStrict: true });
       if (sniperVwap) applyStrictnessColor(sniperVwap, parseNumberFlexible(sniperVwap.value), { min: 0, max: vwapMax, highIsStrict: true });
       if (sniperMomentum) applyStrictnessColor(sniperMomentum, parseNumberFlexible(sniperMomentum.value), { min: 0, max: momentumMax, highIsStrict: true });
-      if (sniperVwapWeight) applyStrictnessColor(sniperVwapWeight, parseNumberFlexible(sniperVwapWeight.value), { min: 0, max: 1, highIsStrict: true });
-      if (sniperMomentumWeight) applyStrictnessColor(sniperMomentumWeight, parseNumberFlexible(sniperMomentumWeight.value), { min: 0, max: 1, highIsStrict: false });
-      if (sniperVolumeWeight) applyStrictnessColor(sniperVolumeWeight, parseNumberFlexible(sniperVolumeWeight.value), { min: 0, max: 1, highIsStrict: false });
-      if (sniperChop) applyStrictnessColor(sniperChop, parseNumberFlexible(sniperChop.value), { min: 0, max: 1, highIsStrict: true });
+      if (sniperVwapWeight) applyStrictnessColor(sniperVwapWeight, parseNumberFlexible(sniperVwapWeight.value), { min: 1, max: 100, highIsStrict: true });
+      if (sniperMomentumWeight) applyStrictnessColor(sniperMomentumWeight, parseNumberFlexible(sniperMomentumWeight.value), { min: 1, max: 100, highIsStrict: false });
+      if (sniperVolumeWeight) applyStrictnessColor(sniperVolumeWeight, parseNumberFlexible(sniperVolumeWeight.value), { min: 1, max: 100, highIsStrict: false });
+      if (sniperChop) applyStrictnessColor(sniperChop, parseNumberFlexible(sniperChop.value), { min: 1, max: 100, highIsStrict: true });
       if (sniperVolumeThreshold) applyStrictnessColor(sniperVolumeThreshold, parseNumberFlexible(sniperVolumeThreshold.value), { min: 0, max: 1, highIsStrict: true });
       if (regimeStrength) applyStrictnessColor(regimeStrength, parseNumberFlexible(regimeStrength.value), { min: 0, max: 1, highIsStrict: true });
       if (confirmationStrength) applyStrictnessColor(confirmationStrength, parseNumberFlexible(confirmationStrength.value), { min: 0, max: 1, highIsStrict: true });
       if (biasStrength) applyStrictnessColor(biasStrength, parseNumberFlexible(biasStrength.value), { min: 0, max: 1, highIsStrict: true });
       if (conflictStrength) applyStrictnessColor(conflictStrength, parseNumberFlexible(conflictStrength.value), { min: 0, max: 1, highIsStrict: true });
       // Mini bars (проба само на 2 реда)
-      if (sniperThreshold) setMiniBar('iaa-bar-threshold', parseNumberFlexible(sniperThreshold.value), 1, 100, 10);
-      if (sniperVwap) setMiniBar('iaa-bar-vwapdev', parseNumberFlexible(sniperVwap.value), 0, 0.30, 10);
+      if (sniperThreshold) setMiniBar('iaa-bar-threshold', parseNumberFlexible(sniperThreshold.value), 1, 100, 10, { highIsStrict: true });
+      if (sniperVwap) setMiniBar('iaa-bar-vwapdev', parseNumberFlexible(sniperVwap.value), 0, 0.30, 10, { highIsStrict: true });
+      applySettingsInputColors();
 
       if (sniperSettingsBody) sniperSettingsBody.style.display = S.sniperSettingsCollapsed ? 'none' : 'block';
       if (sniperCollapse) sniperCollapse.textContent = S.sniperSettingsCollapsed ? '▸' : '▾';
@@ -9637,11 +9713,14 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       const mouseToggleBtn = $id('iaa-mouse-toggle');
       if (mouseToggleBtn && !mouseToggleBtn.dataset.boundPopupClick) {
         mouseToggleBtn.dataset.boundPopupClick = '1';
-        mouseToggleBtn.addEventListener('click', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
+        mouseToggleBtn.onclick = (event) => {
+          if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
           handlePanelPopupAction('mouse');
-        });
+          return false;
+        };
       }
 
       const settingsPanel = $id('iaa-settings-panel');
@@ -10120,7 +10199,7 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
           const pct = Math.max(1, Math.min(100, Math.round(d)));
           S.sniperThreshold = pct / 100;
           applyStrictnessColor(SNIPER_THRESHOLD, pct, { min: 1, max: 100, highIsStrict: true });
-          setMiniBar('iaa-bar-threshold', pct, 1, 100, 10);
+          setMiniBar('iaa-bar-threshold', pct, 1, 100, 10, { highIsStrict: true });
           persistSettings();
         });
       }
@@ -10220,7 +10299,7 @@ if (true) {
           SNIPER_VWAP.value = clamped.toFixed(2);
           S.sniperVwapDeviation = clamped / 100;
           applyStrictnessColor(SNIPER_VWAP, clamped, { min: 0, max: 0.30, highIsStrict: true });
-          setMiniBar('iaa-bar-vwapdev', clamped, 0, 0.30, 10);
+          setMiniBar('iaa-bar-vwapdev', clamped, 0, 0.30, 10, { highIsStrict: true });
           persistSettings();
         };
         SNIPER_VWAP.addEventListener('input', update);
@@ -10260,8 +10339,10 @@ if (SNIPER_VOLUME_THRESHOLD) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_CHOP.value);
           const normalized = Number.isFinite(d) ? d : 0;
-          S.sniperChopThreshold = Math.max(0, Math.min(1, normalized));
-          applyStrictnessColor(SNIPER_CHOP, S.sniperChopThreshold, { min: 0, max: 1, highIsStrict: true });
+          const pct = Math.max(1, Math.min(100, Math.round(normalized || 0)));
+          S.sniperChopThreshold = pct / 100;
+          SNIPER_CHOP.value = String(pct);
+          applyStrictnessColor(SNIPER_CHOP, pct, { min: 1, max: 100, highIsStrict: true });
           persistSettings();
         };
         SNIPER_CHOP.addEventListener('input', update);
@@ -10294,8 +10375,10 @@ if (SNIPER_VOLUME_THRESHOLD) {
       if (SNIPER_VWAP_WEIGHT) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_VWAP_WEIGHT.value);
-          S.sniperVwapWeight = Math.max(0, Math.min(1, Number.isFinite(d) ? d : 0));
-          applyStrictnessColor(SNIPER_VWAP_WEIGHT, S.sniperVwapWeight, { min: 0, max: 1, highIsStrict: true });
+          const pct = Math.max(1, Math.min(100, Math.round(Number.isFinite(d) ? d : 55)));
+          S.sniperVwapWeight = pct / 100;
+          SNIPER_VWAP_WEIGHT.value = String(pct);
+          applyStrictnessColor(SNIPER_VWAP_WEIGHT, pct, { min: 1, max: 100, highIsStrict: true });
           persistSettings();
         };
         SNIPER_VWAP_WEIGHT.addEventListener('input', update);
@@ -10304,8 +10387,10 @@ if (SNIPER_VOLUME_THRESHOLD) {
       if (SNIPER_MOMENTUM_WEIGHT) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_MOMENTUM_WEIGHT.value);
-          S.sniperMomentumWeight = Math.max(0, Math.min(1, Number.isFinite(d) ? d : 0));
-          applyStrictnessColor(SNIPER_MOMENTUM_WEIGHT, S.sniperMomentumWeight, { min: 0, max: 1, highIsStrict: false });
+          const pct = Math.max(1, Math.min(100, Math.round(Number.isFinite(d) ? d : 35)));
+          S.sniperMomentumWeight = pct / 100;
+          SNIPER_MOMENTUM_WEIGHT.value = String(pct);
+          applyStrictnessColor(SNIPER_MOMENTUM_WEIGHT, pct, { min: 1, max: 100, highIsStrict: false });
           persistSettings();
         };
         SNIPER_MOMENTUM_WEIGHT.addEventListener('input', update);
@@ -10314,8 +10399,10 @@ if (SNIPER_VOLUME_THRESHOLD) {
       if (SNIPER_VOLUME_WEIGHT) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_VOLUME_WEIGHT.value);
-          S.sniperVolumeWeight = Math.max(0, Math.min(1, Number.isFinite(d) ? d : 0));
-          applyStrictnessColor(SNIPER_VOLUME_WEIGHT, S.sniperVolumeWeight, { min: 0, max: 1, highIsStrict: false });
+          const pct = Math.max(1, Math.min(100, Math.round(Number.isFinite(d) ? d : 10)));
+          S.sniperVolumeWeight = pct / 100;
+          SNIPER_VOLUME_WEIGHT.value = String(pct);
+          applyStrictnessColor(SNIPER_VOLUME_WEIGHT, pct, { min: 1, max: 100, highIsStrict: false });
           persistSettings();
         };
         SNIPER_VOLUME_WEIGHT.addEventListener('input', update);
@@ -10482,14 +10569,16 @@ if (SNIPER_VOLUME_THRESHOLD) {
       if (CANDLE_PATTERN_MIN_CONF) {
         CANDLE_PATTERN_MIN_CONF.addEventListener('input', () => {
           const d = parseNumberFlexible(CANDLE_PATTERN_MIN_CONF.value) || 0;
-          S.candlestickPatternMinConfidence = clamp01(d);
+          S.candlestickPatternMinConfidence = clamp01((Math.max(1, Math.min(100, Math.round(d))) || 60) / 100);
+          CANDLE_PATTERN_MIN_CONF.value = String(Math.round(S.candlestickPatternMinConfidence * 100));
           persistSettings();
         });
       }
       if (CANDLE_PATTERN_WEIGHT) {
         CANDLE_PATTERN_WEIGHT.addEventListener('input', () => {
           const d = parseNumberFlexible(CANDLE_PATTERN_WEIGHT.value) || 0;
-          S.candlestickPatternWeight = clamp01(d);
+          S.candlestickPatternWeight = clamp01((Math.max(1, Math.min(100, Math.round(d))) || 25) / 100);
+          CANDLE_PATTERN_WEIGHT.value = String(Math.round(S.candlestickPatternWeight * 100));
           persistSettings();
         });
       }
@@ -10709,13 +10798,35 @@ if (SNIPER_VOLUME_THRESHOLD) {
     }
 
     ;
+
+    const BUY_INTENT_LABELS = ['ВХОД', 'КУПИ', 'ЛОНГ', '↑', 'ВХОД↑'];
+    const SELL_INTENT_LABELS = ['ПРОДАЙ', 'ШОРТ', '↓', 'ИЗХОД↓'];
+    const HOLD_INTENT_LABELS = ['БЕЗ СДЕЛКА', 'ПАУЗА', 'ЧАКА', 'ФЛАТ', 'СТОП|ЧОП', 'БЕЗ СИГНАЛ'];
+
+    function getIntentVisual() {
+      const confPct = Math.round(clamp01(S.analysisConfidence || 0) * 100);
+      const dir = (S.analysisDirection || '').toUpperCase();
+      const idx = Math.floor(Date.now() / 5000);
+      if (dir === 'BUY' && confPct > 0) {
+        const label = BUY_INTENT_LABELS[idx % BUY_INTENT_LABELS.length];
+        return { text: `🟢 ${label} ${confPct}%`, color: '#22c55e' };
+      }
+      if (dir === 'SELL' && confPct > 0) {
+        const label = SELL_INTENT_LABELS[idx % SELL_INTENT_LABELS.length];
+        return { text: `🔴 ${label} ${confPct}%`, color: '#ef4444' };
+      }
+      const label = HOLD_INTENT_LABELS[idx % HOLD_INTENT_LABELS.length];
+      return { text: `⚪ ${label}`, color: '#e5e7eb' };
+    }
+
     function renderWarmup(percent){
       const el = $id('iaa-warm'); if (!el) return;
       if (S.running && percent < 1.0) {
-        el.textContent = `ENGINE ${Math.round(percent*100)}% ЗАГРЯВА`;
+        const intent = getIntentVisual();
+        el.textContent = `ENGINE ${Math.round(percent*100)}% ЗАГРЯВА • ${intent.text}`;
         el.style.color = `hsl(${percent*120},100%,50%)`;
-      } else if (S.running) { el.textContent = 'ДВИГАТЕЛ ГОТОВ. НАБЛЮДАВА ПАЗАРА.'; el.style.color = '#22c55e'; }
-      else { el.textContent = 'БОТЪТ Е СПРЯН.'; el.style.color='#f87171'; }
+      } else if (S.running) { const intent = getIntentVisual(); el.textContent = `ДВИГАТЕЛ ГОТОВ • ${intent.text}`; el.style.color = intent.color; }
+      else { const intent = getIntentVisual(); el.textContent = `БОТЪТ Е СПРЯН • ${intent.text}`; el.style.color='#f87171'; }
     }
 
     /* ===================== ENHANCED MOUSE MAPPING PANEL ===================== */
