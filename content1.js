@@ -1,134 +1,13 @@
 (() => {
   'use strict';
 
-  const IAA_PAGE_BRIDGE_MODE = (() => {
-    try {
-      const src = document.currentScript?.src || '';
-      return /[?&]iaa_page_bridge=1(?:[&#]|$)/.test(src);
-    } catch {
-      return false;
-    }
-  })();
+  const IAA_PAGE_BRIDGE_MODE = false;
 
   const PO_PRICE_EVENT = 'IAA_PO_PRICE';
   const PRICE_HISTORY_MAX_POINTS = 12000;
   const PRICE_HISTORY_DEDUPE_MS = 250;
-  const LEGACY_SIGNAL_MODE_ENABLED = false;
 
-  if (IAA_PAGE_BRIDGE_MODE) {
-    if (!window.__iaaPageWsBridgeInstalled) {
-      window.__iaaPageWsBridgeInstalled = true;
-      const BRIDGE_EVENT = 'IAA_WS_BRIDGE_FRAME';
-      window.postMessage({ __iaaType: 'IAA_WS_BRIDGE_READY' }, '*');
-      const decode = (data) => {
-        if (data == null) return null;
-        if (typeof data === 'string') return data;
-        if (data instanceof ArrayBuffer) {
-          try { return new TextDecoder('utf-8').decode(new Uint8Array(data)); } catch { return null; }
-        }
-        if (ArrayBuffer.isView(data)) {
-          try {
-            return new TextDecoder('utf-8').decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-          } catch {
-            return null;
-          }
-        }
-        return null;
-      };
-      const emit = (payload, source = 'ws') => {
-        if (typeof payload !== 'string' || !payload.length) return;
-        window.postMessage({ __iaaType: BRIDGE_EVENT, payload, source }, '*');
-      };
-      const handleData = (data, source = 'ws') => {
-        const decoded = decode(data);
-        if (decoded != null) { emit(decoded, source); return; }
-        if (typeof Blob !== 'undefined' && data instanceof Blob) {
-          data.text().then((text) => emit(text, source)).catch(() => {});
-        }
-      };
-
-      const OriginalWebSocket = window.WebSocket;
-      if (OriginalWebSocket) {
-        try {
-          const proto = OriginalWebSocket.prototype;
-          if (proto && typeof proto.dispatchEvent === 'function' && !proto.__iaaPageDispatchTapped) {
-            const originalDispatch = proto.dispatchEvent;
-            proto.dispatchEvent = function(event) {
-              if (event?.type === 'message') {
-                try { handleData(event.data, 'ws'); } catch {}
-              }
-              return originalDispatch.apply(this, arguments);
-            };
-            proto.__iaaPageDispatchTapped = true;
-          }
-        } catch {}
-
-        window.WebSocket = function (...args) {
-          const ws = new OriginalWebSocket(...args);
-          ws.addEventListener('message', (event) => {
-            try { handleData(event?.data, 'ws'); } catch {}
-          });
-          return ws;
-        };
-        window.WebSocket.prototype = OriginalWebSocket.prototype;
-        window.WebSocket.OPEN = OriginalWebSocket.OPEN;
-        window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
-        window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
-        window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
-      }
-
-      const looksRelevant = (text = '', url = '') => {
-        const hay = `${url} ${text}`.toLowerCase();
-        return /(quote|price|tick|candle|history|stream|asset|symbol|pair|loadhistory|updatestream|socket\.io)/.test(hay);
-      };
-
-      try {
-        const origFetch = window.fetch;
-        if (typeof origFetch === 'function' && !window.__iaaPageFetchTapped) {
-          window.__iaaPageFetchTapped = true;
-          window.fetch = async function(...args) {
-            const res = await origFetch.apply(this, args);
-            try {
-              const url = String(args?.[0]?.url || args?.[0] || '');
-              const clone = res?.clone?.();
-              if (clone) {
-                clone.text().then((txt) => {
-                  if (!txt || txt.length > 350000) return;
-                  if (!looksRelevant(txt, url)) return;
-                  emit(txt, 'http');
-                }).catch(() => {});
-              }
-            } catch {}
-            return res;
-          };
-        }
-      } catch {}
-
-      try {
-        if (!window.__iaaPageXhrTapped) {
-          window.__iaaPageXhrTapped = true;
-          const origOpen = XMLHttpRequest.prototype.open;
-          const origSend = XMLHttpRequest.prototype.send;
-          XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-            this.__iaaUrl = String(url || '');
-            return origOpen.call(this, method, url, ...rest);
-          };
-          XMLHttpRequest.prototype.send = function(...args) {
-            this.addEventListener('load', () => {
-              try {
-                const txt = typeof this.responseText === 'string' ? this.responseText : '';
-                if (!txt || txt.length > 350000) return;
-                if (!looksRelevant(txt, this.__iaaUrl || '')) return;
-                emit(txt, 'http');
-              } catch {}
-            });
-            return origSend.apply(this, args);
-          };
-        }
-      } catch {}
-    }
-    return;
-  }
+  
 
   /* ========================= AUTH / LOGIN ========================= */
   const LOGIN_SHELL_ID = 'iaa-login-shell';
@@ -158,11 +37,8 @@
   const EXPIRY_KEY   = 'IAA_EXPIRY';
   const KEEP_ALIVE_KEY = 'IAA_KEEP_ALIVE';
   const FORCE_ASSET_SELECT_KEY = 'IAA_FORCE_ASSET_SELECT';
-  const SIGNAL_SOURCE_5M_KEY = 'IAA_SIGNAL_SOURCE_5M';
-  const SIGNAL_SOURCE_1M_KEY = 'IAA_SIGNAL_SOURCE_1M';
-  const SIGNAL_TIME_OFFSET_MIN_KEY = 'IAA_SIGNAL_TIME_OFFSET_MIN';
-  const MAX_SESSION_LOSS_KEY = 'IAA_MAX_SESSION_LOSS_CENTS';
-  const MAX_CONSECUTIVE_LOSSES_KEY = 'IAA_MAX_CONSECUTIVE_LOSSES';
+  const MAX_SESSION_ЗАГУБИ_KEY = 'IAA_MAX_SESSION_ЗАГУБИ_CENTS';
+  const MAX_CONSECUTIVE_ЗАГУБИES_KEY = 'IAA_MAX_CONSECUTIVE_ЗАГУБИES';
   const ANALYSIS_ENABLED_KEY = 'IAA_ANALYSIS_ENABLED';
   const ANALYSIS_CONFIDENCE_KEY = 'IAA_ANALYSIS_CONFIDENCE';
   const TRADE_INTERVAL_MIN_KEY = 'IAA_TRADE_INTERVAL_MIN';
@@ -171,10 +47,10 @@
   const PAYOUT_REQUIRED_KEY = 'IAA_PAYOUT_REQUIRED';
   const MAX_TRADE_AMOUNT_KEY = 'IAA_MAX_TRADE_AMOUNT_CENTS';
   const MAX_TRADE_MULTIPLIER_KEY = 'IAA_MAX_TRADE_MULTIPLIER';
-  const ANALYSIS_WINDOW_SEC_KEY = 'IAA_ANALYSIS_WINDOW_SEC';
+  const ANALYSIS_ПЕЧАЛБИDOW_SEC_KEY = 'IAA_ANALYSIS_ПЕЧАЛБИDOW_SEC';
   const ANALYSIS_WARMUP_MIN_KEY = 'IAA_ANALYSIS_WARMUP_MIN';
   const SELF_TRADE_ENABLED_KEY = 'IAA_SELF_TRADE_ENABLED';
-  const REVERSAL_WINDOW_SEC_KEY = 'IAA_REVERSAL_WINDOW_SEC';
+  const REVERSAL_ПЕЧАЛБИDOW_SEC_KEY = 'IAA_REVERSAL_ПЕЧАЛБИDOW_SEC';
   const REVERSAL_OPPOSITE_RATIO_KEY = 'IAA_REVERSAL_OPPOSITE_RATIO';
   const PANEL_OPACITY_KEY = 'IAA_PANEL_OPACITY';
   const COUNTDOWN_BEEP_KEY = 'IAA_COUNTDOWN_BEEP';
@@ -183,15 +59,39 @@
   const BURST_CONFIDENCE_KEY = 'IAA_BURST_CONFIDENCE';
   const MODE_KEY = 'IAA_MODE';
   const DYNAMIC_TIME_KEY = 'IAA_DYNAMIC_TIME_ENABLED';
+  const DYNAMIC_MODE_KEY = 'IAA_DYNAMIC_MODE';
+  const DYNAMIC_CANDIDATES_KEY = 'IAA_DYNAMIC_CANDIDATES';
+  const DYNAMIC_MIN_SEC_KEY = 'IAA_DYNAMIC_MIN_SEC';
+  const DYNAMIC_MAX_SEC_KEY = 'IAA_DYNAMIC_MAX_SEC';
+  const DYNAMIC_MIN_CONF_KEY = 'IAA_DYNAMIC_MIN_CONF';
+  const DYNAMIC_SUB30_MIN_CONF_KEY = 'IAA_DYNAMIC_SUB30_MIN_CONF';
+  const DYNAMIC_LATE_ENTRY_MAX_SEC_KEY = 'IAA_DYNAMIC_LATE_ENTRY_MAX_SEC';
+  const DYNAMIC_SET_BUDGET_MS_KEY = 'IAA_DYNAMIC_SET_BUDGET_MS';
+  const DYNAMIC_SCORE_MIN_KEY = 'IAA_DYNAMIC_SCORE_MIN';
+  const DYNAMIC_FALLBACK_FIXED_KEY = 'IAA_DYNAMIC_FALLBACK_FIXED';
+  const DYNAMIC_ALLOW_NO_TRADE_KEY = 'IAA_DYNAMIC_ALLOW_NO_TRADE';
+  const KILLER_ENABLED_KEY = 'IAA_KILLER_ENABLED';
+  const KILLER_HUD_ENABLED_KEY = 'IAA_KILLER_HUD_ENABLED';
+  const KILLER_MIN_CONFLUENCE_KEY = 'IAA_KILLER_MIN_CONFLUENCE';
+  const KILLER_DOM_THRESHOLD_KEY = 'IAA_KILLER_DOM_THRESHOLD';
+  const KILLER_PERFECT_TIME_KEY = 'IAA_KILLER_PERFECT_TIME';
+  const KILLER_ADX_DYNAMIC_KEY = 'IAA_KILLER_ADX_DYNAMIC';
+  const KILLER_CANDLE_HARDSTOP_KEY = 'IAA_KILLER_CANDLE_HARDSTOP';
+  const KILLER_SIGNAL_COOLDOWN_SEC_KEY = 'IAA_KILLER_SIGNAL_COOLDOWN_SEC';
+  const KILLER_USE_STRATEGY_VOTES_KEY = 'IAA_KILLER_USE_STRATEGY_VOTES';
+  const KILLER_STRATEGY_AGREEMENT_KEY = 'IAA_KILLER_STRATEGY_AGREEMENT';
+  const KILLER_DYNAMIC_COLLAPSED_KEY = 'IAA_KILLER_DYNAMIC_COLLAPSED';
+  const DYNAMIC_CORE_COLLAPSED_KEY = 'IAA_DYNAMIC_CORE_COLLAPSED';
+  const KILLER_HUD_POS_KEY = 'IAA_KILLER_HUD_POS';
   const SNIPER_BASE_AMOUNT_KEY = 'IAA_SNIPER_BASE_AMOUNT_CENTS';
   const SNIPER_THRESHOLD_KEY = 'IAA_SNIPER_THRESHOLD';
   const SNIPER_THRESHOLD_OTC_KEY = 'IAA_SNIPER_THRESHOLD_OTC';
   const SNIPER_THRESHOLD_REAL_KEY = 'IAA_SNIPER_THRESHOLD_REAL';
   const SNIPER_MIN_PAYOUT_KEY = 'IAA_SNIPER_MIN_PAYOUT';
-  const SNIPER_ENTRY_WINDOW_SEC_KEY = 'IAA_SNIPER_ENTRY_WINDOW_SEC';
-  const ENTRYWIN_TF_ENABLED_KEY = 'IAA_ENTRYWIN_TF_ENABLED';
-  const ENTRYWIN_1M_SEC_KEY = 'IAA_ENTRYWIN_1M_SEC';
-  const ENTRYWIN_3M_SEC_KEY = 'IAA_ENTRYWIN_3M_SEC';
+  const SNIPER_ENTRY_ПЕЧАЛБИDOW_SEC_KEY = 'IAA_SNIPER_ENTRY_ПЕЧАЛБИDOW_SEC';
+  const ENTRYПЕЧАЛБИ_TF_ENABLED_KEY = 'IAA_ENTRYПЕЧАЛБИ_TF_ENABLED';
+  const ENTRYПЕЧАЛБИ_1M_SEC_KEY = 'IAA_ENTRYПЕЧАЛБИ_1M_SEC';
+  const ENTRYПЕЧАЛБИ_3M_SEC_KEY = 'IAA_ENTRYПЕЧАЛБИ_3M_SEC';
   const SNIPER_WARMUP_MIN_KEY = 'IAA_SNIPER_WARMUP_MIN';
   const SNIPER_VWAP_DEV_KEY = 'IAA_SNIPER_VWAP_DEV';
   const SNIPER_VWAP_LOOKBACK_KEY = 'IAA_SNIPER_VWAP_LOOKBACK';
@@ -203,6 +103,19 @@
   const SNIPER_RSI_OVERSOLD_KEY = 'IAA_SNIPER_RSI_OVERSOLD';
   const SNIPER_RSI_OVERBOUGHT_KEY = 'IAA_SNIPER_RSI_OVERBOUGHT';
   const SNIPER_KEEP_ALIVE_KEY = 'IAA_SNIPER_KEEP_ALIVE';
+  const FILTERMODE_ENABLED_KEY = 'IAA_FILTERMODE_ENABLED';
+  const FILTERMODE_AUTO_KEY = 'IAA_FILTERMODE_AUTO';
+  const FILTERMODE_MANUAL_KEY = 'IAA_FILTERMODE_MANUAL';
+  const FILTERMODE_AUTO_WINDOW_KEY = 'IAA_FILTERMODE_AUTO_WINDOW_MIN';
+  const FILTERMODE_AUTO_FLIPS_KEY = 'IAA_FILTERMODE_AUTO_FLIPS';
+  const FILTERMODE_AUTO_DROPS_KEY = 'IAA_FILTERMODE_AUTO_DROPS';
+
+  // Backwards/forwards-compat keys (some parts of the UI/logic refer to older names)
+  // Keep ONE source of truth to avoid "... is not defined" crashes.
+  const FILTERMODE_MODE_KEY = FILTERMODE_MANUAL_KEY; // stores current manual mode: 'soft' | 'auto' | 'strict'
+  const FILTERMODE_AUTO_WINDOW_MIN_KEY = FILTERMODE_AUTO_WINDOW_KEY;
+  const FILTERMODE_AUTO_FLIP_THRESH_KEY = FILTERMODE_AUTO_FLIPS_KEY;
+  const FILTERMODE_AUTO_DROP_THRESH_KEY = FILTERMODE_AUTO_DROPS_KEY;
   const SNIPER_VWAP_WEIGHT_KEY = 'IAA_SNIPER_VWAP_WEIGHT';
   const SNIPER_MOMENTUM_WEIGHT_KEY = 'IAA_SNIPER_MOMENTUM_WEIGHT';
   const SNIPER_VOLUME_WEIGHT_KEY = 'IAA_SNIPER_VOLUME_WEIGHT';
@@ -211,10 +124,6 @@
   const SNIPER_VOLUME_ENABLED_KEY = 'IAA_SNIPER_VOLUME_ENABLED';
   const SNIPER_CHOP_ENABLED_KEY = 'IAA_SNIPER_CHOP_ENABLED';
   const SNIPER_OVERRIDE_CONF_PCT_KEY = 'IAA_SNIPER_OVERRIDE_CONF_PCT';
-  const SNIPER_MULTI_THRESHOLD_KEY = 'IAA_SNIPER_MULTI_THRESHOLD_PCT';
-  const SNIPER_MULTI_COUNT_KEY = 'IAA_SNIPER_MULTI_COUNT';
-  const SNIPER_MULTI_AMOUNT_PCT_KEY = 'IAA_SNIPER_MULTI_AMOUNT_PCT';
-  const SNIPER_MULTI_ENABLED_KEY = 'IAA_SNIPER_MULTI_ENABLED';
   const SNIPER_TIMEFRAMES_KEY = 'IAA_SNIPER_TIMEFRAMES_V1';
 
   const FILTER_SPREAD_ENABLED_KEY = 'IAA_FILTER_SPREAD_ENABLED';
@@ -242,18 +151,18 @@
   const STRATEGY_AUTO_SWITCH_KEY = 'IAA_STRATEGY_AUTO_SWITCH';
   const STRATEGY_WR_WEIGHT_KEY = 'IAA_STRATEGY_WR_WEIGHT';
   const STRATEGY_PNL_WEIGHT_KEY = 'IAA_STRATEGY_PNL_WEIGHT';
-  const STRATEGY_LEARNING_TRADES_KEY = 'IAA_STRATEGY_LEARNING_TRADES';
-  const STRATEGY_LOSS_STREAK_LIMIT_KEY = 'IAA_STRATEGY_LOSS_STREAK_LIMIT';
+  const STRATEGY_LEARNING_СДЕЛКИ_KEY = 'IAA_STRATEGY_LEARNING_СДЕЛКИ';
+  const STRATEGY_ЗАГУБИ_STREAK_LIMIT_KEY = 'IAA_STRATEGY_ЗАГУБИ_STREAK_LIMIT';
   const STRATEGY_CONFIG_KEY = 'IAA_STRATEGY_CONFIG_V1';
   const RSI_DIVERGENCE_LOOKBACK_KEY = 'IAA_RSI_DIVERGENCE_LOOKBACK';
   const RSI_DIVERGENCE_MIN_DELTA_KEY = 'IAA_RSI_DIVERGENCE_MIN_DELTA';
-  const RSI_DIVERGENCE_RSI_WINDOW_KEY = 'IAA_RSI_DIVERGENCE_RSI_WINDOW';
+  const RSI_DIVERGENCE_RSI_ПЕЧАЛБИDOW_KEY = 'IAA_RSI_DIVERGENCE_RSI_ПЕЧАЛБИDOW';
   const CANDLE_PATTERN_MIN_CONF_KEY = 'IAA_CANDLE_PATTERN_MIN_CONF';
   const CANDLE_PATTERN_ENABLED_KEY = 'IAA_CANDLE_PATTERN_ENABLED';
   const CANDLE_PATTERN_WEIGHT_KEY = 'IAA_CANDLE_PATTERN_WEIGHT';
   const EMA_RSI_FAST_KEY = 'IAA_EMA_RSI_FAST';
   const EMA_RSI_SLOW_KEY = 'IAA_EMA_RSI_SLOW';
-  const EMA_RSI_RSI_WINDOW_KEY = 'IAA_EMA_RSI_RSI_WINDOW';
+  const EMA_RSI_RSI_ПЕЧАЛБИDOW_KEY = 'IAA_EMA_RSI_RSI_ПЕЧАЛБИDOW';
   const EMA_RSI_OVERSOLD_KEY = 'IAA_EMA_RSI_OVERSOLD';
   const EMA_RSI_OVERBOUGHT_KEY = 'IAA_EMA_RSI_OVERBOUGHT';
   const PARTNER_READY_1M_BARS_KEY = 'IAA_PARTNER_READY_1M_BARS';
@@ -261,8 +170,8 @@
   const PARTNER_READY_5M_BARS_KEY = 'IAA_PARTNER_READY_5M_BARS';
   const PARTNER_READY_15M_BARS_KEY = 'IAA_PARTNER_READY_15M_BARS';
   const WS_PRICE_SAMPLE_TTL_MS = 2000;
-  const MAX_TRADES_PER_MIN_KEY = 'IAA_MAX_TRADES_PER_MIN';
-  const MAX_OPEN_TRADES_KEY = 'IAA_MAX_OPEN_TRADES';
+  const MAX_СДЕЛКИ_PER_MIN_KEY = 'IAA_MAX_СДЕЛКИ_PER_MIN';
+  const MAX_OPEN_СДЕЛКИ_KEY = 'IAA_MAX_OPEN_СДЕЛКИ';
   const IDLE_SWITCH_ENABLED_KEY = 'IAA_IDLE_SWITCH_ENABLED';
   const IDLE_SWITCH_MIN_KEY = 'IAA_IDLE_SWITCH_MIN';
   const REGIME_STRENGTH_KEY = 'IAA_REGIME_STRENGTH';
@@ -274,7 +183,7 @@
   const BIAS_TF_30M_KEY = 'IAA_BIAS_TF_30M';
   const CONFLICT_STRENGTH_KEY = 'IAA_CONFLICT_STRENGTH';
   const SNIPER_5S_DEFAULTS = {
-    baseAmountCents: 10000,
+    baseAmountCents: 100,
     threshold: 0.65,
     minPayout: 70,
     entryWindowSec: 5,
@@ -788,6 +697,9 @@
   }
 
   function installHttpPriceTap() {
+    // Disabled: price source is DOM selector only.
+    return;
+
     if (window.__iaaHttpTapped) return;
     window.__iaaHttpTapped = true;
     const looksRelevant = (text = '', url = '') => {
@@ -844,6 +756,9 @@
   }
 
   function installWebSocketPriceTap() {
+    // Disabled: price source is DOM selector only.
+    return;
+
     if (window.__iaaWsTapped) return;
     window.__iaaWsTapped = true;
     ensurePageWsBridgeListener();
@@ -923,7 +838,10 @@
       .button:hover{background:#000}
       .iaa-err{color:#f87171;font-size:12px;text-align:center;margin-top:8px;min-height:16px}
       .iaa-hidden{display:none!important}
-    `;
+    
+        /* Hide deprecated UI */
+        #iaa-killer-toggle, #iaa-killer-panel { display:none !important; }
+`;
     const style = document.createElement('style'); style.textContent = css; document.documentElement.appendChild(style);
 
     const shell = document.createElement('div'); shell.id = LOGIN_SHELL_ID;
@@ -975,21 +893,8 @@
       LOGO_FALLBACK: 'https://i.ibb.co/M5Skh64X/logo.png',
       FPS: 10,
       // Селектор за баланса (DOM)
-      // Използва се за ledger/confirm без TRADES панел.
+      // Използва се за ledger/confirm без СДЕЛКИ панел.
       BALANCE_SEL: 'body > div.wrapper > div.wrapper__top > header > div.right-block.js-right-block > div.right-block__item.js-drop-down-modal-open > div > div.balance-info-block__data > div.balance-info-block__balance > span',
-
-      SIGNAL_SOURCES: [
-        {
-          key: '5m',
-          url: 'https://t.me/+POqCj8MhmoBjMGIx',
-          expiryOverride: '5M',
-          label: '5m',
-          joinSelector: 'body > div.tgme_page_wrap > div.tgme_body_wrap > div > div.tgme_page_action.tgme_page_web_action > a > span',
-          openWebLabel: 'OPEN IN WEB'
-        }
-      ],
-      SIGNAL_POLL_MS: 3000,
-      SIGNAL_FRESH_SEC: 15,
       IDLE_ASSET_POOL: [
         { asset: 'EUR/USD (OTC)', assetSearch: 'EURUSD', isOTC: true },
         { asset: 'GBP/USD (OTC)', assetSearch: 'GBPUSD', isOTC: true },
@@ -1143,7 +1048,7 @@
       EARLY_FIRE_MS: 1000,
       LATE_TOL_MS: 1000,
       MAX_QUEUE: 50,
-      DEDUPE_WINDOW_MIN: 5,
+      DEDUPE_ПЕЧАЛБИDOW_MIN: 5,
       SETTLEMENT_DELAY_MS: 2000,
       BAL_DELTA_THRESH_CENTS: 5,
       SETTLEMENT_POLL_MS: 100,
@@ -1181,48 +1086,17 @@
       sniperFastWarmupUntil: 0,
       activeTrades: [], tradeLockUntil:0, tradeCount:0,
       autoTrade:true,
-      mode: 'signals',
+      mode: 'sniper',
 
       // money
-      currentAmount:null, baseAmount:null, martingaleSequence:0, tradeProfitLoss:0, balance:0,
-      l1Active:false, l2Active:false, l1Multiplier:2, l2Multiplier:4,
+      currentAmount:null, baseAmount:null, tradeProfitLoss:0, balance:0,
       lastTradeOutcome:null, botStartTime:0, expirySetting:'1M',
       botStartBalance: null,
       forceAssetSelect: false,
 
-      // signal intake
-      currentSignal:null, tradeSequenceActive:false,
-      assetSelecting:false, assetSelectedForSignal:false,
-
-      // snapshot mode
-      signalBuffer: [],
-      dedupeSeen: new Map(),
-      processedSignals: new Set(),
-      lastSignalPollAt: 0,
-      lastProcessedSignalHashes: new Map(),
-
-      // execution guards
-      executing:false,
-      executionAttempts: 0,
-      lastExecutedKey:null,
-      hasLiveSignal:false,
-      forceImmediate:false,
-
-      // Cycle manager
-      cycleActive: false,
-      cycleStep: 0,
-      cycleBaseSignal: null,
-      cycleStartTime: 0,
-      cycleTimeoutId: null,
-      cycleStartBalance: null,
-      cycleEndBalance: null,
-
       // balance observer
       balObs: null,
       balanceBeforeTrade: null,
-      balanceSignalBaseline: null,
-
-
       // balance event ledger
       lastBalanceCents: null,
       balanceEvents: [],
@@ -1272,10 +1146,20 @@
       buySellMethod: 'xpath',
 
       // Keep alive
-      keepAliveEnabled: false,
+      sniperKeepAliveEnabled: false,
       keepAliveInterval: null,
       keepAliveActive: false,
       sniperKeepAliveEnabled: false,
+      // filter mode (Soft/Strict/AUTO)
+      filterModeEnabled: false,
+      filterModeAutoEnabled: true,
+      filterModeManual: 'soft',
+      filterModeCurrent: 'soft',
+      filterModeLastChangedAt: 0,
+      filterModePanelOpen: false,
+      filterAutoWindowMin: 12,
+      filterAutoFlipThreshold: 3,
+      filterAutoDropThreshold: 2,
       lastPlatformExpiry: null,
 
       // trade log
@@ -1308,6 +1192,32 @@
       payoutMax: 92,
       payoutRequired: false,
       dynamicExpiryEnabled: false,
+      dynamicMode: 'off', // off | dynamic | hybrid
+      dynamicCandidatesSec: [15, 30, 45, 60, 90, 120, 180],
+      dynamicMinSec: 15,
+      dynamicMaxSec: 300,
+      dynamicMinConfidence: 0.65,
+      dynamicSub30MinConfidence: 0.78,
+      dynamicLateEntryMaxSec: 35,
+      dynamicSetBudgetMs: 1200,
+      dynamicScoreMin: 0.25,
+      dynamicFallbackToFixed: true,
+      dynamicAllowNoTrade: true,
+      dynamicCoreCollapsed: false,
+      killerDynamicCollapsed: true,
+      killerEnabled: false,
+      killerHudEnabled: false,
+      killerMinConfluence: 5,
+      killerDominanceThreshold: 68,
+      killerPerfectTimeEnabled: true,
+      killerAdxDynamicEnabled: true,
+      killerCandleAgainstHardStop: true,
+      killerSignalCooldownSec: 5,
+      killerUseStrategyVotes: true,
+      killerStrategyAgreementMin: 1,
+      killerEdgeState: {},
+      killerHudPos: { x: null, y: null },
+      killerSnapshot: null,
       maxTradeAmountCents: 15000,
       maxTradeAmountMultiplier: 1.5,
       analysisWindowSec: 300,
@@ -1369,10 +1279,7 @@
       lastConsoleAt: 0,
       lastSelfTradeHintAt: 0,
       lastDiagnosticsAt: 0,
-      lastSignalLogAt: new Map(),
-      signalSourceEnabled: { '1m': false, '5m': false },
-      signalTimeOffsetMin: 0,
-
+      lastDiagnosticsMinuteKey: null,
       /* ---------- Sniper mode ---------- */
       sniperBaseAmount: SNIPER_5S_DEFAULTS.baseAmountCents,
       sniperThreshold: SNIPER_5S_DEFAULTS.threshold,
@@ -1406,10 +1313,6 @@
       sniperMomentumWeight: SNIPER_5S_DEFAULTS.momentumWeight,
       sniperVolumeWeight: SNIPER_5S_DEFAULTS.volumeWeight,
       sniperOverrideConfidencePct: SNIPER_5S_DEFAULTS.overrideConfidencePct,
-      sniperMultiThresholdPct: SNIPER_5S_DEFAULTS.multiThresholdPct,
-      sniperMultiCount: SNIPER_5S_DEFAULTS.multiCount,
-      sniperMultiAmountPct: SNIPER_5S_DEFAULTS.multiAmountPct,
-      sniperMultiEnabled: true,
       sniperEnabledTimeframes: { ...SNIPER_5S_DEFAULTS.timeframes },
       featureVolumeRejection: FEATURE_DEFAULTS.volumeRejection,
       featureVwapAnalysis: FEATURE_DEFAULTS.vwapAnalysis,
@@ -1418,7 +1321,6 @@
       aiVisionMorningStar: true,
       aiVisionEveningStar: true,
       aiVisionRequireMatch: false,
-      featureTimeframes: { ...FEATURE_DEFAULTS.timeframes },
       autoSwitchStrategy: STRATEGY_DEFAULTS.autoSwitch,
       strategyWeightWr: STRATEGY_DEFAULTS.wrWeight,
       strategyWeightPnl: STRATEGY_DEFAULTS.pnlWeight,
@@ -1438,7 +1340,6 @@
       strategyStats: {},
       sniperSettingsCollapsed: false,
       sniperWeightsCollapsed: false,
-      sniperMultiCollapsed: false,
       sniperSmartCollapsed: false,
       sniperEngineCollapsed: false,
       sniperRiskCollapsed: false,
@@ -1446,11 +1347,6 @@
       sniperNewFiltersCollapsed: true,
       sniperSettingsTab: 'basic',
       debugTab: 'status',
-
-      /* ---------- Signal deduplication ---------- */
-      signalCooldownUntil: 0,
-      recentSignalKeys: new Map(),
-
       // trade pacing
       nextTradeAllowedAt: 0,
 
@@ -1462,10 +1358,10 @@
       analysisWindows: [],
       analysisReadyAt: 0,
       analysisReason: '',
-      lastSignalLagSec: null,
       clockDriftSec: null,
       lastSkipReason: '',
       lastSkipAt: 0,
+      skipReasonCounts: {},
       lastStatusAt: 0,
 
       /* ---------- ENHANCED: Countdown and UI states ---------- */
@@ -1525,9 +1421,6 @@
       S.sniperMomentumWeight = defaults.momentumWeight;
       S.sniperVolumeWeight = defaults.volumeWeight;
       S.sniperOverrideConfidencePct = defaults.overrideConfidencePct;
-      S.sniperMultiThresholdPct = defaults.multiThresholdPct;
-      S.sniperMultiCount = defaults.multiCount;
-      S.sniperMultiAmountPct = defaults.multiAmountPct;
       S.sniperEnabledTimeframes = { ...defaults.timeframes };
       if (typeof S.featureVolumeRejection !== 'boolean') S.featureVolumeRejection = FEATURE_DEFAULTS.volumeRejection;
       if (typeof S.featureVwapAnalysis !== 'boolean') S.featureVwapAnalysis = FEATURE_DEFAULTS.vwapAnalysis;
@@ -1536,7 +1429,7 @@
       if (typeof S.aiVisionMorningStar !== 'boolean') S.aiVisionMorningStar = true;
       if (typeof S.aiVisionEveningStar !== 'boolean') S.aiVisionEveningStar = true;
       if (typeof S.aiVisionRequireMatch !== 'boolean') S.aiVisionRequireMatch = false;
-      if (!S.featureTimeframes) S.featureTimeframes = { ...FEATURE_DEFAULTS.timeframes };
+      if (!S.sniperEnabledTimeframes) S.sniperEnabledTimeframes = { ...FEATURE_DEFAULTS.timeframes };
       if (typeof S.autoSwitchStrategy !== 'boolean') S.autoSwitchStrategy = STRATEGY_DEFAULTS.autoSwitch;
       if (!Number.isFinite(S.strategyWeightWr)) S.strategyWeightWr = STRATEGY_DEFAULTS.wrWeight;
       if (!Number.isFinite(S.strategyWeightPnl)) S.strategyWeightPnl = STRATEGY_DEFAULTS.pnlWeight;
@@ -1590,7 +1483,7 @@
       auto_on: 'Авто‑търговия: включена.',
       auto_off: 'Авто‑търговия: изключена.',
       skip_reason: 'ПРОПУСК: {reason}',
-      diagnostics: 'ℹ AUTO | {dir} {conf}% | праг {thr}% | {strategy} | {skip}',
+      diagnostics: 'ℹA|{dir} {conf}%|праг {thr}%|{strategy}|{skip}',
       trade_attempt: 'Опит за сделка: {asset} {direction} {expiry}',
       trade_buttons_missing: 'Пропуск: липсват бутони',
       trade_amount_missing: 'Пропуск: липсва поле за сума',
@@ -1699,17 +1592,12 @@
     }
 
     function getEffectiveKeepAliveEnabled() {
-      return isSniperMode() ? S.sniperKeepAliveEnabled : S.keepAliveEnabled;
+      return isSniperMode() ? S.sniperKeepAliveEnabled : S.sniperKeepAliveEnabled;
     }
 
     function setMode() {
       S.mode = 'sniper';
       stopCountdown();
-      S.sniperKeepAliveEnabled = false;
-      S.currentSignal = null;
-      S.tradeSequenceActive = false;
-      S.hasLiveSignal = false;
-      S.signalBuffer.length = 0;
       S.forceImmediate = false;
       S.sniperWarmupUntil = Date.now();
       S.sniperLastTradeByTf = {};
@@ -1775,7 +1663,7 @@
     function compactRecheckMessage(message){
       if (!message) return null;
       // Example:
-      // [SCAN V5-FIXED] ПРОПУСК: 1m повторна проверка (посока SELL→BUY, увереност 38% < праг 100%, увереност 94%→38%)
+      // [SCAN V5] ПРОПУСК: 1m повторна проверка (посока SELL→BUY, увереност 38% < праг 100%, увереност 94%→38%)
       if (!/повторна проверка/i.test(message)) return null;
 
       // TF
@@ -1826,15 +1714,524 @@
       message = stylizeConsoleMessage(message);
 
       const now = Date.now();
-      if (S.lastConsoleMessage === message && now - S.lastConsoleAt < 1500) return;
+      const isOutcomeMessage = /^✅|^❌|^⚪/.test(message);
+      if (!isOutcomeMessage && S.lastConsoleMessage === message && now - S.lastConsoleAt < 1500) return;
       S.lastConsoleMessage = message;
       S.lastConsoleAt = now;
 
       const stamp = new Date().toLocaleTimeString();
       S.consoleLines.push(`[${stamp}] ${message}`);
       if (S.consoleLines.length > 200) S.consoleLines.shift();
+      try { sessionRecordLog(message, `[${stamp}] ${message}`); } catch (e) {}
       renderConsole();
     }
+
+
+    // ---------------------- СЕСИОНЕН АНАЛИЗ (START→STOP) ----------------------
+    function _sessionEnsure() {
+      if (!S.sessionReport) {
+        S.sessionReport = {
+          active: false,
+          startedAtMs: 0,
+          stoppedAtMs: 0,
+          startBalanceCents: null,
+          stopBalanceCents: null,
+          logs: [],
+          issues: Object.create(null),
+          trades: [],
+          lossReports: [],
+          strategies: Object.create(null),
+          killer: {
+            enabledAtStart: false,
+            pass: 0,
+            wait: 0,
+            reasons: Object.create(null),
+            lastByTf: Object.create(null)
+          }
+        };
+      }
+      return S.sessionReport;
+    }
+
+    function sessionResetAndStart() {
+      const sess = _sessionEnsure();
+      sess.active = true;
+      sess.startedAtMs = Date.now();
+      sess.stoppedAtMs = 0;
+      sess.logs = [];
+      sess.issues = Object.create(null);
+      sess.trades = [];
+      sess.strategies = Object.create(null);
+      sess.killer = { enabledAtStart: !!S.killerEnabled, pass: 0, wait: 0, reasons: Object.create(null), lastByTf: Object.create(null) };
+      sess.startBalanceCents = readBalanceCents();
+      sess.stopBalanceCents = null;
+    }
+
+    function sessionStop() {
+      const sess = _sessionEnsure();
+      sess.active = false;
+      sess.stoppedAtMs = Date.now();
+      sess.stopBalanceCents = readBalanceCents();
+    }
+
+    function _stripHtml(s) {
+      return String(s || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+    }
+
+    function sessionRecordLog(htmlMessage, stampedLine) {
+      const sess = _sessionEnsure();
+      if (!sess.active) return;
+      // Cap to avoid runaway memory if you leave it overnight
+      if (sess.logs.length > 20000) sess.logs.shift();
+      sess.logs.push({
+        t: Date.now(),
+        line: stampedLine || '',
+        text: _stripHtml(htmlMessage),
+        html: String(htmlMessage || '')
+      });
+
+      // Issue counters (best-effort; doesn't touch the live console)
+      const txt = _stripHtml(htmlMessage);
+      const bump = (k) => { sess.issues[k] = (sess.issues[k] || 0) + 1; };
+
+      if (/\bBias\b|Биас/i.test(txt)) bump('Bias');
+      if (/Потвърждение/i.test(txt)) bump('Потвърждение');
+      if (/Късен вход/i.test(txt)) bump('Късен вход');
+      if (/Накъсан пазар|лош пазар/i.test(txt)) bump('Накъсан пазар');
+      if (/ПРОПУСК/i.test(txt)) bump('Пропуск');
+      if (/СДЕЛКА!!!/i.test(txt)) bump('Вход');
+    }
+
+    function sessionRecordTrade(trade, outcome, profitCents) {
+      const sess = _sessionEnsure();
+      if (!sess.active) return;
+      const now = Date.now();
+
+      const entry = {
+        t: now,
+        time: new Date(now).toLocaleTimeString(),
+        asset: trade?.asset || trade?.assetLabel || S.lastAssetLabel || '',
+        tf: trade?.tf || trade?.timeframe || trade?.expiryTf || trade?.expiry || '',
+        direction: trade?.direction || trade?.execDirection || trade?.side || '',
+        confidence: Number.isFinite(trade?.confidence) ? trade.confidence : (Number.isFinite(trade?.expectedConfidence) ? trade.expectedConfidence : null),
+        mode: trade?.mode || (S.autoTrade ? 'AUTO' : 'MANUAL'),
+        expiry: trade?.expiry || trade?.resolvedExpiry || '',
+        strategyKey: trade?.strategyKey || trade?.strategy || S.lastStrategyKey || null,
+        outcome,
+        profitCents: Number.isFinite(profitCents) ? profitCents : null
+      };
+
+      sess.trades.push(entry);
+
+      const key = entry.strategyKey || '—';
+      if (!sess.strategies[key]) {
+        sess.strategies[key] = { trades: 0, wins: 0, losses: 0, neutral: 0, pnlCents: 0, confSum: 0, confN: 0 };
+      }
+      const st = sess.strategies[key];
+      st.trades += 1;
+      if (outcome === 'ПЕЧАЛБИ') st.wins += 1;
+      else if (outcome === 'ЗАГУБИ') st.losses += 1;
+      else st.neutral += 1;
+      if (Number.isFinite(entry.profitCents)) st.pnlCents += entry.profitCents;
+      if (Number.isFinite(entry.confidence)) { st.confSum += entry.confidence; st.confN += 1; }
+    }
+
+    function sessionRecordKiller(tf, snapshot, verdict, reason) {
+      const sess = _sessionEnsure();
+      if (!sess.active) return;
+      const t = Date.now();
+      const dir = snapshot?.direction || '';
+      const conf = snapshot?.confluence;
+      const min = snapshot?.minConfluence;
+      const dom = snapshot?.dominance;
+      const thr = snapshot?.dominanceThreshold;
+      const adx = snapshot?.adx;
+
+      const compact = {
+        t, tf, dir,
+        conf, min,
+        dom, thr,
+        adx,
+        verdict,
+        reason: reason || ''
+      };
+
+      // Dedup per TF: log only on change or every 5s
+      const prev = sess.killer.lastByTf[tf];
+      const key = JSON.stringify([verdict, reason, dir, conf, min, Math.round(dom||0), Math.round(thr||0), Math.round(adx||0)]);
+      if (prev && prev.key === key && (t - prev.t) < 5000) return;
+      sess.killer.lastByTf[tf] = { t, key };
+
+      if (verdict === 'PASS') sess.killer.pass += 1;
+      else sess.killer.wait += 1;
+      if (reason) sess.killer.reasons[reason] = (sess.killer.reasons[reason] || 0) + 1;
+
+      // Console line (extra, not replacing anything)
+      const domPct = Number.isFinite(dom) ? Math.round(dom) : '—';
+      const thrPct = Number.isFinite(thr) ? Math.round(thr) : '—';
+      const confTxt = (Number.isFinite(conf) && Number.isFinite(min)) ? `${conf}/${8} (мин ${min})` : '—';
+      const ptTxt = S.killerPerfectTimeEnabled ? 'PT ✓' : 'PT —';
+      const adxTxt = Number.isFinite(adx) ? `ADX ${Math.round(adx)}` : 'ADX —';
+      const why = verdict === 'PASS' ? 'READY' : `WAIT: ${reason || '—'}`;
+      const whyShort = verdict === 'PASS' ? 'READY' : `WAIT:${reason || '—'}`;
+      const cWhy = verdict === 'PASS' ? '#22c55e' : '#f59e0b';
+      const cDom = (Number.isFinite(dom) && Number.isFinite(thr) && dom >= thr) ? '#22c55e' : '#f59e0b';
+      const cConf = (Number.isFinite(conf) && Number.isFinite(min) && conf >= min) ? '#22c55e' : '#f59e0b';
+      logConsoleLine(`🔫 ${tf}|<span style="color:${cWhy};font-weight:800;">${whyShort}</span>|<span style="color:${cConf};font-weight:800;">CONF ${confTxt}</span>|<span style="color:${cDom};font-weight:800;">DOM ${domPct}%(thr ${thrPct}%)</span>|<span style="color:#a5b4fc;font-weight:700;">${adxTxt}</span>|<span style="color:#e5e7eb;">${ptTxt}</span>`);
+    }
+
+    function exportSessionHtml() {
+      const sess = _sessionEnsure();
+      
+      // Fallback: if session trade list is empty but legacy list exists, copy it.
+      try { if ((!sess.trades || !sess.trades.length) && Array.isArray(S.trades) && S.trades.length) sess.trades = S.trades.slice(); } catch(e){}
+const nowBal = readBalanceCents();
+      const startBal = Number.isFinite(sess.startBalanceCents) ? sess.startBalanceCents : null;
+      const stopBal = Number.isFinite(sess.stopBalanceCents) ? sess.stopBalanceCents : nowBal;
+      const net = (Number.isFinite(startBal) && Number.isFinite(stopBal)) ? (stopBal - startBal) : null;
+
+      const reportHtml = buildSessionHtmlReport(sess, { nowBalanceCents: nowBal, startBalanceCents: startBal, stopBalanceCents: stopBal, netCents: net });
+
+      const ts = new Date();
+      const pad = (n) => String(n).padStart(2,'0');
+      const fname = `TRADE_REPORT_${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.html`;
+
+      // Open in new tab; allow manual save via button inside the tab (download to /Downloads).
+      const wrapped = `<!doctype html><html lang="bg"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{margin:0;background:#0b0f14;color:#e5e7eb;font-family:system-ui,Segoe UI,Arial}
+  .mz-topbar{position:sticky;top:0;z-index:999;display:flex;gap:10px;align-items:center;justify-content:space-between;
+    padding:10px 12px;background:rgba(10,14,20,.92);backdrop-filter:blur(8px);border-bottom:1px solid rgba(255,255,255,.08)}
+  .mz-topbar .left{display:flex;gap:10px;align-items:center}
+  .mz-pill{font-size:12px;padding:4px 10px;border:1px solid rgba(255,255,255,.12);border-radius:999px;color:#d1d5db}
+  .mz-btn{cursor:pointer;font-size:12px;font-weight:700;letter-spacing:.06em;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.12);
+    background:#111827;color:#fff}
+  .mz-btn:hover{filter:brightness(1.1)}
+  .mz-wrap{padding:0}
+</style></head><body>
+  <div class="mz-topbar">
+    <div class="left">
+      <span class="mz-pill">SESSION</span>
+      <span class="mz-pill">${fname.replace('.html','')}</span>
+    </div>
+    <div class="right">
+      <button class="mz-btn" id="mz-save-html">ЗАПИШИ HTML</button>
+    </div>
+  </div>
+  <div class="mz-wrap">${reportHtml}</div>
+
+<script>
+window.__REPORT_FNAME__ = "${fname}";
+(function(){
+  const btn = document.getElementById('mz-save-html');
+  if(!btn) return;
+  btn.addEventListener('click', () => {
+    try{
+      const html = '<!doctype html>' + document.documentElement.outerHTML;
+      const blob = new Blob([html], {type:'text/html;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (window.__REPORT_FNAME__ || "TRADE_REPORT.html");
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(()=>{ try{ URL.revokeObjectURL(url);}catch(e){} try{a.remove();}catch(e){} }, 250);
+    }catch(e){
+      alert('Грешка при запис: ' + (e && e.message ? e.message : e));
+    }
+  });
+})();
+</script>
+</body></html>`;
+
+      const blob = new Blob([wrapped], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const w = window.open(url, '_blank', 'noopener');
+      if (!w) {
+        // Fallback: direct download if popup blocked
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = (window.__REPORT_FNAME__ || "TRADE_REPORT.html");
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} try { a.remove(); } catch {} }, 350);
+      }
+    }
+
+    function _fmtMoney(cents) {
+      if (!Number.isFinite(cents)) return '—';
+      const v = (cents / 100);
+      const sign = v < 0 ? '-' : '';
+      const abs = Math.abs(v);
+      return `${sign}$${abs.toFixed(2)}`;
+    }
+    function _pct(a,b) {
+      if (!b) return '0.0%';
+      return `${((a/b)*100).toFixed(1)}%`;
+    }
+    function _spark(values, w=210, h=46) {
+      const nums = (values||[]).filter((x)=>Number.isFinite(x));
+      if (nums.length < 2) return `<svg width="${w}" height="${h}"></svg>`;
+      const min = Math.min(...nums), max = Math.max(...nums);
+      const span = (max - min) || 1;
+      const step = w / (nums.length - 1);
+      const pts = nums.map((v,i)=>{
+        const x = i*step;
+        const y = h - ((v - min)/span)*h;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+        <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="2" />
+      </svg>`;
+    }
+
+    function buildSessionHtmlReport(sess, ctx) {
+      const started = sess.startedAtMs ? new Date(sess.startedAtMs) : null;
+      const stopped = sess.stoppedAtMs ? new Date(sess.stoppedAtMs) : null;
+      const now = new Date();
+      const asset = S.lastAssetLabel || '';
+      const tf = (S.activeTimeframe || '').toString().toUpperCase();
+
+      const trades = sess.trades || [];
+      const wins = trades.filter(t=>t.outcome==='ПЕЧАЛБИ').length;
+      const losses = trades.filter(t=>t.outcome==='ЗАГУБИ').length;
+      const neu = trades.length - wins - losses;
+      const winrate = trades.length ? (wins/trades.length*100) : 0;
+
+      const avgConf = (() => {
+        const xs = trades.map(t=>t.confidence).filter(x=>Number.isFinite(x));
+        if (!xs.length) return null;
+        return xs.reduce((a,b)=>a+b,0)/xs.length;
+      })();
+
+      // Issues: top 6
+      const issuesArr = Object.entries(sess.issues || {}).sort((a,b)=>b[1]-a[1]).slice(0,6);
+
+      // Strategy breakdown rows
+      const stratRows = Object.entries(sess.strategies || {}).map(([k,v])=>{
+        const wr = v.trades ? (v.wins/v.trades*100) : 0;
+        const avg = v.confN ? (v.confSum/v.confN) : null;
+        return { k, ...v, wr, avg };
+      }).sort((a,b)=> (b.pnlCents||0)-(a.pnlCents||0));
+
+      // timelines (lightweight)
+      const confSeries = trades.map(t=>Number.isFinite(t.confidence)?t.confidence:null).filter(x=>x!=null);
+      const domSeries = []; // optional (we don't have per-trade dom reliably yet)
+      const pnlSeries = trades.reduce((acc,t)=>{
+        const last = acc.length ? acc[acc.length-1] : 0;
+        const add = Number.isFinite(t.profitCents) ? t.profitCents/100 : 0;
+        acc.push(last + add);
+        return acc;
+      }, []);
+
+      const fullLog = (sess.logs || []).map(x => x.line || `[${new Date(x.t).toLocaleTimeString()}] ${x.text}`).join('\n');
+      const shortLog = (sess.logs || []).slice(-300).map(x => x.line || `[${new Date(x.t).toLocaleTimeString()}] ${x.text}`).join('\n');
+
+      const startMoney = _fmtMoney(ctx.startBalanceCents);
+      const stopMoney = _fmtMoney(ctx.stopBalanceCents);
+      const netMoney = _fmtMoney(ctx.netCents);
+
+      return `<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>СЕСИОНЕН АНАЛИЗ</title>
+<style>
+  :root{
+    --bg:#070a10; --panel:#0b0f1a; --panel2:#0f1526;
+    --txt:#e5e7eb; --muted:#94a3b8; --line:rgba(148,163,184,.18);
+    --green:#22c55e; --red:#ef4444; --cyan:#22d3ee; --amber:#f59e0b;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:radial-gradient(1200px 600px at 55% 0%, rgba(34,211,238,.10), transparent 60%), var(--bg); color:var(--txt); font:14px/1.4 system-ui,Segoe UI,Arial; }
+  .wrap{ max-width:980px; margin:22px auto; padding:0 14px 36px; }
+  .top{ display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+  .h1{ font-size:22px; letter-spacing:.08em; }
+  .date{ color:var(--muted); }
+  .card{ background:linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02)); border:1px solid var(--line); border-radius:14px; padding:14px; box-shadow:0 18px 50px rgba(0,0,0,.55); }
+  .summary{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+  .pill{ display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; border:1px solid var(--line); background:rgba(15,21,38,.6); }
+  .pill b{ letter-spacing:.02em; }
+  .kpi{ display:flex; flex-wrap:wrap; gap:10px; }
+  .kpi .pill{ min-width:140px; justify-content:space-between; }
+  .win{ color:var(--green); }
+  .loss{ color:var(--red); }
+  .neu{ color:#9ca3af; }
+  h2{ margin:18px 0 10px; font-size:14px; letter-spacing:.1em; color:var(--cyan); }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .issues li{ display:flex; justify-content:space-between; padding:8px 10px; border-top:1px solid var(--line); }
+  .issues li:first-child{ border-top:0; }
+  table{ width:100%; border-collapse:collapse; }
+  th,td{ padding:9px 10px; border-bottom:1px solid var(--line); text-align:left; }
+  th{ color:var(--muted); font-size:12px; letter-spacing:.08em; }
+  .tag{ padding:2px 8px; border-radius:999px; border:1px solid var(--line); }
+  .tag.buy{ color:var(--green); }
+  .tag.sell{ color:var(--red); }
+  .charts{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+  .chart{ color:var(--green); }
+  .chart.dom{ color:var(--red); }
+  .chart.pnl{ color:var(--amber); }
+  pre{ background:rgba(0,0,0,.35); border:1px solid var(--line); border-radius:12px; padding:12px; overflow:auto; max-height:320px; white-space:pre-wrap; }
+  details{ border:1px solid var(--line); border-radius:12px; padding:10px 12px; background:rgba(0,0,0,.22); }
+  details summary{ cursor:pointer; color:var(--cyan); letter-spacing:.08em; }
+  .muted{ color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <div class="h1">СЕСИОНЕН АНАЛИЗ</div>
+      <div class="date">${now.toLocaleDateString()} ${now.toLocaleTimeString()}</div>
+    </div>
+    <div class="date">${asset ? `Asset: <b>${asset}</b>` : ''} ${tf ? `| TF: <b>${tf}</b>` : ''}</div>
+  </div>
+
+  <div class="card summary">
+    <div>
+      <div class="muted">ОБЩО</div>
+      <div class="kpi" style="margin-top:10px;">
+        <div class="pill"><span>START</span><b>${startMoney}</b></div>
+        <div class="pill"><span>STOP/NOW</span><b>${stopMoney}</b></div>
+        <div class="pill"><span>RESULT</span><b>${netMoney}</b></div>
+        <div class="pill"><span>СДЕЛКИ</span><b>${trades.length}</b></div>
+        <div class="pill"><span class="win">ПЕЧАЛБИ</span><b class="win">${wins}</b></div>
+        <div class="pill"><span class="loss">ЗАГУБИ</span><b class="loss">${losses}</b></div>
+        <div class="pill"><span class="neu">НЕУТРАЛНИ</span><b class="neu">${neu}</b></div>
+        <div class="pill"><span>WR</span><b>${winrate.toFixed(1)}%</b></div>
+        <div class="pill"><span>AVG CONF</span><b>${Number.isFinite(avgConf)?avgConf.toFixed(0)+'%':'—'}</b></div>
+      </div>
+      <div class="muted" style="margin-top:10px;">
+        Начало: ${started ? started.toLocaleTimeString() : '—'} | Край: ${stopped ? stopped.toLocaleTimeString() : '—'} | Продължителност: ${started ? Math.max(0, Math.round(((stopped||now)-started)/60000)) : 0} мин
+      </div>
+    </div>
+    <div>
+      <div class="muted">TOP ПРОБЛЕМИ</div>
+      <ul class="issues" style="list-style:none; margin:10px 0 0; padding:0;">
+        ${issuesArr.length ? issuesArr.map(([k,v])=>`<li><span>${k}</span><b>${v}</b></li>`).join('') : `<li><span class="muted">—</span><b class="muted">0</b></li>`}
+      </ul>
+    </div>
+  </div>
+
+  <h2>СДЕЛКИ</h2>
+  <div class="card">
+    <table>
+      <thead><tr>
+        <th>ВРЕМЕ</th><th>АКТИВ</th><th>TF</th><th>ПОСОКА</th><th>УВЕР.</th><th>MODE</th><th>EXPIRY</th><th>РЕЗУЛТАТ</th><th>PNL</th><th>STRATEGY</th>
+      </tr></thead>
+      <tbody>
+        ${trades.slice(-80).reverse().map(t=>{
+          const dirTag = t.direction==='BUY' ? 'buy' : (t.direction==='SELL' ? 'sell' : '');
+          const resCls = t.outcome==='ПЕЧАЛБИ' ? 'win' : (t.outcome==='ЗАГУБИ' ? 'loss' : 'neu');
+          return `<tr>
+            <td>${t.time}</td>
+            <td>${t.asset||''}</td>
+            <td>${t.tf||''}</td>
+            <td><span class="tag ${dirTag}">${t.direction||'—'}</span></td>
+            <td>${Number.isFinite(t.confidence)?`${Math.round(t.confidence)}%`:'—'}</td>
+            <td>${t.mode||''}</td>
+            <td>${t.expiry||''}</td>
+            <td class="${resCls}"><b>${t.outcome||''}</b></td>
+            <td class="${resCls}">${_fmtMoney(t.profitCents)}</td>
+            <td>${t.strategyKey||'—'}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    <div class="muted" style="margin-top:8px;">Сделки: ${trades.length} | Winrate: ${winrate.toFixed(1)}% | Result(balance): ${netMoney}</div>
+  </div>
+
+  <h2>СТРАТЕГИИ (Partner mode)</h2>
+  <div class="card">
+    <table>
+      <thead><tr>
+        <th>STRATEGY</th><th>СДЕЛКИ</th><th>W</th><th>L</th><th>N</th><th>WR</th><th>NET</th><th>AVG CONF</th>
+      </tr></thead>
+      <tbody>
+        ${stratRows.length ? stratRows.map(r=>`<tr>
+          <td>${r.k}</td><td>${r.trades}</td><td class="win">${r.wins}</td><td class="loss">${r.losses}</td><td class="neu">${r.neutral}</td>
+          <td>${r.wr.toFixed(1)}%</td><td>${_fmtMoney(r.pnlCents)}</td><td>${Number.isFinite(r.avg)?r.avg.toFixed(0)+'%':'—'}</td>
+        </tr>`).join('') : `<tr><td colspan="8" class="muted">Няма сделки за стратегия breakdown.</td></tr>`}
+      </tbody>
+    </table>
+  </div>
+
+  <h2>🔫 АНАЛИЗ</h2>
+  <div class="card">
+    <div class="charts">
+      <div class="card chart">
+        <div class="muted">CONFIDENCE OVER TIME</div>
+        ${_spark(confSeries)}
+      </div>
+      <div class="card chart dom">
+        <div class="muted">DOMINANCE (placeholder)</div>
+        ${_spark(domSeries)}
+      </div>
+      <div class="card chart pnl">
+        <div class="muted">PNL TIMELINE</div>
+        ${_spark(pnlSeries)}
+      </div>
+    </div>
+    <div class="muted" style="margin-top:10px;">
+      Killer: ${sess.killer?.enabledAtStart ? 'ON' : 'OFF'} | PASS: ${sess.killer?.pass||0} | WAIT: ${sess.killer?.wait||0}
+    </div>
+    <div class="muted">Reasons: ${Object.entries(sess.killer?.reasons||{}).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([k,v])=>`${k}×${v}`).join(' | ') || '—'}</div>
+  </div>
+
+  <h2>АНАЛИЗ НА ЗАГУБИ</h2>
+  ${(() => {
+    const arr = Array.isArray(sess.lossReports) ? sess.lossReports : [];
+    const losses = arr.filter(x => x && (x.outcome || '').toUpperCase().includes('LOSS') || (x.pnlCents||0) < 0);
+    if (!losses.length) return `<div class="muted">Няма записани загуби.</div>`;
+    const rows = losses.slice(0, 30).map((x, i) => {
+      const t = x.timeStr || x.time || '';
+      const asset = x.asset || '—';
+      const dir = x.direction || '—';
+      const exp = x.expiry || '—';
+      const conf = (x.confidencePct!=null) ? `${x.confidencePct}%` : '—';
+      const reason = x.reason || '—';
+      const pnl = (Number.isFinite(x.pnlCents) ? (x.pnlCents/100).toFixed(2) : '—');
+      const reg = x.regime || '—';
+      const confirm = x.confirm || '—';
+      return `<tr>
+        <td>${i+1}</td><td>${escapeHtml(t)}</td><td>${escapeHtml(asset)}</td><td>${escapeHtml(dir)}</td><td>${escapeHtml(exp)}</td>
+        <td>${escapeHtml(conf)}</td><td>${escapeHtml(reason)}</td><td>${escapeHtml(confirm)}</td><td>${escapeHtml(reg)}</td>
+        <td style="text-align:right;font-weight:800;color:#fb7185;">${pnl}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="card">
+      <div class="sub">Топ 30 последни загуби (за бързо дебъгване)</div>
+      <div style="overflow:auto;">
+      <table>
+        <thead><tr><th>#</th><th>Час</th><th>Актив</th><th>Посока</th><th>Expiry</th><th>Увереност</th><th>Причина</th><th>Confirm</th><th>Regime</th><th>Резултат</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      </div>
+    </div>`;
+  })()}
+
+  <h2>ЛОГ (последни 300)</h2>
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin:-6px 0 6px;">
+    <button onclick="navigator.clipboard.writeText(document.getElementById('mz-short-log').innerText)" style="cursor:pointer;font-size:12px;font-weight:700;padding:6px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:#111827;color:#fff;">КОПИРАЙ</button>
+  </div>
+  <pre id="mz-short-log">${shortLog.replace(/</g,'&lt;')}</pre>
+
+  <details style="margin-top:12px;">
+    <summary style="cursor:pointer;">ПЪЛЕН ЛОГ (сесия)</summary>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin:8px 0 6px;">
+      <button onclick="navigator.clipboard.writeText(document.getElementById('mz-full-log').innerText)" style="cursor:pointer;font-size:12px;font-weight:700;padding:6px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:#111827;color:#fff;">КОПИРАЙ</button>
+    </div>
+    <pre id="mz-full-log" style="max-height:520px;">${fullLog.replace(/</g,'&lt;')}</pre>
+  </details>
+
+</div>
+</body>
+</html>`;
+    }
+
+
+
 
     function getPrimarySniperIssue() {
       const entries = Object.entries(S.sniperTfStatus || {})
@@ -1907,8 +2304,14 @@
 
     function logDiagnostics() {
       const now = Date.now();
-      if (now - S.lastDiagnosticsAt < 60000) return;
+      // Диагностиката да е синхронизирана с минутната свещ (а не 60s от старта), за да не дава фалшиви "късен вход" по средата на свещта.
+      const minuteKey = Math.floor(now / 60000);
+      if (S.lastDiagnosticsMinuteKey === minuteKey) return;
+      const msIntoMinute = now - minuteKey * 60000;
+      // Печатаме ~1-3.5s след началото на минутата (след като платформата/DOM обнови стойностите)
+      if (msIntoMinute < 900 || msIntoMinute > 3500) return;
       if (!isSniperMode() && !S.analysisEnabled) return;
+      S.lastDiagnosticsMinuteKey = minuteKey;
       S.lastDiagnosticsAt = now;
       const auto = S.autoTrade ? 'on' : 'off';
       const analysis = isSniperMode() ? 'sniper' : (S.analysisEnabled ? 'on' : 'off');
@@ -1924,15 +2327,16 @@
       const skipReason = issue
         ? `<span class="iaa-console-issue">${issue.label}</span>${issue.marketBad ? ' (лош пазар)' : ''}`
         : (S.lastSkipReason ? `<span class="iaa-console-issue">${translateSkipReason(S.lastSkipReason)}</span>` : '-');
+      if (issue?.label) bumpSkipReasonCounter(issue.label);
       logConsoleLine(formatStatus('diagnostics', { auto, analysis, dir, conf, thr, strategy: strategyLabel, skip: skipReason }));
     }
 
 
     function recordTradeStats(outcome) {
       S.tradeStats.total += 1;
-      if (outcome === 'WIN') {
+      if (outcome === 'ПЕЧАЛБИ') {
         S.tradeStats.wins += 1;
-      } else if (outcome === 'LOSS') {
+      } else if (outcome === 'ЗАГУБИ') {
         S.tradeStats.losses += 1;
       } else {
         S.tradeStats.evens += 1;
@@ -1947,9 +2351,9 @@
     function applyTradeStats(bucket, outcome, profitCents = 0) {
       if (!bucket) return;
       bucket.total += 1;
-      if (outcome === 'WIN') {
+      if (outcome === 'ПЕЧАЛБИ') {
         bucket.wins += 1;
-      } else if (outcome === 'LOSS') {
+      } else if (outcome === 'ЗАГУБИ') {
         bucket.losses += 1;
       } else {
         bucket.evens += 1;
@@ -1972,9 +2376,9 @@
       }
       const bucket = S.strategyStats[strategyKey];
       applyTradeStats(bucket, outcome, profitCents);
-      if (outcome === 'LOSS') {
+      if (outcome === 'ЗАГУБИ') {
         bucket.lossStreak = (bucket.lossStreak || 0) + 1;
-      } else if (outcome === 'WIN' || outcome === 'EVEN') {
+      } else if (outcome === 'ПЕЧАЛБИ' || outcome === 'EVEN') {
         bucket.lossStreak = 0;
       }
       bucket.lastOutcome = outcome;
@@ -2071,8 +2475,8 @@
 
     function normalizeOutcomeFromText(text) {
       const upper = String(text || '').toUpperCase();
-      if (upper.includes('WIN') || upper.includes('PROFIT') || upper.includes('ПЕЧАЛ')) return 'WIN';
-      if (upper.includes('LOSS') || upper.includes('LOSE') || upper.includes('ЗАГУБ')) return 'LOSS';
+      if (upper.includes('ПЕЧАЛБИ') || upper.includes('PROFIT') || upper.includes('ПЕЧАЛ')) return 'ПЕЧАЛБИ';
+      if (upper.includes('ЗАГУБИ') || upper.includes('LOSE') || upper.includes('ЗАГУБ')) return 'ЗАГУБИ';
       if (upper.includes('REFUND')) return 'EVEN';
       if (upper.includes('EVEN') || upper.includes('DRAW') || upper.includes('НЕУТР')) return 'EVEN';
       return null;
@@ -2127,13 +2531,13 @@
     function inferOutcomeFromElement(el) {
       if (!el) return null;
       const classText = String(el.className || '').toLowerCase();
-      if (/(loss|lose|negative|down|red)/.test(classText)) return 'LOSS';
-      if (/(win|profit|positive|up|green)/.test(classText)) return 'WIN';
+      if (/(loss|lose|negative|down|red)/.test(classText)) return 'ЗАГУБИ';
+      if (/(win|profit|positive|up|green)/.test(classText)) return 'ПЕЧАЛБИ';
       const children = el.querySelectorAll('[class]');
       for (const child of children) {
         const childClass = String(child.className || '').toLowerCase();
-        if (/(loss|lose|negative|down|red)/.test(childClass)) return 'LOSS';
-        if (/(win|profit|positive|up|green)/.test(childClass)) return 'WIN';
+        if (/(loss|lose|negative|down|red)/.test(childClass)) return 'ЗАГУБИ';
+        if (/(win|profit|positive|up|green)/.test(childClass)) return 'ПЕЧАЛБИ';
       }
       return null;
     }
@@ -2216,13 +2620,14 @@
           outcome = inferOutcomeFromElement(row.el);
         }
         if (!outcome && signedMoney && Number.isFinite(signedMoney.cents)) {
-          if (signedMoney.cents > 0) outcome = 'WIN';
-          if (signedMoney.cents < 0) outcome = 'LOSS';
+          if (signedMoney.cents > 0) outcome = 'ПЕЧАЛБИ';
+          if (signedMoney.cents < 0) outcome = 'ЗАГУБИ';
           if (signedMoney.cents === 0) outcome = 'EVEN';
         }
         if (!outcome && Number.isFinite(profitCents)) {
-          if (profitCents > 0) outcome = 'WIN';
-          if (profitCents === 0) outcome = 'LOSS';
+          if (profitCents > 0) outcome = 'ПЕЧАЛБИ';
+          else if (profitCents < 0) outcome = 'ЗАГУБИ';
+          else outcome = 'EVEN';
         }
         if (!outcome) continue;
         S.tradeHistorySeen.add(historyKey);
@@ -2297,7 +2702,7 @@
     }
 
     function recordLossAnalysis(trade, outcome, profitCents) {
-      if (!trade || outcome !== 'LOSS') return;
+      if (!trade || outcome !== 'ЗАГУБИ') return;
       const context = buildLossReasonSummary(trade, outcome, profitCents);
       const entry = {
         id: `${trade.asset}-${trade.startTime}`,
@@ -2317,16 +2722,93 @@
       }
     }
 
-    function logTradeOutcome(trade, outcome, profitCents = null) {
+    
+async function logTradeOutcome(trade, outcome, profitCents = null) {
+  if (!trade) return;
+
+  // Normalize outcome language: we use BG tags everywhere for consistency.
+  const norm = (o) => {
+    if (!o) return null;
+    const x = String(o).toUpperCase();
+    if (x === 'WIN' || x === 'ПЕЧАЛБИ' || x === 'PECHALBI') return 'ПЕЧАЛБИ';
+    if (x === 'LOSS' || x === 'ЗАГУБИ' || x === 'ZAGUBI') return 'ЗАГУБИ';
+    if (x === 'EVEN' || x === 'NEU' || x === 'NEUTRAL') return 'EVEN';
+    return o;
+  };
+
+  const out = norm(outcome);
+
+  // profitCents is always cents here. If missing, derive from trade.profitCents if present.
+  const pc = Number.isFinite(profitCents) ? profitCents : (Number.isFinite(trade.profitCents) ? trade.profitCents : null);
+
+  const money = (cents) => {
+    if (!Number.isFinite(cents)) return '$0.00';
+    return '$' + (Math.abs(cents) / 100).toFixed(2);
+  };
+
+  const tfLabel = (trade.tfLabel || trade.tf || trade.expiryLabel || trade.expiry || '').toString().toUpperCase();
+
+  if (out === 'ПЕЧАЛБИ') {
+    logConsoleLine(`✅ ПЕЧЕЛИВША СДЕЛКА (${money(pc)}) [${tfLabel}]`);
+  } else if (out === 'ЗАГУБИ') {
+    logConsoleLine(`❌ ГУБЕЩА СДЕЛКА (${money(pc)}) [${tfLabel}]`);
+  } else if (out === 'EVEN') {
+    // Neutral trade should never print stake or 100x amounts; it is 0 PnL by definition.
+    logConsoleLine(`➖ НЕУТРАЛНА СДЕЛКА ($0.00) [${tfLabel}]`);
+  } else {
+    // Fallback
+    logConsoleLine(`ℹ РЕЗУЛТАТ: ${out} (${money(pc)}) [${tfLabel}]`);
+  }
+}
+
+    function detectOutcomeByResultDelta(trade, epsilonCents = 3) {
+      if (!trade) return null;
+      const startBalance = Number.isFinite(S.botStartBalance) ? S.botStartBalance : null;
+      const resultBefore = Number.isFinite(trade.resultBeforeCents) ? trade.resultBeforeCents : null;
+      const currentBalance = readBalanceCents();
+      if (startBalance == null || resultBefore == null || !Number.isFinite(currentBalance)) return null;
+      const resultNow = currentBalance - startBalance;
+      const delta = resultNow - resultBefore;
+      if (delta > epsilonCents) return { outcome: 'ПЕЧАЛБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
+      if (delta < -epsilonCents) return { outcome: 'ЗАГУБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
+      return { outcome: 'EVEN', profitCents: 0, method: 'RESULT_DELTA' };
+    }
+
+    function finalizeTradeOutcome(trade, outcome, profitCents, settledAt = Date.now(), method = '') {
       if (!trade || !outcome) return;
-      const isWin = outcome === 'WIN';
-      const isLoss = outcome === 'LOSS';
-      const label = isWin ? '✅ ПЕЧЕЛИВША СДЕЛКА' : (isLoss ? '❌ ГУБЕЩА СДЕЛКА' : '⚪ НЕУТРАЛНА СДЕЛКА');
-      const amount = isLoss
-        ? formatOutcomeAmount(profitCents, { forcePositive: true })
-        : formatOutcomeAmount(profitCents);
-      logConsoleLine(`${label} (${amount}) [${trade.expiry || '—'}]`);
-      recordLossAnalysis(trade, outcome, profitCents);
+      trade.outcomeChecked = true;
+      trade.outcome = outcome;
+      trade.settledAt = settledAt;
+      trade.profitCents = profitCents;
+      trade.outcomeMethod = method || trade.outcomeMethod || 'UNKNOWN';
+
+      recordTradeOutcomeStats(trade, outcome, profitCents);
+      recordTradeHistoryEntry(trade, outcome, profitCents);
+
+      // --- Session HTML report trade record (normalized) ---
+      try {
+        const tfLabel = trade.tfLabel || trade.expiryLabel || trade.expiry || trade.timeframe || '';
+        const mode = trade.mode || 'AUTO';
+        const confidence = (trade.confidence != null ? trade.confidence : (trade.entryContext && trade.entryContext.confidence != null ? trade.entryContext.confidence : null));
+        const strategy = trade.strategyKey || trade.strategy || (trade.entryContext && trade.entryContext.strategyKey) || '';
+        sessionRecordTrade({
+          id: trade.id || String(trade.createdAt || Date.now()),
+          time: settledAt,
+          asset: trade.asset || '',
+          tf: tfLabel,
+          direction: trade.direction || trade.side || '',
+          confidence,
+          mode,
+          expiry: tfLabel,
+          outcome,
+          pnlCents: profitCents,
+          strategy
+        });
+      } catch (e) { /* never block outcome finalize */ }
+
+      recordTradeOutcomeForRisk(outcome, profitCents);
+      applyRiskLimits();
+      try { logTradeOutcome(trade, outcome, profitCents); } catch (e) { console.warn('[IAA] logTradeOutcome failed', e); }
     }
 
     function renderLagStatus() {
@@ -2605,7 +3087,8 @@
         { key: 'тик възраст', value: lastTickLabel, severity: tickSeverity },
         { key: 'обновен', value: analysisUpdatedLabel, severity: analysisUpdatedSeverity },
         { key: 'следваща', value: getNextEtaLabel(), severity: '' },
-        { key: 'последен пропуск', value: S.lastSkipReason || '—', severity: lastSkipSeverity }
+        { key: 'последен пропуск', value: S.lastSkipReason || '—', severity: lastSkipSeverity },
+        { key: 'пропуски (топ)', value: getTopSkipReasonsLabel(), severity: '' }
       ];
       return lines;
     }
@@ -2620,7 +3103,7 @@
       const content = $id('iaa-debug-content');
       if (!content) return;
       const lines = getDebugInfoLines();
-      const scannerLine = '<div class="iaa-debug-line"><span class="iaa-debug-key" style="color:#ef4444;font-weight:700;">[SCAN V5-FIXED]</span><span class="iaa-debug-value" style="color:#ef4444;font-weight:700;">RUNNING</span></div>';
+      const scannerLine = '<div class="iaa-debug-line"><span class="iaa-debug-key" style="color:#ef4444;font-weight:700;">[SCAN V5]</span><span class="iaa-debug-value" style="color:#ef4444;font-weight:700;">RUNNING</span></div>';
       content.innerHTML = scannerLine + lines.map((line) => {
         const severityClass = line.severity ? ` iaa-debug-value--${line.severity}` : '';
         return `<div class="iaa-debug-line"><span class="iaa-debug-key">${line.key}:</span><span class="iaa-debug-value${severityClass}">${line.value}</span></div>`;
@@ -2653,6 +3136,33 @@
       input.style.color = color;
     }
 
+
+    function applySettingsInputColors() {
+      const applyById = (id, opts) => {
+        const el = $id(id);
+        if (!el) return;
+        const v = parseNumberFlexible(el.value);
+        if (!Number.isFinite(v)) return;
+        applyStrictnessColor(el, v, opts || {});
+      };
+      applyById('iaa-sniper-threshold', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-sniper-override-confidence', { min: 0, max: 100, highIsStrict: true });
+      applyById('iaa-sniper-vwap', { min: 0, max: 0.30, highIsStrict: true });
+      applyById('iaa-sniper-momentum', { min: 0, max: 0.30, highIsStrict: true });
+      applyById('iaa-sniper-vwap-weight', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-sniper-momentum-weight', { min: 1, max: 100, highIsStrict: false });
+      applyById('iaa-sniper-volume-weight', { min: 1, max: 100, highIsStrict: false });
+      applyById('iaa-sniper-chop', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-candle-pattern-min-conf', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-candle-pattern-weight', { min: 1, max: 100, highIsStrict: false });
+      applyById('iaa-entrywin-1m', { min: 0, max: 60, highIsStrict: false });
+      applyById('iaa-entrywin-3m', { min: 0, max: 180, highIsStrict: false });
+      applyById('iaa-dynamic-score-min', { min: 0, max: 100, highIsStrict: true });
+      applyById('iaa-dynamic-min-conf', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-dynamic-sub30-min-conf', { min: 1, max: 100, highIsStrict: true });
+      applyById('iaa-killer-dominance-threshold', { min: 50, max: 90, highIsStrict: true });
+    }
+
     function buildMiniBar(value, min, max, blocks = 10) {
       if (!Number.isFinite(value)) return '';
       const clamped = Math.max(min, Math.min(max, value));
@@ -2662,10 +3172,17 @@
       const empty = '░'.repeat(Math.max(0, blocks - filled));
       return full + empty;
     }
-    function setMiniBar(id, value, min, max, blocks = 10) {
+    function setMiniBar(id, value, min, max, blocks = 10, options = {}) {
       const el = $id(id);
       if (!el) return;
+      const clamped = Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
+      const ratioRaw = (clamped - min) / ((max - min) || 1);
+      const ratio = Math.max(0, Math.min(1, options.highIsStrict === false ? (1 - ratioRaw) : ratioRaw));
       el.textContent = buildMiniBar(value, min, max, blocks);
+      let color = '#fbbf24';
+      if (ratio <= 0.4) color = '#22c55e';
+      else if (ratio >= 0.7) color = '#f87171';
+      el.style.color = color;
     }
     function setDebugTab(tab) {
       S.debugTab = tab;
@@ -2976,7 +3493,7 @@
     function debugLog(message, data = null) {
       // Only log critical errors and important state changes
       const criticalMessages = [
-        'error', 'failed', 'exception', 'critical', 'outcome', 'WIN', 'LOSS', 'EVEN'
+        'error', 'failed', 'exception', 'critical', 'outcome', 'ПЕЧАЛБИ', 'ЗАГУБИ', 'EVEN'
       ];
 
       const isCritical = criticalMessages.some(keyword =>
@@ -3098,6 +3615,23 @@
       const v=Number(s.replace(/[^\d.+\-]/g,'')); return Number.isFinite(v)?v:null;
     }
 
+    function parseDynamicCandidatesSeconds(value, fallback = [15, 30, 45, 60, 90, 120, 180]) {
+      const raw = String(value ?? '').trim();
+      if (!raw) return [...fallback];
+      const items = raw
+        .split(',')
+        .map((part) => parseNumberFlexible(part))
+        .filter((v) => Number.isFinite(v))
+        .map((v) => Math.round(v))
+        .filter((v) => v >= 3 && v <= 3600);
+      const uniq = Array.from(new Set(items)).sort((a, b) => a - b);
+      return uniq.length ? uniq : [...fallback];
+    }
+
+    function formatDynamicCandidatesSeconds(list) {
+      return (Array.isArray(list) ? list : []).map((v) => Math.round(v)).join(', ');
+    }
+
     function normalizeExpiry(exp){
       if(!exp) return null; const e=String(exp).toUpperCase();
       if(/^(3S|S3)$/.test(e)) return '3S';
@@ -3157,6 +3691,31 @@
 
     function getActiveTradeIntervalMin() {
       return Math.max(1, S.tradeIntervalMin || 1);
+    }
+
+    function getDynamicMode() {
+      const mode = String(S.dynamicMode || 'off').toLowerCase();
+      if (mode === 'dynamic' || mode === 'hybrid') return mode;
+      return 'off';
+    }
+
+    function shouldUseDynamicExpiry(signal, assetScope) {
+      if (!S.dynamicExpiryEnabled) return false;
+      if (assetScope !== 'OTC') return false;
+      const mode = getDynamicMode();
+      if (mode === 'off') return false;
+      if (mode === 'dynamic') return true;
+
+      const confidence = clamp01(signal?.confidence ?? S.analysisConfidence ?? 0);
+      if (confidence < clamp01(S.dynamicMinConfidence ?? 0.65)) return false;
+
+      const timeInCandle = Number.isFinite(signal?.entryMeta?.timeInCandle) ? signal.entryMeta.timeInCandle : null;
+      const lateMax = Math.max(0, Math.round(S.dynamicLateEntryMaxSec ?? 35));
+      if (timeInCandle != null && lateMax > 0 && timeInCandle > lateMax) return false;
+
+      const regimeState = String(signal?.entryMeta?.regime?.state || '').toLowerCase();
+      if (regimeState === 'chop' || regimeState === 'volatility') return false;
+      return true;
     }
 
     function canOpenAnotherTrade() {
@@ -3515,46 +4074,19 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     function getCurrentAssetPrice() {
-      const now = Date.now();
-      const wsFresh = Number.isFinite(S.wsLastPrice) && (now - (S.wsLastPriceAt || 0) <= WS_PRICE_SAMPLE_TTL_MS);
-      if (wsFresh) {
-        S.currentAssetPriceDecimals = Number.isFinite(S.wsLastPriceDecimals) ? S.wsLastPriceDecimals : S.currentAssetPriceDecimals;
+      // Single source of truth for live price:
+      // #pending-trades_open-price > div.current-time > span
+      const p = getRealtimeOpenPriceMenuValue();
+      if (Number.isFinite(p)) {
+        S.currentAssetPrice = p;
+        S.lastPriceAt = Date.now();
         S.feedState = 'READY';
-        S.lastFeedSource = 'ws';
-        return S.wsLastPrice;
+        S.lastFeedSource = 'dom_open_price';
+        appendPriceHistoryTick(S, p, S.lastPriceAt, 'dom_open_price');
+        return p;
       }
-
-      const menuPrice = getRealtimeOpenPriceMenuValue();
-      if (Number.isFinite(menuPrice)) {
-        S.feedState = 'READY';
-        S.lastFeedSource = 'menu_open_price';
-        return menuPrice;
-      }
-
-      const panelPrice = getOrderPanelLivePrice();
-      if (Number.isFinite(panelPrice)) {
-        S.feedState = 'READY';
-        S.lastFeedSource = 'order_panel';
-        return panelPrice;
-      }
-
-      const domPrice = getGeoZoneDomPrice();
-      if (Number.isFinite(domPrice)) {
-        S.feedState = 'STALE';
-        S.lastFeedSource = 'geo_dom';
-        return domPrice;
-      }
-
-      if (Array.isArray(S.priceHistory) && S.priceHistory.length) {
-        const last = S.priceHistory[S.priceHistory.length - 1];
-        if (last && Number.isFinite(last.price)) {
-          S.feedState = (now - (last.timestamp || 0) <= 10000) ? 'STALE' : 'NO_FEED';
-          S.lastFeedSource = S.lastFeedSource || 'history';
-          return last.price;
-        }
-      }
-
       S.feedState = 'NO_FEED';
+      S.lastFeedSource = null;
       return null;
     }
 
@@ -3591,15 +4123,15 @@ function getMinHistoryWindowForReadinessMs() {
 
     /* ========================= PROPER BALANCE-BASED OUTCOME DETECTION ========================= */
     function detectTradeOutcomeByBalance(balanceBefore, balanceAfter) {
-      if (!balanceBefore || !balanceAfter) return null;
+      if (!Number.isFinite(balanceBefore) || !Number.isFinite(balanceAfter)) return null;
 
       const balanceDiff = balanceAfter - balanceBefore;
 
       // NO TOLERANCE - Exact comparison only
       if (balanceDiff > 0) {
-        return 'WIN';
+        return 'ПЕЧАЛБИ';
       } else if (balanceDiff < 0) {
-        return 'LOSS';
+        return 'ЗАГУБИ';
       } else {
         return 'EVEN';
       }
@@ -3607,7 +4139,7 @@ function getMinHistoryWindowForReadinessMs() {
 
     /* ========================= PROPER PROFIT CALCULATION ========================= */
     function calculateProfitFromBalanceChange(balanceBefore, balanceAfter) {
-      if (!balanceBefore || !balanceAfter) return 0;
+      if (!Number.isFinite(balanceBefore) || !Number.isFinite(balanceAfter)) return 0;
 
       // Simple difference - no assumptions about payout percentages
       return balanceAfter - balanceBefore;
@@ -3618,7 +4150,7 @@ function getMinHistoryWindowForReadinessMs() {
       if (outcome === 'EVEN') return 0;
       const totalAmount = Number.isFinite(trade.totalAmountCents) ? trade.totalAmountCents : trade.amountCents;
       if (!Number.isFinite(totalAmount)) return fallbackCents;
-      if (outcome === 'LOSS') return -totalAmount;
+      if (outcome === 'ЗАГУБИ') return -totalAmount;
       const payoutPercent = Number.isFinite(trade.payoutPercent) ? trade.payoutPercent : null;
       if (payoutPercent == null) return fallbackCents;
       return Math.round(totalAmount * (payoutPercent / 100));
@@ -3637,7 +4169,7 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     function recordTradeOutcomeForRisk(outcome, profitCents) {
-      if (outcome === 'LOSS') {
+      if (outcome === 'ЗАГУБИ') {
         S.lossStreak += 1;
         if (profitCents < 0) {
           S.sessionLossCents += Math.abs(profitCents);
@@ -3652,7 +4184,7 @@ function getMinHistoryWindowForReadinessMs() {
       const cur = Number.isFinite(S.balance) ? S.balance : readBalanceCents();
       const diff = (start != null && cur != null) ? (cur - start) : null;
 
-      // "Стоп при загуба" трябва да следи директно Резултат (Start → Now), не TRADES/WS.
+      // "Стоп при загуба" трябва да следи директно Резултат (Start → Now), не СДЕЛКИ/WS.
       const hitLossLimit = (S.maxSessionLossCents > 0) && (diff != null) && (diff <= -S.maxSessionLossCents);
       const hitStreakLimit = S.maxConsecutiveLosses > 0 && S.lossStreak >= S.maxConsecutiveLosses;
 
@@ -3732,14 +4264,14 @@ function getMinHistoryWindowForReadinessMs() {
       const priceTolerance = 0.0001; // Very small tolerance for floating point comparison
 
       if (priceDiff <= priceTolerance) {
-        return 'WIN'; // Exact price match
+        return 'ПЕЧАЛБИ'; // Exact price match
       }
 
       if (direction === 'BUY') {
-        const outcome = currentPrice > entryPrice ? 'WIN' : 'LOSS';
+        const outcome = currentPrice > entryPrice ? 'ПЕЧАЛБИ' : 'ЗАГУБИ';
         return outcome;
       } else if (direction === 'SELL') {
-        const outcome = currentPrice < entryPrice ? 'WIN' : 'LOSS';
+        const outcome = currentPrice < entryPrice ? 'ПЕЧАЛБИ' : 'ЗАГУБИ';
         return outcome;
       }
 
@@ -3827,12 +4359,27 @@ function getMinHistoryWindowForReadinessMs() {
         .toUpperCase();
     }
 
+    function bumpSkipReasonCounter(reason) {
+      if (!reason) return;
+      if (!S.skipReasonCounts || typeof S.skipReasonCounts !== 'object') S.skipReasonCounts = {};
+      S.skipReasonCounts[reason] = (S.skipReasonCounts[reason] || 0) + 1;
+    }
+
+    function getTopSkipReasonsLabel(limit = 3) {
+      const entries = Object.entries(S.skipReasonCounts || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, limit);
+      if (!entries.length) return '—';
+      return entries.map(([k, v]) => `${translateSkipReason(k)}:${v}`).join(' | ');
+    }
+
     function setSkipReason(reason) {
       const now = Date.now();
       if (S.lastSkipReason === reason && now - S.lastSkipAt < 3000) return;
       S.lastSkipReason = reason;
       S.lastSkipAt = now;
       S.analysisReason = reason;
+      bumpSkipReasonCounter(reason);
       const localizedReason = translateSkipReason(reason);
       const message = formatStatus('skip_reason', { reason: localizedReason });
       setStatusOverlay(message);
@@ -3910,15 +4457,8 @@ function getMinHistoryWindowForReadinessMs() {
 
           appendPriceHistoryTick(S, currentPrice, now, 'monitor');
 
-                    const windowMs = getPriceHistoryWindowMs();
-          const cutoff = now - windowMs;
-          // Efficient sliding-window trim (avoid full-array filter every tick)
-          if (S.priceHistory && S.priceHistory.length) {
-            let removeCount = 0;
-            const ph = S.priceHistory;
-            while (removeCount < ph.length && ph[removeCount].timestamp < cutoff) removeCount++;
-            if (removeCount) ph.splice(0, removeCount);
-          }
+                    // Keep history as count-capped sliding window only (no time-based trimming).
+          // Pocket Option binary needs stable indicator history; time-based trimming caused history to shrink (~1k).
           trimPriceHistory(S);
         } else {
         }
@@ -4082,7 +4622,7 @@ function getMinHistoryWindowForReadinessMs() {
     /* ========================= KEEP ALIVE SYSTEM ========================= */
     async function performKeepAlive() {
       if (S.keepAliveActive) return;
-      if (S.cycleActive || S.tradeSequenceActive || hasActiveTrade() || S.hasLiveSignal) return;
+      if (false || false || hasActiveTrade() || false) return;
 
       S.keepAliveActive = true;
       try {
@@ -4177,9 +4717,9 @@ function getMinHistoryWindowForReadinessMs() {
           break;
 
         case 'RESULTS':
-          if (data.outcome === 'WIN') {
+          if (data.outcome === 'ПЕЧАЛБИ') {
             setStatusOverlay(formatStatus('trade_won'), '', false);
-          } else if (data.outcome === 'LOSS') {
+          } else if (data.outcome === 'ЗАГУБИ') {
             setStatusOverlay(formatStatus('trade_lost'), '', false);
           } else {
             setStatusOverlay(formatStatus('trade_even'), '', false);
@@ -4251,8 +4791,9 @@ function getMinHistoryWindowForReadinessMs() {
 
     /* ========================= ENHANCED TRADE EXECUTION WITH EXACT TIMING ========================= */
     async function executeTradeOrder(signal) {
-      if (!S.hasLiveSignal || !S.currentSignal || !S.tradeSequenceActive) return false;
+      if (!false || !null || !false) return false;
       if (S.executing) return false;
+      if (S.tradeMutex?.active) return false;
       if (!canOpenAnotherTrade()) {
         setSkipReason('MaxOpen');
         return false;
@@ -4325,16 +4866,12 @@ function getMinHistoryWindowForReadinessMs() {
       S.executing = true;
       S.executionAttempts = 1;
       S.executionStartTime = Date.now();
+      const mutexId = `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      S.tradeMutex = { active: true, id: mutexId, startedAt: Date.now() };
 
       let resolvedExpiry = normalizeExpiry(signal.expiry) || S.expirySetting;
       const assetScope = getExpiryScopeFromAsset(signal.asset);
-      const useDynamicExpiry = false;
-      if (useDynamicExpiry && assetScope === 'REAL') {
-        const plan = getDynamicExpiryPlan(resolvedExpiry, S.analysisConfidence, assetScope);
-        if (plan.expiries.length) {
-          resolvedExpiry = plan.expiries[0];
-        }
-      }
+      const useDynamicExpiry = shouldUseDynamicExpiry(signal, assetScope);
       const entryContext = buildEntryContext(signal, resolvedExpiry);
       const confidenceLabel = getExecutionConfidenceLabel(signal);
       if (signal?.strategyKey) {
@@ -4342,7 +4879,7 @@ function getMinHistoryWindowForReadinessMs() {
       }
 
       try {
-        if (!useDynamicExpiry || assetScope === 'REAL') {
+        if (!useDynamicExpiry || assetScope !== 'OTC') {
           const expiryOk = await ensurePlatformExpiry(resolvedExpiry);
           if (!expiryOk) {
             setSkipReason('Expiry');
@@ -4355,6 +4892,10 @@ function getMinHistoryWindowForReadinessMs() {
         if (balanceEligible) {
           S.balanceBeforeTrade = balanceBeforeTrade;
         }
+        const startBalanceCents = Number.isFinite(S.botStartBalance) ? S.botStartBalance : null;
+        const resultBeforeCents = (Number.isFinite(balanceBeforeTrade) && Number.isFinite(startBalanceCents))
+          ? (balanceBeforeTrade - startBalanceCents)
+          : null;
 
         // Capture entry price BEFORE execution
         const entryPrice = getCurrentAssetPrice();
@@ -4374,7 +4915,7 @@ function getMinHistoryWindowForReadinessMs() {
         const parsedInputAmount = input ? parseNumberFlexible(input.value) : null;
         let amountCents = Number.isFinite(signal?.overrideAmountCents)
           ? Math.max(1, Math.round(signal.overrideAmountCents))
-          : calculateTradeAmount(S.baseAmount, S.martingaleSequence);
+          : Math.max(1, Math.round(S.baseAmount ?? 100));
         if (useCurrentAmount && Number.isFinite(parsedInputAmount)) {
           amountCents = Math.max(1, Math.round(parsedInputAmount * 100));
         }
@@ -4403,8 +4944,23 @@ function getMinHistoryWindowForReadinessMs() {
         const burstCount = Math.max(1, Number.isFinite(signal?.burstCount) ? signal.burstCount : baseBurst);
         const payoutPercent = getCurrentPayoutPercent();
 
+        let dynamicApplied = false;
         if (useDynamicExpiry && assetScope === 'OTC') {
-          const plan = getDynamicExpiryPlan(signal.expiry || resolvedExpiry, S.analysisConfidence, assetScope);
+          const plan = getDynamicExpiryPlan(signal.expiry || resolvedExpiry, S.analysisConfidence, assetScope, { signal });
+          if (!plan.seconds.length) {
+            if (S.dynamicFallbackToFixed) {
+              const expiryOk = await ensurePlatformExpiry(resolvedExpiry);
+              if (!expiryOk) {
+                setSkipReason('Expiry');
+                return false;
+              }
+              logConsoleLine('[DYNAMIC] Нисък score → fallback към фиксирано време.');
+            } else {
+              setSkipReason('Confidence');
+              logConsoleLine('[DYNAMIC] Нисък score → no-trade.');
+              return false;
+            }
+          }
           if (assetScope === 'OTC') {
             const opened = await iaaOpenExpiryMenu(assetScope);
             if (!opened) {
@@ -4460,7 +5016,9 @@ function getMinHistoryWindowForReadinessMs() {
                 cycleStep: S.cycleStep,
                 entryPrice: entryPrice,
                 balanceBefore: balanceBeforeTrade,
+                resultBeforeCents,
                 balanceEligible,
+                stakeCents: amountCents,
               source: isSniperMode() ? 'sniper' : 'signal',
               strategyKey: signal.strategyKey || null,
               outcomeChecked: false,
@@ -4470,13 +5028,32 @@ function getMinHistoryWindowForReadinessMs() {
                 nextHistoryCheckAt: 0,
                 payoutPercent
               };
+
+      // --- normalize trade context for reporting/debug ---
+      try {
+        trade.id = trade.id || ('T' + Date.now().toString(36) + '_' + Math.random().toString(16).slice(2));
+        trade.mode = trade.mode || 'AUTO';
+        trade.tfLabel = trade.tfLabel || (resolvedExpiry && resolvedExpiry.label) || trade.expiryLabel || '';
+        if (trade.confidence == null) {
+          const c = entryContext && (entryContext.confidence ?? entryContext.finalConfidence ?? entryContext.conf);
+          trade.confidence = (c == null ? null : c);
+        }
+        trade.strategyKey = trade.strategyKey || (entryContext && entryContext.strategyKey) || trade.strategy || '';
+      } catch (e) {}
+
+
               S.activeTrades.push(trade);
               S.pendingTradeConfirmations.push({ trade, at: Date.now() });
+              dynamicApplied = true;
               {
                 const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
                 logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
               }
               await delay(140);
+            }
+            if (dynamicApplied && plan.best?.breakdown) {
+              const b = plan.best.breakdown;
+              logConsoleLine(`[DYNAMIC] ${plan.best.seconds}s | score=${(b.total * 100).toFixed(0)} | conf=${(b.confidence * 100).toFixed(0)}% | chop-${(b.penaltyChop * 100).toFixed(0)} late-${(b.penaltyLate * 100).toFixed(0)} lat-${(b.penaltyLatency * 100).toFixed(0)}`);
             }
           } else {
             if (!plan.expiries.length) return false;
@@ -4511,7 +5088,9 @@ function getMinHistoryWindowForReadinessMs() {
                 cycleStep: S.cycleStep,
                 entryPrice: entryPrice,
                 balanceBefore: balanceBeforeTrade,
+                resultBeforeCents,
                 balanceEligible,
+                stakeCents: amountCents,
                 source: isSniperMode() ? 'sniper' : 'signal',
                 strategyKey: signal.strategyKey || null,
                 outcomeChecked: false,
@@ -4571,7 +5150,9 @@ function getMinHistoryWindowForReadinessMs() {
             cycleStep: S.cycleStep,
             entryPrice: entryPrice,
             balanceBefore: balanceBeforeTrade, // Store balance before trade
+            resultBeforeCents,
             balanceEligible,
+            stakeCents: amountCents * burstCount,
             source: isSniperMode() ? 'sniper' : 'signal',
             strategyKey: signal.strategyKey || null,
             outcomeChecked: false,
@@ -4611,12 +5192,15 @@ function getMinHistoryWindowForReadinessMs() {
         return false;
       } finally {
         S.executing = false;
+        if (S.tradeMutex?.id === mutexId) {
+          S.tradeMutex = { active: false, id: null, startedAt: 0 };
+        }
       }
     }
 
 
     
-    /* -------------------- BALANCE-LEDGER CONFIRMATION (NO TRADES TAB) -------------------- */
+    /* -------------------- BALANCE-LEDGER CONFIRMATION (NO СДЕЛКИ TAB) -------------------- */
 
     function findBalanceEvent(afterTs, beforeTs, predicate) {
       const evs = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
@@ -4637,56 +5221,66 @@ function getMinHistoryWindowForReadinessMs() {
       if (ev) ev.used = true;
     }
 
+    function resolveLedgerProfitCents(trade, creditCents) {
+      const amountCents = Number(trade?.totalAmountCents || trade?.amountCents || 0);
+      const credit = Number(creditCents || 0);
+      if (!Number.isFinite(amountCents) || amountCents <= 0 || !Number.isFinite(credit) || credit <= 0) {
+        return { profitCents: credit - amountCents, mode: 'gross_fallback' };
+      }
+
+      const payoutPct = Number.isFinite(trade?.payoutPercent) ? trade.payoutPercent : Number(S.lastPayoutPercent || 0);
+      const expectedProfit = payoutPct > 0 ? Math.round(amountCents * (payoutPct / 100)) : null;
+      const expectedGross = expectedProfit != null ? amountCents + expectedProfit : null;
+
+      const grossProfit = credit - amountCents; // credit contains stake + profit
+      const profitOnly = credit;              // credit contains only net profit
+
+      if (expectedProfit != null && expectedGross != null) {
+        const distProfitOnly = Math.abs(credit - expectedProfit);
+        const distGross = Math.abs(credit - expectedGross);
+        if (distProfitOnly + 2 < distGross) return { profitCents: profitOnly, mode: 'profit_credit' };
+        if (distGross + 2 < distProfitOnly) return { profitCents: grossProfit, mode: 'gross_credit' };
+      }
+
+      if (credit <= Math.round(amountCents * 1.2)) {
+        return { profitCents: profitOnly, mode: 'profit_heuristic' };
+      }
+      return { profitCents: grossProfit, mode: 'gross_heuristic' };
+    }
+
     function confirmTradeByBalance(trade, clickedAt) {
+      // Строга верификация "отворена сделка" по баланс делта (без толеранс):
+      // bal трябва да стане точно (bal0 - stake) в рамките на 0–1200ms.
       return (async () => {
-        // Четем баланса директно от DOM (и това после се отразява и в нашия ред "Старт/Сега/Резултат").
-        // 1) REAL може да е с ',' и parse-а да се чупи → оправено е в readBalanceCents().
-        // 2) Ако не потвърдим "open" навреме, сделката НЕ трябва да остава висяща, иначе няма settle.
         const stakeCents = Math.max(0, trade.stakeCents || 0);
 
-        // baseline
-        if (trade.balanceBefore == null) trade.balanceBefore = readBalanceCents();
-
+        if (!Number.isFinite(trade.balanceBefore)) trade.balanceBefore = readBalanceCents();
         const before = trade.balanceBefore;
-        if (before == null || !Number.isFinite(before)) {
-          // Без baseline: приемаме отворена, за да може да се сетълва по-късно.
-          trade.openConfirmed = true;
-          trade.openConfirmedBy = 'ASSUMED_NO_BASELINE';
-          trade.balanceAfterOpen = null;
-          trade.openAt = trade.openAt || clickedAt || Date.now();
-          return true;
+
+        if (!Number.isFinite(before) || !Number.isFinite(stakeCents) || stakeCents <= 0) {
+          trade.openConfirmed = false;
+          trade.openConfirmedBy = 'NO_BASELINE_OR_STAKE';
+          return false;
         }
 
-        const timeoutMs = 9000;
-        const stepMs = 120;
-        const minDebit = stakeCents ? Math.max(10, Math.floor(stakeCents * 0.75)) : 10;
+        const expected = before - stakeCents;
+        const deadline = Date.now() + 1200;
 
-        const t0 = Date.now();
-        let last = before;
-
-        while (Date.now() - t0 < timeoutMs) {
-          await sleep(stepMs);
+        while (Date.now() <= deadline) {
           const now = readBalanceCents();
-          if (now == null || !Number.isFinite(now)) continue;
-
-          last = now;
-          const debit = before - now;
-
-          if (debit >= minDebit) {
+          if (Number.isFinite(now) && now === expected) {
             trade.openConfirmed = true;
-            trade.openConfirmedBy = 'BALANCE_DEBIT';
+            trade.openConfirmedBy = 'BALANCE_DELTA_STRICT';
             trade.balanceAfterOpen = now;
+            trade.openAt = clickedAt || Date.now();
             return true;
           }
+          await sleep(130);
         }
 
-        // Timeout: приемаме сделката за ОТВОРЕНА, за да не блокира settle логиката.
-        trade.openConfirmed = true;
-        trade.openConfirmedBy = 'ASSUMED_TIMEOUT';
-        trade.balanceAfterOpen = last;
-
-        log(`[SCAN V5-FIXED] ВНИМАНИЕ: Няма баланс-потвърждение за отворена сделка (приемам я за ОТВОРЕНА)`);
-        return true;
+        trade.openConfirmed = false;
+        trade.openConfirmedBy = 'BALANCE_DELTA_TIMEOUT';
+        return false;
       })();
     }
     async function processPendingTradeConfirmations() {
@@ -4697,9 +5291,11 @@ function getMinHistoryWindowForReadinessMs() {
       for (const item of pending) {
         if (!item || !item.trade) continue;
 
-        // Hard timeout so we never block the engine
-        if ((Date.now() - Number(item.at || 0)) > 10000) {
-          logConsoleLine(formatStatus('trade_executed', { note: 'timeout' }));
+        // Hard timeout so we never block the engine (строг баланс check)
+        if ((Date.now() - Number(item.at || 0)) > 1400) {
+          logConsoleLine('ПРОПУСК: Няма потвърждение за отворена сделка след клик');
+          // cleanup: remove any shadow trade state
+          try { S.activeTrades = (S.activeTrades||[]).filter(t => t && t.id !== item.trade.id); } catch {}
           continue;
         }
 
@@ -4715,7 +5311,7 @@ function getMinHistoryWindowForReadinessMs() {
 
     /* ========================= FIXED: HISTORY-ONLY OUTCOME DETECTION ========================= */
     
-    /* ========================= BALANCE-LEDGER OUTCOME DETECTION (NO TRADES TAB) ========================= */
+    /* ========================= BALANCE-LEDGER OUTCOME DETECTION (NO СДЕЛКИ TAB) ========================= */
     async function finalizeActiveTrades() {
       if (!S.activeTrades || !S.activeTrades.length) return;
 
@@ -4747,65 +5343,59 @@ function getMinHistoryWindowForReadinessMs() {
         }
 
         // 3) Try match a payout credit event within window
-        const amountCents = Number(trade.amountCents || 0);
+        const amountCents = Number(trade.totalAmountCents || trade.amountCents || 0);
         const settleStart = expectedEnd - earlySettleLeewayMs;
         const settleEnd = expectedEnd + settlementWindowMs;
 
         const ev = findBalanceEvent(settleStart, settleEnd, (e) => {
           const d = Number(e.deltaCents || 0);
-          return d > 0;
+          if (!(d > 0)) return false;
+          if (amountCents > 0 && d > Math.round(amountCents * 3.5)) return false;
+          return true;
         });
 
         if (ev) {
           markBalanceEventUsed(ev);
-          const credit = Number(ev.deltaCents || 0);
-          const profitCents = credit - amountCents; // net profit (stake already debited)
-          const outcome = profitCents > 0 ? 'WIN' : 'EVEN';
 
-          trade.outcomeChecked = true;
-          trade.outcome = outcome;
-          trade.settledAt = ev.t;
-          trade.profitCents = profitCents;
+          let profitCents = null;
+          let settleReason = null;
 
-          recordTradeStats(outcome);
-          recordStrategyOutcome(trade.strategyKey, outcome, profitCents);
-          recordTradeHistoryEntry(trade, outcome, profitCents);
-          recordLossAnalysis(trade, outcome, profitCents);
-          recordTradeOutcomeForRisk(outcome, profitCents);
-          applyRiskLimits();
+          // Ако сделката е "самостоятелна" (без други активни по време на клик) – най-точно е чистата разлика bal1-bal0.
+          if (trade.balanceEligible && Number.isFinite(trade.balanceBefore)) {
+            const nowBal = readBalanceCents();
+            if (Number.isFinite(nowBal)) {
+              profitCents = (nowBal - trade.balanceBefore);
+              settleReason = 'BALANCE_DELTA';
+            }
+          }
 
-          // Human-readable outcome log
-          try {
-            const p = (profitCents || 0) / 100;
-            const sign = p > 0 ? '+' : '';
-            log(`[LEDGER] ${outcome === 'WIN' ? 'ПЕЧАЛБА' : 'РЕЗУЛТАТ'}: ${sign}$${p.toFixed(2)} | ${trade.asset || ''} ${trade.direction || ''} ${trade.expiry || ''}`);
-          } catch {}
+          if (!Number.isFinite(profitCents)) {
+            const credit = Number(ev.deltaCents || 0);
+            const resolved = resolveLedgerProfitCents(trade, credit);
+            profitCents = Number(resolved?.profitCents || 0);
+            settleReason = `BALANCE_LEDGER:${resolved?.mode || 'unknown'}`;
+          }
+
+          const outcome = profitCents > 0 ? 'ПЕЧАЛБИ' : (profitCents < 0 ? 'ЗАГУБИ' : 'EVEN');
+          finalizeTradeOutcome(trade, outcome, profitCents, ev.t, settleReason);
 
           continue;
         }
 
-        // 4) If window exceeded and no credit → LOSS
+        const activeCount = Array.isArray(S.activeTrades) ? S.activeTrades.length : 0;
+        const canUseDeltaFallback = activeCount <= 1;
+        const deltaOutcome = canUseDeltaFallback ? detectOutcomeByResultDelta(trade) : null;
+        if (deltaOutcome && now >= expectedEnd) {
+          finalizeTradeOutcome(trade, deltaOutcome.outcome, deltaOutcome.profitCents, now, deltaOutcome.method);
+          continue;
+        }
+
+        // 4) If window exceeded and no credit → ЗАГУБИ
         if (now > settleEnd) {
           const profitCents = -amountCents;
-          const outcome = 'LOSS';
+          const outcome = 'ЗАГУБИ';
 
-          trade.outcomeChecked = true;
-          trade.outcome = outcome;
-          trade.settledAt = now;
-          trade.profitCents = profitCents;
-
-          recordTradeStats(outcome);
-          recordStrategyOutcome(trade.strategyKey, outcome, profitCents);
-          recordTradeHistoryEntry(trade, outcome, profitCents);
-          recordLossAnalysis(trade, outcome, profitCents);
-          recordTradeOutcomeForRisk(outcome, profitCents);
-          applyRiskLimits();
-
-          // Human-readable outcome log
-          try {
-            const p = (profitCents || 0) / 100;
-            log(`[LEDGER] ЗАГУБА: -$${Math.abs(p).toFixed(2)} | ${trade.asset || ''} ${trade.direction || ''} ${trade.expiry || ''}`);
-          } catch {}
+          finalizeTradeOutcome(trade, outcome, profitCents, now, 'TIMEOUT_FALLBACK');
 
           continue;
         }
@@ -4820,171 +5410,17 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     /* ========================= FIXED: MARTINGALE WITH PROPER BALANCE TRACKING ========================= */
-    function immediateMartingaleReentry() {
-      endCycle();
-    }
+    function immediateMartingaleReentry(){}
 
-    function startCycle(sig) {
-      S.cycleActive = true;
-      S.cycleStep = 0;
-      S.cycleBaseSignal = JSON.parse(JSON.stringify(sig));
-      S.cycleStartTime = Date.now();
-      S.cycleProfitLoss = 0;
 
-      const expiryWindowMs = secsFromTF(sig.expiry || S.expirySetting) * 1000;
-      sig.confidence = Number.isFinite(sig.confidence) ? sig.confidence : S.analysisConfidence;
-      sig.entryMeta = sig.entryMeta || {
-        regime: detectMarketRegime(expiryWindowMs),
-        biasDir: getBiasDirection(),
-        confirmation: { total: 0, matched: 0, details: [] },
-        timeInCandle: getTimeInCandleSec(expiryWindowMs),
-        entryWindowSec: S.sniperEntryWindowSec,
-        rangePct: null,
-        trendDir: S.analysisDirection === 'BUY' ? 1 : (S.analysisDirection === 'SELL' ? -1 : 0),
-        trendAligned: true,
-        volumeOk: true
-      };
+    function startCycle(){}
 
-      // Capture balance at cycle start for overall profit calculation
-      const currentBalance = readBalanceCents();
-      if (currentBalance !== null) {
-        S.cycleStartBalance = currentBalance;
-        S.balanceBeforeTrade = currentBalance; // Set initial baseline
-      }
 
-      S.martingaleSequence = 0;
-      S.currentSignal = sig;
-      S.tradeSequenceActive = true;
+    function formatCountdown(){}
 
-      const normalizedExpiry = normalizeExpiry(sig.expiry) || S.expirySetting;
-      S.expirySetting = normalizedExpiry;
-      const expirySelect = $id('iaa-expiry-setting');
-      if (expirySelect) expirySelect.value = normalizedExpiry;
-      const expiryLabel = $id('iaa-exp');
-      if (expiryLabel) expiryLabel.textContent = normalizedExpiry;
-      ensurePlatformExpiry(normalizedExpiry);
 
-      S.assetSelecting = false;
-      S.assetSelectedForSignal = false;
-      S.assetSelectionAttempted = false;
-      S.assetSelectionAttempts = 0;
-      S.lastAssetSelectionType = sig.isOTC ? 'OTC' : 'SPOT';
-      S.assetSelectionFlipped = false;
+    function endCycle(){}
 
-      const initialVerification = verifyAssetSelection(sig.asset);
-      if (initialVerification.verified) {
-        S.assetSelectedForSignal = true;
-        S.assetSelectionAttempted = true;
-      }
-
-      S.hasLiveSignal = true;
-      S.forceImmediate = false;
-      S.finalizedTradeId = null;
-      S.tradeOutcomeChecked = false;
-
-      resetExecutionState();
-
-      // Show direction indicator immediately when signal is received
-      showDirectionIndicator(sig.direction);
-
-      // Start countdown from 60 seconds before execution
-      const delayMs = calculateDelay(sig);
-      if (typeof delayMs === 'number') {
-        S.lastSignalLagSec = delayMs < 0 ? Math.round(Math.abs(delayMs) / 1000) : 0;
-        renderLagStatus();
-      }
-      const countdownStartMs = Math.min(delayMs, 60000);
-
-      if (countdownStartMs > 0) {
-        startCountdown(Date.now() + countdownStartMs);
-        setUIState('IDENTIFYING_PATTERN', {
-          countdownValue: formatCountdown(countdownStartMs)
-        });
-      }
-      if (sig.time) {
-        logConsoleLine(`Планиран вход: ${sig.time} (${sig.expiry || S.expirySetting})`);
-      }
-
-      const expirySecs = secsFromTF(sig.expiry || S.expirySetting);
-      const cycleTimeoutMs = expirySecs * 1000 * C.CYCLE_TIMEOUT_MULTIPLIER;
-
-      if (S.cycleTimeoutId) {
-        clearTimeout(S.cycleTimeoutId);
-      }
-
-      S.cycleTimeoutId = setTimeout(() => {
-        if (S.cycleActive) {
-          if (hasActiveTrade()) {
-            return;
-          }
-          endCycle();
-        }
-      }, cycleTimeoutMs);
-    }
-
-    function formatCountdown(delayMs) {
-      const secondsLeft = Math.max(0, Math.floor(delayMs / 1000));
-      const millisecondsLeft = Math.max(0, delayMs % 1000);
-      return `${secondsLeft}.${String(Math.floor(millisecondsLeft / 10)).padStart(2, '0')}s`;
-    }
-
-    function endCycle() {
-      if (hasActiveTrade()) {
-        return;
-      }
-
-      if (S.cycleTimeoutId) {
-        clearTimeout(S.cycleTimeoutId);
-        S.cycleTimeoutId = null;
-      }
-
-      // Calculate final cycle profit from start to end balance
-      const finalBalance = readBalanceCents();
-      if (finalBalance !== null && S.cycleStartBalance !== null) {
-        const cycleProfit = finalBalance - S.cycleStartBalance;
-        debugLog('Cycle completed with final profit calculation', {
-          startBalance: S.cycleStartBalance,
-          endBalance: finalBalance,
-          cycleProfit: cycleProfit
-        });
-      }
-
-      resetExecutionState();
-      stopCountdown();
-      hideDirectionIndicator();
-
-      debugLog('Cycle ended', {
-        outcome: S.lastTradeOutcome,
-        profit: S.cycleProfitLoss,
-        step: S.cycleStep
-      });
-
-      // Reset cycle state
-      S.cycleActive = false;
-      S.cycleStep = 0;
-      S.cycleBaseSignal = null;
-      S.cycleStartTime = 0;
-      S.cycleStartBalance = null;
-      S.cycleEndBalance = null;
-
-      S.martingaleSequence = 0;
-      S.currentSignal = null;
-      S.tradeSequenceActive = false;
-
-      S.assetSelecting = false;
-      S.assetSelectedForSignal = false;
-      S.assetSelectionAttempted = false;
-      S.assetSelectionAttempts = 0;
-      S.lastAssetSelectionType = null;
-      S.assetSelectionFlipped = false;
-
-      S.hasLiveSignal = false;
-      S.forceImmediate = false;
-      S.tradeOutcomeChecked = false;
-
-      S.lastSignalPollAt = 0;
-      S.signalCooldownUntil = Date.now() + 5000;
-    }
 /* ========================= EXPIRY CALIBRATION (Shift+W) ========================= */
 const IAA_EXP_CAL_KEY_OTC = 'IAA_EXPIRY_COORDS_V3';
 const IAA_EXP_CAL_KEY_REAL = 'IAA_EXPIRY_COORDS_REAL_V1';
@@ -5290,39 +5726,64 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       return map[seconds] || null;
     }
 
+    function buildDynamicScoreBreakdown(signal, seconds) {
+      const confidence = clamp01(signal?.confidence ?? S.analysisConfidence ?? 0);
+      const entryMeta = signal?.entryMeta || {};
+      const regimeState = String(entryMeta?.regime?.state || '').toLowerCase();
+      const isChop = regimeState === 'chop' || regimeState === 'volatility';
+      const timeInCandle = Number.isFinite(entryMeta?.timeInCandle) ? entryMeta.timeInCandle : null;
+      const entryWindowSec = Number.isFinite(entryMeta?.entryWindowSec) ? entryMeta.entryWindowSec : null;
+
+      const scoreConfidence = confidence;
+      const penaltyChop = isChop ? 0.25 : 0;
+      const penaltySub30 = (seconds < 30 && confidence < clamp01(S.dynamicSub30MinConfidence ?? 0.78)) ? 0.25 : 0;
+      const penaltyLate = (timeInCandle != null && entryWindowSec != null && timeInCandle > entryWindowSec) ? 0.20 : 0;
+
+      const currentDyn = readDynamicExpirySeconds();
+      const deltaSec = Number.isFinite(currentDyn) ? Math.abs(currentDyn - seconds) : 0;
+      const estSetMs = deltaSec * 60 + 120;
+      const budgetMs = Math.max(200, Math.round(S.dynamicSetBudgetMs || 1200));
+      const penaltyLatency = estSetMs > budgetMs ? Math.min(0.35, (estSetMs - budgetMs) / Math.max(1, budgetMs)) : 0;
+
+      const total = scoreConfidence - penaltyChop - penaltySub30 - penaltyLate - penaltyLatency;
+      return {
+        total,
+        confidence: scoreConfidence,
+        penaltyChop,
+        penaltySub30,
+        penaltyLate,
+        penaltyLatency,
+        estSetMs,
+        budgetMs
+      };
+    }
+
     function getDynamicExpiryPlan(expiry, confidence, scope, options = {}) {
-      const threshold = typeof S.analysisConfidenceThreshold === 'number'
-        ? S.analysisConfidenceThreshold
-        : 0.65;
-      const isHighConfidence = clamp01(confidence ?? 0) >= threshold;
-      const targetSeconds = Number.isFinite(options.targetSeconds) ? Math.round(options.targetSeconds) : null;
-      const expirySeconds = Math.max(3, secsFromTF(expiry));
-      const baseOptions = scope === 'REAL'
-        ? [60, 180, 300, 1800]
-        : [3, 15, 30, 60, 180, 300, 1800];
-      const sortedOptions = baseOptions.slice().sort((a, b) => a - b);
-      const closestIndex = sortedOptions.reduce((bestIdx, value, idx) => {
-        const bestValue = sortedOptions[bestIdx];
-        return Math.abs(value - expirySeconds) < Math.abs(bestValue - expirySeconds) ? idx : bestIdx;
-      }, 0);
-      const confidenceRatio = clamp01(confidence ?? 0);
-      const pickIndex = isHighConfidence
-        ? Math.max(0, closestIndex - 1)
-        : (confidenceRatio >= threshold * 0.5 ? closestIndex : Math.min(sortedOptions.length - 1, closestIndex + 1));
-      let ladder = [sortedOptions[pickIndex]];
-      if (!isHighConfidence && sortedOptions[closestIndex] !== sortedOptions[pickIndex]) {
-        ladder.push(sortedOptions[closestIndex]);
+      const minSec = Math.max(3, Math.round(S.dynamicMinSec || 15));
+      const maxSec = Math.max(minSec, Math.round(S.dynamicMaxSec || 300));
+      const candidates = (Array.isArray(S.dynamicCandidatesSec) ? S.dynamicCandidatesSec : [15, 30, 45, 60, 90, 120, 180])
+        .map((v) => Math.round(v))
+        .filter((v) => v >= minSec && v <= maxSec);
+      const base = candidates.length ? candidates : [Math.max(minSec, Math.min(maxSec, secsFromTF(expiry)))];
+
+      const regimeState = String(options?.signal?.entryMeta?.regime?.state || '').toLowerCase();
+      const filteredBase = base.filter((seconds) => !(regimeState !== 'trend' && seconds < 30));
+      const scored = (filteredBase.length ? filteredBase : base).map((seconds) => ({
+        seconds,
+        breakdown: buildDynamicScoreBreakdown(options.signal || {}, seconds)
+      })).sort((a, b) => b.breakdown.total - a.breakdown.total);
+
+      const scoreMin = clamp01(S.dynamicScoreMin ?? 0.25);
+      const best = scored[0] || null;
+      if (!best || best.breakdown.total < scoreMin) {
+        return { expiries: [], seconds: [], best: null, scored };
       }
-      if (targetSeconds != null) {
-        ladder.unshift(targetSeconds);
-      }
-      const normalized = ladder
-        .map((value) => Math.max(sortedOptions[0], Math.min(sortedOptions[sortedOptions.length - 1], Math.round(value))));
+
       if (scope === 'REAL') {
-        const expiries = normalized.map(value => expiryLabelFromSeconds(value)).filter(Boolean);
-        return { expiries, seconds: [] };
+        const label = expiryLabelFromSeconds(best.seconds);
+        return { expiries: label ? [label] : [], seconds: [], best, scored };
       }
-      return { expiries: [], seconds: Array.from(new Set(normalized)).sort((a, b) => a - b) };
+      return { expiries: [], seconds: [best.seconds], best, scored };
     }
 
     async function adjustDynamicUnit(unit, diff) {
@@ -5470,10 +5931,8 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       };
     }
 
-    function calculateTradeAmount(base, seq){
-      if (!base) return null;
-      return base;
-    }
+    function calculateTradeAmount(baseAmountCents){ return baseAmountCents; }
+
 
     function signalExecKey(sig) {
       const expiry = normalizeExpiry(sig.expiry) || '';
@@ -5527,383 +5986,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const cleaned = String(value).trim();
       if (!cleaned) return null;
       return normalizeExpiry(cleaned);
-    }
-
-    function formatTimeFromMinute(minute) {
-      const safeMinute = ((minute % 1440) + 1440) % 1440;
-      const hour = Math.floor(safeMinute / 60);
-      const min = safeMinute % 60;
-      return `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
-    }
-
-    function extractSignalTimeValue(value) {
-      if (value == null) return null;
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        if (value > 1000000000) {
-          const ts = value < 10000000000 ? value * 1000 : value;
-          const d = new Date(ts);
-          if (!Number.isNaN(d.getTime())) {
-            const utc3 = new Date(d.getTime() - 3 * 60 * 60 * 1000);
-            return `${String(utc3.getUTCHours()).padStart(2, '0')}:${String(utc3.getUTCMinutes()).padStart(2, '0')}`;
-          }
-        }
-        if (value >= 0 && value < 1440) {
-          return formatTimeFromMinute(value);
-        }
-      }
-      const raw = String(value).trim();
-      const timeMatch = raw.match(/\b(\d{1,2}:\d{2})/);
-      if (timeMatch) return timeMatch[1];
-      const parsed = Date.parse(raw);
-      if (!Number.isNaN(parsed)) {
-        const d = new Date(parsed);
-        const utc3 = new Date(d.getTime() - 3 * 60 * 60 * 1000);
-        return `${String(utc3.getUTCHours()).padStart(2, '0')}:${String(utc3.getUTCMinutes()).padStart(2, '0')}`;
-      }
-      return null;
-    }
-
-    function parseSignalFromJsonPayload(payload) {
-      if (!payload) return null;
-
-      const parseCandidate = (obj) => {
-        if (!obj || typeof obj !== 'object') return null;
-        const assetRaw = obj.asset || obj.pair || obj.symbol || obj.market || obj.instrument || obj.ticker;
-        const directionRaw = obj.direction || obj.side || obj.action || obj.type;
-        const timeRaw = obj.time || obj.entry_time || obj.signal_time || obj.timestamp || obj.ts || obj.datetime || obj.date || obj.minute;
-        const expiryRaw = obj.expiry || obj.expiration || obj.exp || obj.tf || obj.timeframe || obj.period;
-        const otcFlag = obj.otc ?? obj.isOTC ?? obj.is_otc ?? obj.market_type;
-        const otcValue = typeof otcFlag === 'string' ? /OTC/i.test(otcFlag) : Boolean(otcFlag);
-
-        const direction = normalizeSignalDirection(directionRaw);
-        const assetInfo = normalizeSignalAsset(assetRaw, otcValue);
-        const time = extractSignalTimeValue(timeRaw);
-        if (!direction || !assetInfo || !time) return null;
-
-        const expiry = normalizeSignalExpiry(expiryRaw) || normalizeExpiry(S.expirySetting) || '1M';
-        const computedMinute = computeSignalMinute(time, expiry, S.signalTimeOffsetMin);
-        if (!computedMinute) return null;
-
-        const targetTsMs = resolveSignalTargetTs(computedMinute.totalMinute, computedMinute.normalizedExpiry);
-        if (!targetTsMs) return null;
-        return {
-          asset: assetInfo.asset,
-          assetSearch: assetInfo.assetSearch,
-          isOTC: assetInfo.isOTC,
-          direction,
-          time,
-          expiry: computedMinute.normalizedExpiry,
-          minute: computedMinute.totalMinute,
-          targetTsMs,
-          rawText: JSON.stringify(obj),
-          signalKey: `${assetInfo.assetSearch}|${computedMinute.totalMinute}|${direction}|${assetInfo.isOTC ? 'OTC' : 'REAL'}`
-        };
-      };
-
-      const walk = (node, depth = 0) => {
-        if (node == null || depth > 4) return null;
-        if (Array.isArray(node)) {
-          for (let i = node.length - 1; i >= 0; i -= 1) {
-            const found = walk(node[i], depth + 1);
-            if (found) return found;
-          }
-          return null;
-        }
-        if (typeof node === 'object') {
-          const candidate = parseCandidate(node);
-          if (candidate) return candidate;
-          const preferredKeys = ['signal', 'data', 'result', 'payload', 'message'];
-          for (const key of preferredKeys) {
-            if (Object.prototype.hasOwnProperty.call(node, key)) {
-              const found = walk(node[key], depth + 1);
-              if (found) return found;
-            }
-          }
-          for (const value of Object.values(node)) {
-            const found = walk(value, depth + 1);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-
-      return walk(payload, 0);
-    }
-
-    function extractSignalTextFromResponse(text) {
-      if (!text) return '';
-      const hasFlagEmoji = (value) => /\p{Regional_Indicator}{2}/u.test(value || '');
-      const currencyPairRegex = /\b[A-Z]{3}\/?[A-Z]{3}\b/;
-      const isLikelySignal = (messageText) => {
-        if (!messageText) return false;
-        const upper = messageText.toUpperCase();
-        if (upper.includes('WINS') || upper.includes('LOSSES') || upper.includes('BOT IS ON FIRE')) return false;
-        const hasPair = currencyPairRegex.test(upper);
-        const hasPairMarker = upper.includes('OTC') || messageText.includes('💷') || messageText.includes('💎') || messageText.includes('💳') || hasFlagEmoji(messageText);
-        const hasSignalLabel = upper.includes('SIGNAL') || upper.includes('INFINITY AI');
-        const hasPairLabel = upper.includes('PAIR:') || upper.includes('PAIR ');
-        const hasExpiry = upper.includes('EXP:') || /\bM\s*\d+\b/i.test(messageText) || /(\d+)\s*(M|MIN|S|SEC)\b/i.test(messageText);
-        const hasTime = /\b\d{1,2}:\d{2}(?::\d{2})?\b/.test(messageText);
-        const hasDirection = upper.includes('BUY') || upper.includes('SELL') || upper.includes('CALL') || upper.includes('PUT') || upper.includes('LONG') || upper.includes('SHORT') || upper.includes('UP') || upper.includes('DOWN') || messageText.includes('🔼') || messageText.includes('🔽');
-        const hasTimeOrExpiry = hasTime || hasExpiry;
-        if (!hasTimeOrExpiry) {
-          return hasPair && hasDirection && (hasSignalLabel || hasPairLabel || hasPairMarker);
-        }
-        return hasPair && hasDirection && hasTimeOrExpiry;
-      };
-      const findSignalTextInObject = (obj, depth = 0) => {
-        if (depth > 4 || obj == null) return '';
-        if (typeof obj === 'string') return obj;
-        if (Array.isArray(obj)) {
-          for (let i = obj.length - 1; i >= 0; i -= 1) {
-            const found = findSignalTextInObject(obj[i], depth + 1);
-            if (found && isLikelySignal(found)) return found;
-          }
-          return '';
-        }
-        if (typeof obj === 'object') {
-          const preferredKeys = ['text', 'message', 'raw', 'content', 'data', 'result', 'body'];
-          for (const key of preferredKeys) {
-            if (Object.prototype.hasOwnProperty.call(obj, key)) {
-              const found = findSignalTextInObject(obj[key], depth + 1);
-              if (found && isLikelySignal(found)) return found;
-            }
-          }
-          for (const value of Object.values(obj)) {
-            const found = findSignalTextInObject(value, depth + 1);
-            if (found && isLikelySignal(found)) return found;
-          }
-        }
-        return '';
-      };
-      const trimmed = text.trim();
-      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-        try {
-          const parsed = JSON.parse(trimmed);
-          const candidate = findSignalTextInObject(parsed);
-          if (candidate && isLikelySignal(candidate)) {
-            return candidate.trim();
-          }
-        } catch {}
-      }
-      if (text.includes('tgme_widget_message_text') || text.includes('<html')) {
-        const doc = new DOMParser().parseFromString(text, 'text/html');
-        const messages = Array.from(doc.querySelectorAll('.tgme_widget_message_text'));
-        for (let i = messages.length - 1; i >= 0; i -= 1) {
-          const candidate = messages[i]?.textContent?.trim();
-          if (isLikelySignal(candidate)) {
-            return candidate;
-          }
-        }
-        return '';
-      }
-      return isLikelySignal(trimmed) ? trimmed : '';
-    }
-
-    /* ========================= ENHANCED SIGNAL FETCHING ========================= */
-    async function fetchAPISignals() {
-      return [];
-    }
-
-    /* ========================= NEW: SIGNAL DEDUPLICATION ========================= */
-    function createSignalHash(text) {
-      return text.replace(/\s+/g, ' ').trim().substring(0, 100);
-    }
-
-    function buildSignalKey(signal) {
-      if (!signal) return null;
-      return `${signal.assetSearch}|${signal.minute}|${signal.direction}|${signal.isOTC ? 'OTC' : 'REAL'}`;
-    }
-
-    function computeSignalMinute(time, expiry, offsetMin) {
-      if (!time) return null;
-      const normalizedExpiry = normalizeExpiry(expiry || '1M');
-      const timeParts = String(time).split(':');
-      const hour = parseInt(timeParts[0], 10) || 0;
-      const minute = parseInt(timeParts[1], 10) || 0;
-      const rawMinute = hour * 60 + minute;
-      const offset = Number.isFinite(offsetMin)
-        ? offsetMin
-        : 0;
-      const totalMinute = (rawMinute + offset + 1440) % 1440;
-
-      return { normalizedExpiry, totalMinute };
-    }
-
-    function isDuplicateSignal(signal) {
-      const key = buildSignalKey(signal);
-      if (!key) return true;
-      const now = Date.now();
-      const ttlMs = 3 * 60 * 1000;
-
-      for (const [k, ts] of S.recentSignalKeys.entries()) {
-        if (now - ts > ttlMs) {
-          S.recentSignalKeys.delete(k);
-        }
-      }
-
-      if (S.recentSignalKeys.has(key)) {
-        return true;
-      }
-
-      S.recentSignalKeys.set(key, now);
-      return false;
-    }
-
-    /* ========================= ENHANCED INFINITY AI PARSER FOR PLAIN TEXT ========================= */
-    function parseRawSignalInExtension(delivery) {
-      if (!delivery?.raw && !delivery?.json) {
-        return null;
-      }
-
-      if (delivery?.json) {
-        const jsonSignal = parseSignalFromJsonPayload(delivery.json);
-        if (jsonSignal) {
-          jsonSignal.delivery_id = delivery.id || Date.now();
-          jsonSignal.received_at = delivery.received_at || new Date().toISOString();
-          jsonSignal.raw_delivery = delivery;
-          return jsonSignal;
-        }
-      }
-
-      if (!delivery.raw) {
-        return null;
-      }
-
-      const rawText = delivery.raw;
-      const signal = parseInfinityAISignalFormat(rawText);
-
-      if (signal) {
-        signal.delivery_id = delivery.id || Date.now();
-        signal.received_at = delivery.received_at || new Date().toISOString();
-        signal.raw_delivery = delivery;
-        return signal;
-      }
-
-      return null;
-    }
-
-    function parseInfinityAISignalFormat(text) {
-      const cleanText = text.replace(/\r\n/g, '\n').replace(/\n+/g, '\n').trim();
-      const lines = cleanText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-
-      let pair = null;
-      let expiry = null;
-      let time = null;
-      let direction = null;
-      let isOTC = false;
-
-      for (const line of lines) {
-        const upper = line.toUpperCase();
-        const hasOtc = /OTC/i.test(upper);
-        const hasCurrencyEmoji = line.includes('💷') || line.includes('💎') || line.includes('💳') || /\p{Regional_Indicator}{2}/u.test(line);
-        const isPairLine = line.startsWith('Pair:') || hasOtc || hasCurrencyEmoji;
-
-        if (!pair && isPairLine) {
-          if (line.startsWith('Pair:')) {
-            pair = line.replace('Pair:', '').trim();
-            isOTC = /OTC/i.test(pair);
-          } else {
-            const pairMatch = upper.match(/\b([A-Z]{3}\/?[A-Z]{3})(?:-?OTC)?\b/);
-            if (pairMatch) {
-              pair = pairMatch[1];
-              isOTC = hasOtc;
-            }
-          }
-        }
-
-        if (!expiry) {
-          if (line.startsWith('EXP:')) {
-            expiry = line.replace('EXP:', '').trim();
-          } else if (/Expiration\s+\d+\s*minutes?/i.test(line)) {
-            const expMatch = line.match(/Expiration\s+(\d+)\s*minutes?/i);
-            if (expMatch) {
-              expiry = `${expMatch[1]}M`;
-            }
-          } else if (/\bM\s*\d+\b/i.test(line)) {
-            const expMatch = line.match(/\bM\s*(\d+)\b/i);
-            if (expMatch) {
-              expiry = `${expMatch[1]}M`;
-            }
-          } else if (/(\d+)\s*S(EC|ECS)?\b/i.test(line)) {
-            const expMatch = line.match(/(\d+)\s*S(EC|ECS)?\b/i);
-            if (expMatch) {
-              expiry = `${expMatch[1]}S`;
-            }
-          } else if (/(\d+)\s*(M|MIN)/i.test(line)) {
-            const expMatch = line.match(/(\d+)\s*(M|MIN)/i);
-            if (expMatch) {
-              expiry = `${expMatch[1]}M`;
-            }
-          }
-        }
-
-        if (!time && (line.includes('⌚️') || line.startsWith('Time:'))) {
-          const timeMatch = line.match(/(\d{1,2}:\d{2})/);
-          if (timeMatch) {
-            time = timeMatch[1];
-          }
-        } else if (!time && /Entry\s+at\s+\d{1,2}:\d{2}/i.test(line)) {
-          const timeMatch = line.match(/Entry\s+at\s+(\d{1,2}:\d{2})/i);
-          if (timeMatch) {
-            time = timeMatch[1];
-          }
-        } else if (!time && /\b\d{1,2}:\d{2}\b/.test(line)) {
-          const timeMatch = line.match(/(\d{1,2}:\d{2})/);
-          if (timeMatch) {
-            time = timeMatch[1];
-          }
-        }
-
-        if (!direction && (upper.includes('BUY') || upper.includes('SELL') || upper.includes('CALL') || upper.includes('PUT') || upper.includes('LONG') || upper.includes('SHORT') || upper.includes('UP') || upper.includes('DOWN') || line.includes('🔼') || line.includes('🔽'))) {
-          if (upper.includes('BUY') || upper.includes('CALL') || upper.includes('LONG') || upper.includes('UP') || line.includes('🔼')) {
-            direction = 'BUY';
-          } else if (upper.includes('SELL') || upper.includes('PUT') || upper.includes('SHORT') || upper.includes('DOWN') || line.includes('🔽')) {
-            direction = 'SELL';
-          }
-        }
-      }
-
-      if (pair && direction && time) {
-        let cleanPair = pair.replace('-OTC', '').replace(/OTC/i, '').trim();
-
-        let formattedPair = cleanPair;
-        if (cleanPair.length === 6 && !cleanPair.includes('/')) {
-          formattedPair = cleanPair.slice(0, 3) + '/' + cleanPair.slice(3);
-        }
-
-        const assetLabel = isOTC ? formattedPair + ' (OTC)' : formattedPair;
-        const assetSearch = formattedPair.replace('/', '');
-
-        const computedMinute = computeSignalMinute(time, expiry, S.signalTimeOffsetMin);
-        if (!computedMinute) {
-          return null;
-        }
-
-        const totalMinute = computedMinute.totalMinute;
-        const normalizedExpiry = computedMinute.normalizedExpiry;
-        const targetTsMs = resolveSignalTargetTs(totalMinute, normalizedExpiry);
-        if (!targetTsMs) {
-          return null;
-        }
-
-        const signal = {
-          asset: assetLabel,
-          assetSearch: assetSearch,
-          isOTC: isOTC,
-          direction: direction,
-          time: time,
-          expiry: normalizedExpiry,
-          minute: totalMinute,
-          targetTsMs,
-          rawText: text,
-          signalKey: `${assetSearch}|${totalMinute}|${direction}|${isOTC ? 'OTC' : 'REAL'}`
-        };
-
-        return signal;
-      }
-
-      return null;
     }
 
     /* ========================= SNIPER ANALYSIS HELPERS ========================= */
@@ -6165,6 +6247,123 @@ if (!weights.length) return 0;
       };
     }
 
+
+    function calcAdxProxy(regime, decision) {
+      const trendScore = clamp01(regime?.trendScore ?? 0);
+      const vol = clamp01(regime?.volatility ?? 0);
+      const conf = clamp01(decision?.confidence ?? 0);
+      return Math.round(Math.max(8, Math.min(45, 8 + trendScore * 24 + conf * 10 - vol * 4)));
+    }
+
+    function getKillerDominanceThreshold(adxValue) {
+      const base = Math.max(50, Math.min(90, Math.round(S.killerDominanceThreshold ?? 68)));
+      if (!S.killerAdxDynamicEnabled) return base;
+      if (adxValue < 18) return Math.min(90, base + 8);
+      if (adxValue > 25) return Math.max(50, base - 6);
+      return base;
+    }
+
+    function computeKillerSnapshot(tf, decision, regime, confirmation, strategyDecisions = []) {
+      if (!decision || !decision.direction) return null;
+      const dir = decision.direction;
+      const trendDir = decision.trendDir || calcTrendDirection(SNIPER_TF_MS[tf]);
+      const candle = getCandleAt(Date.now(), SNIPER_TF_MS[tf]);
+      const candleDir = candle ? (candle.close > candle.open ? 'BUY' : candle.close < candle.open ? 'SELL' : null) : null;
+      const stoch = calcStochDecision(SNIPER_TF_MS[tf]);
+      const vwapDist = Number.isFinite(decision.vwapDist) ? decision.vwapDist : 0;
+      const momentum = Number.isFinite(decision.momentum) ? decision.momentum : 0;
+      const adx = calcAdxProxy(regime, decision);
+
+      const checks = [];
+      checks.push({ key: 'TRD', ok: !!decision.trendAligned, buy: !!decision.trendAligned, sell: !!decision.trendAligned });
+      checks.push({ key: 'MACD', ok: momentum !== 0, buy: momentum > 0, sell: momentum < 0 });
+      checks.push({ key: 'RSI', ok: (confirmation?.details || []).some((d) => String(d).startsWith('trend:')), buy: dir === 'BUY', sell: dir === 'SELL' });
+      checks.push({ key: 'STO', ok: !!stoch?.direction, buy: stoch?.direction === 'BUY', sell: stoch?.direction === 'SELL' });
+      checks.push({ key: 'VOL', ok: !!decision.volumeOk, buy: !!decision.volumeOk, sell: !!decision.volumeOk });
+      checks.push({ key: 'Δ', ok: Math.abs(momentum) > 0, buy: momentum > 0, sell: momentum < 0 });
+      checks.push({ key: 'ADX', ok: adx >= 18, buy: adx >= 18, sell: adx >= 18 });
+      const chopThreshold = Math.max(0, Number.isFinite(S.sniperChopThreshold) ? S.sniperChopThreshold : 0.7);
+      const chopPass = Number.isFinite(decision.rangePct) ? decision.rangePct >= chopThreshold : true;
+      checks.push({ key: 'CONF', ok: chopPass, buy: chopPass, sell: chopPass });
+
+      let confluence = checks.filter((c) => c.ok).length;
+      const longScore = checks.reduce((acc, c) => acc + (c.buy ? 1 : 0), 0);
+      const shortScore = checks.reduce((acc, c) => acc + (c.sell ? 1 : 0), 0);
+      const totalScore = Math.max(1, longScore + shortScore);
+      const longPct = Math.round((longScore / totalScore) * 100);
+      const shortPct = 100 - longPct;
+      const dominance = dir === 'BUY' ? longPct : shortPct;
+
+      const strategyVotes = { buy: 0, sell: 0 };
+      for (const st of strategyDecisions || []) {
+        if (!st?.direction || !isStrategyEnabled(st.strategyKey)) continue;
+        if (st.direction === 'BUY') strategyVotes.buy += 1;
+        if (st.direction === 'SELL') strategyVotes.sell += 1;
+      }
+      const strategyAgreement = dir === 'BUY' ? strategyVotes.buy : strategyVotes.sell;
+      if (S.killerUseStrategyVotes && strategyAgreement > 0) {
+        confluence = Math.min(8, confluence + 1);
+      }
+
+      const dominanceThreshold = getKillerDominanceThreshold(adx);
+      const minConfluence = Math.max(4, Math.min(7, Math.round(S.killerMinConfluence ?? 5)));
+      const candleAgainst = !!(candleDir && candleDir !== dir);
+
+      return {
+        tf,
+        direction: dir,
+        confluence,
+        minConfluence,
+        longPct,
+        shortPct,
+        dominance,
+        dominanceThreshold,
+        adx,
+        checks,
+        strategyVotes,
+        strategyAgreement,
+        candleAgainst,
+        passConfluence: confluence >= minConfluence,
+        passDominance: dominance >= dominanceThreshold
+      };
+    }
+
+    function killerEdgeTriggered(tf, dir, isSignalValid) {
+      if (!S.killerPerfectTimeEnabled) return true;
+      S.killerEdgeState = S.killerEdgeState || {};
+      const now = Date.now();
+      const cooldownMs = Math.max(0, Math.min(30, Math.round(S.killerSignalCooldownSec ?? 5))) * 1000;
+      const prev = S.killerEdgeState[tf] || { dir: null, valid: false, at: 0 };
+      const changedToValid = isSignalValid && (!prev.valid || prev.dir !== dir);
+      const allowedByCooldown = now - (prev.at || 0) >= cooldownMs;
+      S.killerEdgeState[tf] = { dir, valid: !!isSignalValid, at: changedToValid ? now : (prev.at || 0) };
+      return changedToValid && allowedByCooldown;
+    }
+
+    function renderKillerHud() {
+      const panel = $id('iaa-killer-panel');
+      const body = $id('iaa-killer-content');
+      if (!panel || !body) return;
+      const show = !!S.killerHudEnabled;
+      panel.style.display = show ? 'block' : 'none';
+      if (!show) return;
+      const snap = S.killerSnapshot || {};
+      const sig = snap.signal || 'WAIT';
+      const sigClass = sig === 'BUY' ? 'iaa-killer-buy' : sig === 'SELL' ? 'iaa-killer-sell' : 'iaa-killer-wait';
+      body.innerHTML = `
+        <div class="iaa-killer-row"><span class="iaa-killer-key">LONG</span><span class="iaa-killer-val">${Number.isFinite(snap.longPct) ? snap.longPct : 50}%</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">SHORT</span><span class="iaa-killer-val">${Number.isFinite(snap.shortPct) ? snap.shortPct : 50}%</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">CONF</span><span class="iaa-killer-val">${snap.confluence || 0}/${snap.minConfluence || 8}</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">TRD</span><span class="iaa-killer-val">${snap.trd || '—'}</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">MACD</span><span class="iaa-killer-val">${snap.macd || '—'}</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">RSI</span><span class="iaa-killer-val">${snap.rsi || '—'}</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">STO</span><span class="iaa-killer-val">${snap.sto || '—'}</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">VOL</span><span class="iaa-killer-val">${snap.vol || '—'}</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">ADX</span><span class="iaa-killer-val">${Number.isFinite(snap.adx) ? snap.adx : '—'}</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">SIG</span><span class="iaa-killer-pill ${sigClass}">${sig === 'BUY' ? 'КУПУВАЙ' : sig === 'SELL' ? 'ПРОДАВАЙ' : 'ЧАКАЙ'}</span></div>
+      `;
+    }
+
     function getStrategyConfig(strategyKey) {
       const defaults = STRATEGY_DEFAULTS.configs[strategyKey] || { enabled: true, priority: 0.6, label: strategyKey };
       const stored = S.strategyConfigs?.[strategyKey] || {};
@@ -6224,7 +6423,7 @@ if (!weights.length) return 0;
     }
 
     function shouldAutoSwitchStrategy() {
-      return false;
+      return !!S.autoSwitchStrategy;
     }
 
     function getStrategyPerformanceWeight(strategyKey) {
@@ -6824,18 +7023,6 @@ if (!weights.length) return 0;
         : SNIPER_5S_DEFAULTS.baseAmountCents;
     }
 
-    function getSniperMultiSettings(confidence) {
-      if (!S.sniperMultiEnabled) return null;
-      const threshold = Math.max(0, Math.min(100, Number.isFinite(S.sniperMultiThresholdPct) ? S.sniperMultiThresholdPct : SNIPER_5S_DEFAULTS.multiThresholdPct));
-      const countRaw = Number.isFinite(S.sniperMultiCount) ? S.sniperMultiCount : SNIPER_5S_DEFAULTS.multiCount;
-      const count = Math.max(0, Math.min(20, Math.round(countRaw)));
-      const amountPct = Math.max(0, Math.min(100, Number.isFinite(S.sniperMultiAmountPct) ? S.sniperMultiAmountPct : SNIPER_5S_DEFAULTS.multiAmountPct));
-      if (count < 2 || threshold <= 0) return null;
-      const confidencePct = Math.round((confidence || 0) * 100);
-      if (confidencePct < threshold) return null;
-      return { count, amountPct };
-    }
-
     function pushTfConfidenceSample(tf, confidence, direction) {
       if (!Number.isFinite(confidence)) return;
       if (!S.tfConfSeries) S.tfConfSeries = {};
@@ -6963,6 +7150,8 @@ if (!weights.length) return 0;
 
       let best = null;
       let bestCandidate = null;
+      let killerBest = null;
+      const killerByTf = {};
       const decisionsByTf = {};
       const allowLateEntries = requiredThreshold === 0;
       const tfStatus = {};
@@ -6976,12 +7165,7 @@ if (!weights.length) return 0;
             : (S.sniperEntryWindowSec ?? 0);
           entryWindowLimit = Math.min(Math.max(0, baseLimit), Math.floor(windowMs / 1000));
         }
-        const candleStart = getCandleStart(windowMs);
-        if (S.sniperLastTradeByTf[tf] === candleStart) continue;
-
-        const nextAllowed = S.sniperNextTradeByTf[tf] || 0;
-        if (now < nextAllowed) continue;
-
+        const candleStart = getCandleStart(windowMs);  
         const readiness = partnerReady.details?.[tf];
         if (readiness && !readiness.ready) {
           const confPrev = getPrevStatus(tf)?.confidence ?? null;
@@ -7037,7 +7221,45 @@ if (!weights.length) return 0;
         // Smooth TF direction for UI (avoid rapid BUY↔SELL flicker in the matrix).
         // We keep the real trade direction in decision.direction; the UI uses decision._smoothedDirection when present.
         applyTfDirectionSmoothing(tf, decision);
+        // Anti-flip: keep a short per-TF direction streak (real direction, not smoothed UI).
+        S.__tfDirStreak = S.__tfDirStreak || {};
+        if (decision && decision.direction) {
+          const st = S.__tfDirStreak[tf] || { dir: null, streak: 0, lastT: 0 };
+          if (st.dir === decision.direction) st.streak += 1;
+          else { st.dir = decision.direction; st.streak = 1; }
+          st.lastT = now;
+          S.__tfDirStreak[tf] = st;
+          decision._dirStreak = st.streak;
+        }
+
+        // Track recent directions for anti-flip voting (no cooldown)
+        S.__tfDirHist = S.__tfDirHist || {};
+        const __h = S.__tfDirHist[tf] || (S.__tfDirHist[tf] = []);
+        __h.push({ dir: decision.direction, conf: (decision.confidence || 0), t: now });
+        while (__h.length > 5) __h.shift();
+
+
         const displayDir = decision._smoothedDirection || decision.direction;
+        const killerSnapshotTf = computeKillerSnapshot(tf, decision, regime, confirmation, strategyDecisions);
+        if (killerSnapshotTf) {
+          killerByTf[tf] = killerSnapshotTf;
+          if (!killerBest || killerSnapshotTf.dominance > killerBest.dominance) killerBest = killerSnapshotTf;
+        }
+        if (S.killerEnabled) {
+          killerEdgeTriggered(tf, decision.direction, false);
+        }
+        if (entryWindowLimit > 0 && Number.isFinite(timeInCandle) && timeInCandle > entryWindowLimit) {
+          const over = Math.max(0, timeInCandle - entryWindowLimit);
+          const confPct = Math.round((decision?.confidence || 0) * 100);
+          const thrPct = Math.round(requiredThreshold * 100);
+          const detail = `Късен вход: ${timeInCandle.toFixed(1)}s > ${entryWindowLimit}s (${tf}) | conf ${confPct}% | праг ${thrPct}% | +${over.toFixed(1)}s`;
+          tfStatus[tf] = { state: 'late', reason: 'entryWindow', detail, confidence: decision.confidence, direction: displayDir };
+          continue;
+        }
+        if (S.regimeStrength > 0 && regime?.state && ['chop', 'volatility'].includes(regime.state) && S.regimeStrength >= 0.5) {
+          tfStatus[tf] = { state: 'chop', confidence: decision.confidence, direction: displayDir };
+          continue;
+        }
         if (S.regimeStrength > 0 && regime?.state && ['volatility'].includes(regime.state) && S.regimeStrength >= 0.6) {
           tfStatus[tf] = { state: 'regime', confidence: decision.confidence, direction: displayDir };
           continue;
@@ -7159,6 +7381,31 @@ if (!weights.length) return 0;
           continue;
         }
 
+        if (S.killerEnabled && killerSnapshotTf) {
+          const minAgreement = Math.max(1, Math.min(3, Math.round(S.killerStrategyAgreementMin || 1)));
+          const strategyGateOk = !S.killerUseStrategyVotes || killerSnapshotTf.strategyAgreement >= minAgreement;
+          if (S.killerCandleAgainstHardStop && killerSnapshotTf.candleAgainst) {
+            tfStatus[tf] = { state: 'confirm', confidence: decision.confidence, direction: displayDir };
+            continue;
+          }
+          if (!killerSnapshotTf.passConfluence || !killerSnapshotTf.passDominance || !strategyGateOk) {
+            try {
+              const reason = !killerSnapshotTf.passConfluence ? 'Confluence' : (!killerSnapshotTf.passDominance ? 'Dominance' : (!strategyGateOk ? 'Strategy' : ''));
+              sessionRecordKiller(tf, killerSnapshotTf, 'WAIT', reason);
+            } catch (e) {}
+            tfStatus[tf] = { state: 'confirm', confidence: decision.confidence, direction: displayDir };
+            continue;
+          }
+          const edgeOk = killerEdgeTriggered(tf, decision.direction, true);
+          if (!edgeOk) {
+            try { sessionRecordKiller(tf, killerSnapshotTf, 'WAIT', 'PerfectTime'); } catch (e) {}
+            tfStatus[tf] = { state: 'late', confidence: decision.confidence, direction: displayDir };
+            continue;
+          }
+        }
+
+        if (S.killerEnabled) { try { sessionRecordKiller(tf, killerSnapshotTf, 'PASS', ''); } catch (e) {} }
+
         if (!best || decision.confidence > best.confidence) {
           best = {
             ...decision,
@@ -7198,8 +7445,26 @@ if (!weights.length) return 0;
         }
       }
       S.sniperTfStatus = tfStatus;
+      if (killerBest) {
+        S.killerSnapshot = {
+          longPct: killerBest.longPct,
+          shortPct: killerBest.shortPct,
+          confluence: killerBest.confluence,
+          minConfluence: killerBest.minConfluence,
+          adx: killerBest.adx,
+          trd: killerBest.checks?.find((c) => c.key === 'TRD')?.ok ? 'OK' : 'Слаб',
+          macd: killerBest.checks?.find((c) => c.key === 'MACD')?.buy ? 'Бичи' : 'Мечи',
+          rsi: killerBest.direction === 'BUY' ? 'Над 50' : 'Под 50',
+          sto: killerBest.checks?.find((c) => c.key === 'STO')?.ok ? 'Потвърждение' : 'Слаб',
+          vol: killerBest.checks?.find((c) => c.key === 'VOL')?.ok ? 'Нормален' : 'Слаб',
+          signal: best ? best.direction : 'WAIT'
+        };
+      } else {
+        S.killerSnapshot = { signal: 'WAIT', longPct: 50, shortPct: 50, confluence: 0, minConfluence: S.killerMinConfluence || 5, adx: null };
+      }
       renderSniperMatrix();
       renderPendingTrades();
+      renderKillerHud();
       if (!best) {
         S.analysisConfidence = bestCandidate ? bestCandidate.confidence : 0;
         S.analysisDirection = bestCandidate ? bestCandidate.direction : null;
@@ -7318,7 +7583,7 @@ const readySignals = Object.keys(tfStatus)
             if (Math.abs(preConf - oldConf) >= 0.08) preReasonParts.push(`увереност ${Math.round(oldConf*100)}%→${Math.round(preConf*100)}%`);
           }
           const preReason = preReasonParts.length ? preReasonParts.join(', ') : 'промяна след повторна проверка';
-          logConsoleLine(`[SCAN V5-FIXED] ПРОПУСК: ${decision.tfKey} повторна проверка (${preReason})`);
+          logConsoleLine(`[SCAN V5] ПРОПУСК: ${decision.tfKey} повторна проверка (${preReason})`);
           continue;
         }
 
@@ -7352,7 +7617,8 @@ const readySignals = Object.keys(tfStatus)
 
       // Drift detector: if confidence is sliding down (last 4 ticks) on this TF, skip
       if (S.filterDriftEnabled) {
-        const arr = (S._tfConfSeries && S._tfConfSeries[decision.timeframe]) ? S._tfConfSeries[decision.timeframe] : [];
+        const tf = decision.tfKey || decision.timeframe;
+        const arr = (S._tfConfSeries && tf && S._tfConfSeries[tf]) ? S._tfConfSeries[tf] : [];
         if (arr.length >= 4) {
           const a = arr.slice(-4);
           const isDown = (a[0] > a[1]) && (a[1] > a[2]) && (a[2] > a[3]);
@@ -7366,11 +7632,12 @@ const readySignals = Object.keys(tfStatus)
 
       // Impulse Entry Cap: per TF + direction per candle (1m/3m/5m)
       if (S.impulseCapEnabled) {
-        const tfMs = (decision.timeframe === '1m') ? 60_000 : (decision.timeframe === '3m') ? 180_000 : (decision.timeframe === '5m') ? 300_000 : 0;
+        const tf = decision.tfKey || decision.timeframe;
+        const tfMs = (tf === '1m') ? 60_000 : (tf === '3m') ? 180_000 : (tf === '5m') ? 300_000 : 0;
         if (tfMs) {
           const candleId = Math.floor(Date.now() / tfMs);
           S._impulseCap = S._impulseCap || {};
-          const key = decision.timeframe + '|' + decision.direction;
+          const key = tf + '|' + decision.direction;
           const obj = (S._impulseCap[key] = S._impulseCap[key] || { candleId, count: 0 });
           if (obj.candleId !== candleId) { obj.candleId = candleId; obj.count = 0; }
           if (obj.count >= S.impulseCapMaxPerCandle) {
@@ -7406,48 +7673,127 @@ const signal = {
           targetTsMs: now,
           rawText: `[sniper:${decision.tfKey}]`
         };
-        const multiSettings = getSniperMultiSettings(decision.confidence);
-        if (multiSettings) {
-          signal.burstCount = Math.max(2, Math.min(multiSettings.count, 20));
-          if (multiSettings.amountPct > 0) {
-            signal.overrideAmountCents = Math.max(1, Math.round(getSniperBaseAmountCents() * (multiSettings.amountPct / 100)));
-          }
-        } else if (S.burstEnabled && decision.confidence >= S.burstConfidenceThreshold) {
+        if (S.burstEnabled && decision.confidence >= S.burstConfidenceThreshold) {
           signal.burstCount = Math.max(1, Math.min(S.burstTradeCount, 5));
         }
 
         const prevBase = S.baseAmount;
         S.baseAmount = getSniperBaseAmountCents();
-        S.currentSignal = signal;
-        S.tradeSequenceActive = true;
-        S.hasLiveSignal = true;
         S.assetSelectedForSignal = true;
         S.assetSelectionAttempted = true;
 
         const inFlightKey = `${signal.asset}|${decision.tfKey}|${signal.direction}|${decision.candleStart}`;
         if (S.sniperInFlightKey === inFlightKey && Date.now() < (S.sniperInFlightUntil || 0)) {
-          logConsoleLine('[SCAN V5-FIXED] ПРОПУСК: In-flight (двоен вход)');
+          logConsoleLine('[SCAN V5] ПРОПУСК: In-flight (двоен вход)');
           continue;
         }
         S.sniperInFlightKey = inFlightKey;
         S.sniperInFlightUntil = Date.now() + 1500;
-        logConsoleLine(`[SCAN V5-FIXED] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
+        logConsoleLine(`[SCAN V5] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
         if (decision.aiVision?.pattern) logConsoleLine(`[AI VISION] Patterns: ${decision.aiVision.pattern}`);
-        const ok = await executeTradeOrder(signal);
+        
+        // -------- Confirm Delay (delay_ms) + stability check (NO cooldown) --------
+
+        // 1) Quick stability: streak (default 2 ticks)
+        const minStreak = Math.max(1, Number.isFinite(S.confirmStreakMin) ? S.confirmStreakMin : 2);
+        if ((decision._dirStreak || 0) < minStreak) {
+          logConsoleLine(`[SCAN V5] ПРОПУСК: Нестабилна посока (streak=${decision._dirStreak || 0}/${minStreak})`);
+          S.sniperInFlightUntil = 0;
+          S.baseAmount = prevBase;
+          S.assetSelectedForSignal = false;
+          S.assetSelectionAttempted = false;
+          continue;
+        }
+
+        // 2) Anti-flip voting: require 2-of-3 recent directions to match current (keeps bot active)
+        const __hist = (S.__tfDirHist && S.__tfDirHist[decision.tfKey]) ? S.__tfDirHist[decision.tfKey] : [];
+        const __recent = __hist.slice(-3);
+        const __need = (__recent.length >= 3) ? 2 : Math.min(2, __recent.length); // 1→1, 2→2, 3→2
+        const __match = __recent.filter(x => x && x.dir === decision.direction).length;
+        if (__need > 0 && __match < __need) {
+          logConsoleLine(`[SCAN V5] ПРОПУСК: Flip шум (vote=${__match}/${__recent.length}, need=${__need}, dir=${decision.direction})`);
+          S.sniperInFlightUntil = 0;
+          S.baseAmount = prevBase;
+          S.assetSelectedForSignal = false;
+          S.assetSelectionAttempted = false;
+          continue;
+        }
+
+        const confirmDelayMs = Math.max(0, Math.min(2000, Number.isFinite(S.confirmDelayMs) ? S.confirmDelayMs : 600));
+        if (confirmDelayMs > 0) {
+          await new Promise(r => setTimeout(r, confirmDelayMs));
+
+          // Re-check entry window after delay (we do NOT modify your entry-window settings).
+          if (S.entryWindowTfEnabled) {
+            const t2 = getTimeInCandleSec(decision.windowMs);
+            const baseLimit2 = (decision.tfKey === '1m') ? (S.entryWindowSec1m ?? 15)
+              : (decision.tfKey === '3m') ? (S.entryWindowSec3m ?? 35)
+              : (S.sniperEntryWindowSec ?? 0);
+            const limit2 = Math.min(Math.max(0, baseLimit2), Math.floor(decision.windowMs / 1000));
+            if (limit2 > 0 && t2 > limit2) {
+              logConsoleLine(`[SCAN V5] ПРОПУСК: Извън Entry Window след delay (${decision.tfKey} t=${Math.round(t2)}s > ${limit2}s)`);
+              S.sniperInFlightUntil = 0;
+              S.baseAmount = prevBase;
+              S.assetSelectedForSignal = false;
+              S.assetSelectionAttempted = false;
+              continue;
+            }
+          }
+
+          // Re-check direction & confidence after delay (dogonvane само ако не е flip).
+          const strategyDecisions2 = getStrategyDecisions(decision.tfKey);
+          let decision2 = selectBestStrategyDecision(strategyDecisions2);
+
+          // OPTION 2 (по‑практична): ако след delay няма сигнал, НЕ режем автоматично.
+          // При бинарна търговия 0.3–0.8s често са шум в детектора; ако посоката не е flip‑нала,
+          // оставяме предишния сигнал, но пазим останалите гейтове (Entry Window + праг + anti‑flip + drop guard).
+          if (!decision2 || !decision2.direction) {
+            // Ползваме предишния сигнал като fallback (без "догонване" при липсващ сигнал).
+            decision2 = { ...decision };
+            logConsoleLine(`[SCAN V5] INFO: Няма сигнал след delay (${decision.tfKey}) → fallback към предишния сигнал`);
+          }
+          if (decision2.direction !== decision.direction) {
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Flip след delay (${decision.tfKey} ${decision.direction}→${decision2.direction})`);
+            S.sniperInFlightUntil = 0;
+            S.baseAmount = prevBase;
+            S.assetSelectedForSignal = false;
+            S.assetSelectionAttempted = false;
+            continue;
+          }
+
+          // Confidence drop guard after delay (prevents chasing collapsing signals)
+          const __baseConf = (decision.confidence || 0);
+          const __conf2 = (decision2.confidence || 0);
+          const __drop = __baseConf - __conf2;
+          if (__drop > 0.20) {
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Рязък спад в увереността след delay (${decision.tfKey} ${Math.round(__baseConf*100)}%→${Math.round(__conf2*100)}%)`);
+            S.sniperInFlightUntil = 0;
+            S.baseAmount = prevBase;
+            S.assetSelectedForSignal = false;
+            S.assetSelectionAttempted = false;
+            continue;
+          }
+
+          const thr = getSniperThresholdForScope();
+          if ((decision2.confidence || 0) < thr) {
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Увереност падна след delay (${decision.tfKey} ${(decision2.confidence || 0).toFixed(2)} < ${thr.toFixed(2)})`);
+            S.sniperInFlightUntil = 0;
+            S.baseAmount = prevBase;
+            S.assetSelectedForSignal = false;
+            S.assetSelectionAttempted = false;
+            continue;
+          }
+        }
+        // ------------------------------------------------------------------------
+const ok = await executeTradeOrder(signal);
         S.sniperInFlightUntil = 0;
         S.baseAmount = prevBase;
-        S.tradeSequenceActive = false;
-        S.hasLiveSignal = false;
-        S.currentSignal = null;
         S.assetSelectedForSignal = false;
-        S.assetSelectionAttempted = false;
-
+        S.assetSelectionAttempted = false; 
         if (ok) {
-          S.sniperLastTradeByTf[decision.tfKey] = decision.candleStart;
-          S.sniperNextTradeByTf[decision.tfKey] = decision.candleStart + decision.windowMs;
           setStatusOverlay(formatStatus('sniper_ready'), '', false);
         }
-      }
+}
     }
 
     /* ========================= FIXED TICK LOOP WITH CONTINUOUS COUNTDOWN ========================= */
@@ -7459,6 +7805,22 @@ const signal = {
         stopPriceMonitoring();
         return;
       }
+
+      // Re-entry guard: never allow overlapping ticks.
+      // Watchdog: if a previous tick got stuck, unlock after 20s.
+      if (S.__tickBusy) {
+        const stuckFor = Date.now() - (S.__tickBusyAt || 0);
+        if (stuckFor > 20000) {
+          console.warn('[IAA] Tick watchdog unlock after', stuckFor, 'ms');
+          S.__tickBusy = false;
+        } else {
+          return;
+        }
+      }
+      S.__tickBusy = true;
+      S.__tickBusyAt = Date.now();
+      try {
+
 
       ensureBalanceObserver();
 
@@ -7528,27 +7890,8 @@ const signal = {
         return;
       }
 
-      if (S.autoTrade && !S.cycleActive && !S.tradeSequenceActive && !hasActiveTrade() && !S.hasLiveSignal && Date.now() >= S.signalCooldownUntil) {
-        const incoming = LEGACY_SIGNAL_MODE_ENABLED ? await fetchAPISignals() : [];
-
-        if (incoming.length) {
-          for (const sig of incoming) {
-            const delayMs = calculateDelay(sig);
-
-            if (delayMs < 0) {
-              logConsoleLine('ПРОПУСК: Просрочен legacy сигнал (изключен режим).');
-              continue;
-            }
-
-            if (!S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !hasActiveTrade()) {
-              startCycle(sig);
-              break;
-            } else {
-              S.signalBuffer.push(sig);
-              if (S.signalBuffer.length > C.MAX_QUEUE) S.signalBuffer.shift();
-            }
-          }
-        } else if (!S.selfTradeEnabled && S.analysisDirection && S.analysisConfidence >= S.analysisConfidenceThreshold) {
+      if (S.autoTrade && !false && !false && !hasActiveTrade() && !false && Date.now() >= 0) {
+        if (!S.selfTradeEnabled && S.analysisDirection && S.analysisConfidence >= S.analysisConfidenceThreshold) {
           const now = Date.now();
           if (now - S.lastSelfTradeHintAt > 60000) {
             S.lastSelfTradeHintAt = now;
@@ -7557,17 +7900,8 @@ const signal = {
         }
       }
 
-      if (LEGACY_SIGNAL_MODE_ENABLED && !S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !hasActiveTrade() && S.signalBuffer.length) {
-        S.signalBuffer = S.signalBuffer.filter(s => calculateDelay(s) >= 0);
-        if (S.signalBuffer.length) {
-          S.signalBuffer.sort((a, b) => a.targetTsMs - b.targetTsMs);
-          const next = S.signalBuffer.shift();
-          startCycle(next);
-        }
-      }
-
       const selfTradeAllowed = getSelfTradeAllowed();
-      if (selfTradeAllowed && !S.cycleActive && !S.tradeSequenceActive && !S.currentSignal && !hasActiveTrade()) {
+      if (selfTradeAllowed && !false && !false && !null && !hasActiveTrade()) {
         if ((!S.analysisReadyAt || Date.now() >= S.analysisReadyAt) && S.analysisDirection && S.analysisConfidence >= S.analysisConfidenceThreshold) {
           let assetLabel = getCurrentAssetLabel();
           const assetSearch = assetLabel ? assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim() : '';
@@ -7592,8 +7926,8 @@ const signal = {
         }
       }
 
-      if (S.currentSignal && S.tradeSequenceActive && S.hasLiveSignal && !hasActiveTrade()) {
-        const sig = S.currentSignal;
+      if (null && false && false && !hasActiveTrade()) {
+        const sig = null;
         const delayMs = calculateDelay(sig);
         if (!S.assetSelectedForSignal && S.assetSelectionAttempted) {
           const verification = verifyAssetSelection(sig.asset);
@@ -7636,9 +7970,6 @@ const signal = {
           }
 
           if (executed) {
-            S.currentSignal = null;
-            S.tradeSequenceActive = false;
-            S.hasLiveSignal = false;
             S.forceImmediate = false;
           } else {
             resetExecutionState();
@@ -7667,10 +7998,7 @@ const signal = {
           }
 
           if (executed) {
-            S.currentSignal = null;
-            S.tradeSequenceActive = false;
             S.assetSelectedForSignal = false;
-            S.hasLiveSignal = false;
             S.assetSelectionAttempted = false;
           } else {
             resetExecutionState();
@@ -7699,7 +8027,12 @@ const signal = {
 
       renderPendingTrades();
       updateProfitDisplay();
-    }
+    
+      } finally {
+        S.__tickBusy = false;
+        S.__tickBusyAt = 0;
+      }
+}
 
     /* ========================= ENHANCED ASSET SELECTION WITH OTC/REAL FALLBACK ========================= */
     async function selectAssetWithVerification(signal) {
@@ -7787,7 +8120,7 @@ const signal = {
       S.assetSelectionAttempts = 0;
       S.assetSelectionFlipped = false;
 
-      if (S.cycleActive) {
+      if (false) {
         endCycle();
       }
 
@@ -7940,8 +8273,6 @@ const signal = {
         .Btn2:not(.on)::before{ content:"AUTO OFF"; position:absolute; color:#bbf7d0; display:flex; align-items:center; justify-content:center; width:97%; height:90%; border-radius:8px; background:rgba(0,0,0,.82); }
         .Btn2.off{ border-color:#ef4444; box-shadow:0 0 0 1px rgba(239,68,68,.6) inset; }
         .Btn2.on{ border-color:#22c55e; box-shadow:0 0 0 1px rgba(34,197,94,.6) inset; }
-
-        .iaa-signal{ position:relative; display:block; width:100%; }
         .loader-wrapper{ position:relative; width:100%; background:#000; border-radius:12px; overflow:hidden; height:260px; display:flex; align-items:center; justify-content:center; }
         .iaa-console{ width:100%; height:100%; padding:8px; display:flex; flex-direction:column; gap:6px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:11px; color:#e5e7eb; background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.08); border-radius:10px; }
         #iaa-console-lines{ flex:1; overflow-y:auto; }
@@ -7962,8 +8293,9 @@ const signal = {
         .iaa-log-buy{ color:#00c853; font-weight:800; }
         .iaa-log-sell{ color:#ff1744; font-weight:800; }
         .iaa-console-strategy{ color:#a5b4fc; font-weight:700; }
-        #iaa-console-copy, #iaa-console-clear{ align-self:flex-end; padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#fff; font-size:10px; cursor:pointer; letter-spacing:.08em; }
-        #iaa-console-copy:hover, #iaa-console-clear:hover{ background:#1f1f1f; }
+        .iaa-console-actions{ display:flex; gap:6px; justify-content:flex-end; align-items:center; }
+#iaa-console-copy, #iaa-console-clear, #iaa-console-analyze{ align-self:flex-end; padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#fff; font-size:10px; cursor:pointer; letter-spacing:.08em; }
+        #iaa-console-copy:hover, #iaa-console-clear:hover, #iaa-console-analyze:hover{ background:#1f1f1f; }
         #iaa-console-clear{ background:#141414; }
         #iaa-status-overlay{ font-weight:700; color:#fbbf24; text-shadow:none; pointer-events:none; }
         #iaa-countdown{ font-weight:700; color:#60a5fa; text-align:right; text-shadow:none; pointer-events:none; }
@@ -7975,6 +8307,24 @@ const signal = {
         .arrow--up{ border-bottom:8px solid #22c55e } .arrow--down{ border-top:8px solid #ef4444 }
 
         #iaa-direction-indicator{ position:absolute; left:0; right:0; bottom:8px; text-align:center; font-size:14px; font-weight:bold; pointer-events:none; display:none; }
+
+#iaa-filtermode-indicator{position:absolute;left:10px;right:10px;bottom:-16px;height:14px;display:flex;gap:6px;align-items:center;justify-content:flex-start;font-size:11px;opacity:.9;pointer-events:none;}
+#iaa-filtermode-indicator .iaa-fm-pill{padding:1px 6px;border-radius:999px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);}
+#iaa-filtermode-indicator .iaa-fm-pill.active{border-color:rgba(255,255,255,.55);background:rgba(255,255,255,.12);font-weight:800;}
+#iaa-filtermode-panel{position:absolute;left:0;top:0;right:auto;width:320px;z-index:999999;background:rgba(15,23,42,.98);border:1px solid rgba(148,163,184,.25);border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.45);color:#e5e7eb;backdrop-filter:blur(8px);}
+#iaa-filtermode-panel .iaa-panel-head{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(148,163,184,.18);}
+#iaa-filtermode-panel .iaa-panel-title{font-weight:800;letter-spacing:.2px;}
+#iaa-filtermode-panel .iaa-panel-close{background:transparent;border:0;color:#e5e7eb;font-size:16px;cursor:pointer;padding:4px 8px;border-radius:10px;}
+#iaa-filtermode-panel .iaa-panel-close:hover{background:rgba(255,255,255,.08);}
+#iaa-filtermode-panel .iaa-panel-body{padding:10px 12px 12px 12px;}
+#iaa-filtermode-panel .iaa-row{display:flex;gap:10px;align-items:center;padding:6px 6px;border-radius:10px;}
+#iaa-filtermode-panel .iaa-row:hover{background:rgba(255,255,255,.06);}
+#iaa-filtermode-panel input[type="number"]{width:100%;background:rgba(0,0,0,.25);border:1px solid rgba(148,163,184,.28);border-radius:10px;padding:7px 8px;color:#e5e7eb;}
+#iaa-filtermode-panel .iaa-subtitle{margin-top:10px;margin-bottom:4px;font-weight:800;opacity:.85;}
+#iaa-filtermode-panel .iaa-field{margin-top:8px;}
+#iaa-filtermode-panel .iaa-field-label{font-size:12px;opacity:.85;margin-bottom:4px;}
+#iaa-filtermode-panel .iaa-hint{margin-top:10px;font-size:12px;opacity:.8;line-height:1.25;}
+
 
         @keyframes pulse {
           0% { transform: scale(1); }
@@ -8042,6 +8392,8 @@ const signal = {
         .iaa-max-row input{ width:64px; }
 
         .iaa-field-row input{ width:90px; padding:4px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.1); background:rgba(0,0,0,.3); color:#fff; font-weight:700; }
+        .iaa-field-row select{ width:110px; padding:4px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.16); background:#0b1220; color:#e5e7eb; font-weight:700; }
+        .iaa-field-row select option{ background:#0b1220; color:#e5e7eb; }
         .iaa-field-label{ font-size:11px; color:#9ca3af; }
         .iaa-mini-bar{ font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:10px; color:#6b7280; margin-left:6px; margin-right:6px; white-space:nowrap; flex:0 0 auto; }
         .iaa-subtitle-new{ color:#ffcc66; }
@@ -8084,6 +8436,23 @@ const signal = {
           font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
           font-size:11px; color:#e5e7eb;
         }
+        #iaa-killer-panel{
+          display:none; position:fixed; top:120px; right:20px;
+          width:300px; background:#071019; border:1px solid rgba(34,211,238,.45);
+          border-radius:12px; padding:10px; z-index:2147483648;
+          box-shadow:0 12px 40px rgba(0,0,0,.8); color:#d1fae5;
+          font-family:system-ui, Arial !important; cursor:default;
+        }
+        #iaa-killer-close{ position:absolute; top:6px; right:8px; background:none; border:none; color:#fff; font-size:15px; cursor:pointer; }
+        #iaa-killer-header{ font-weight:800; color:#22d3ee; margin-bottom:8px; letter-spacing:.02em; cursor:move; user-select:none; }
+        #iaa-killer-content{ font-size:11px; display:grid; gap:6px; }
+        .iaa-killer-row{ display:flex; justify-content:space-between; gap:10px; }
+        .iaa-killer-key{ color:#93c5fd; }
+        .iaa-killer-val{ color:#e5e7eb; font-weight:700; }
+        .iaa-killer-pill{ display:inline-block; padding:1px 6px; border-radius:999px; font-size:10px; font-weight:800; }
+        .iaa-killer-buy{ background:rgba(34,197,94,.18); color:#22c55e; }
+        .iaa-killer-sell{ background:rgba(239,68,68,.18); color:#ef4444; }
+        .iaa-killer-wait{ background:rgba(148,163,184,.2); color:#cbd5e1; }
         #iaa-calibration-panel{
           display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%);
           width:380px; background:#0b1220; border:1px solid rgba(255,255,255,.15);
@@ -8138,22 +8507,20 @@ const signal = {
           <button id="iaa-toggle" class="Btn"></button>
           <button id="iaa-auto" class="Btn2 on" title="AutoTrade"></button>
         </div>
-        <div class="iaa-signal">
-          <div id="iaa-chip-wrap" style="display:none">
-            <div id="iaa-chip" class="chip">
-              <span id="iaa-arrow" class="arrow"></span>
-              <span id="iaa-text" class="sigtext">—</span>
-            </div>
           </div>
           <div id="iaa-loader-wrapper" class="loader-wrapper">
             <div id="iaa-console" class="iaa-console">
               <div id="iaa-console-lines"></div>
+      <div id="iaa-console-actions" class="iaa-console-actions">
+      <button id="iaa-console-analyze" type="button">АНАЛИЗ</button>
       <button id="iaa-console-copy" type="button">КОПИРАЙ</button>
       <button id="iaa-console-clear" type="button">ИЗЧИСТИ</button>
+      </div>
               <div id="iaa-status-overlay"></div>
               <div id="iaa-countdown"></div>
             </div>
             <div id="iaa-direction-indicator"></div>
+            <div id="iaa-filtermode-indicator" title="Режим на филтрите: Soft / AUTO / Strict"></div>
           </div>
         </div>
         <div class="iaa-grid">
@@ -8182,9 +8549,7 @@ const signal = {
           </div>
         </div>
         <div id="iaa-tf-matrix" class="iaa-tf-grid">
-          <div class="iaa-tf-cell" data-tf="3s"><span id="iaa-tf-dot-3s" class="iaa-tf-dot"></span><span id="iaa-tf-3s">3s —</span></div>
-          <div class="iaa-tf-cell" data-tf="30s"><span id="iaa-tf-dot-30s" class="iaa-tf-dot"></span><span id="iaa-tf-30s">30s —</span></div>
-          <div class="iaa-tf-cell" data-tf="1m"><span id="iaa-tf-dot-1m" class="iaa-tf-dot"></span><span id="iaa-tf-1m">1m —</span></div>
+<div class="iaa-tf-cell" data-tf="1m"><span id="iaa-tf-dot-1m" class="iaa-tf-dot"></span><span id="iaa-tf-1m">1m —</span></div>
           <div class="iaa-tf-cell" data-tf="3m"><span id="iaa-tf-dot-3m" class="iaa-tf-dot"></span><span id="iaa-tf-3m">3m —</span></div>
           <div class="iaa-tf-cell" data-tf="5m"><span id="iaa-tf-dot-5m" class="iaa-tf-dot"></span><span id="iaa-tf-5m">5m —</span></div>
           <div class="iaa-tf-cell" data-tf="15m"><span id="iaa-tf-dot-15m" class="iaa-tf-dot"></span><span id="iaa-tf-15m">15m —</span></div>
@@ -8195,6 +8560,7 @@ const signal = {
         <div class="iaa-controls">
           <button id="iaa-mouse-toggle" class="iaa-control-btn" title="Mouse Mapping">🖱</button>
           <button id="iaa-settings-toggle" class="iaa-control-btn" title="Settings">⚙</button>
+          <button id="iaa-filtermode-toggle" class="iaa-control-btn" title="Режим филтри (Soft/Auto/Strict)">🧰</button>
           <button id="iaa-debug-toggle" class="iaa-control-btn" title="Диагностика">🧪</button>
         </div>
 
@@ -8216,6 +8582,12 @@ const signal = {
       </div>
 
         <div id="iaa-debug-state" style="display:none"></div>
+
+        <div id="iaa-killer-panel">
+          <button id="iaa-killer-close">×</button>
+          <div id="iaa-killer-header">KILLER V1</div>
+          <div id="iaa-killer-content"></div>
+        </div>
 
         <div id="iaa-calibration-panel">
           <button id="iaa-calibration-close">×</button>
@@ -8286,6 +8658,53 @@ const signal = {
           </div>
         </div>
 
+<div id="iaa-filtermode-panel" style="display:none;">
+  <div class="iaa-panel-head">
+    <div class="iaa-panel-title">Режим на филтрите</div>
+    <button id="iaa-filtermode-close" class="iaa-panel-close" title="Затвори">✕</button>
+  </div>
+  <div class="iaa-panel-body">
+    <label class="iaa-row" title="Включва/изключва режима за Chop/Bias/Потвърждение. Когато е ИЗКЛ, опциите по-долу са заключени и не влияят на бота.">
+      <input type="checkbox" id="iaa-filtermode-enabled">
+      <span>Режим филтри (ВКЛ/ИЗКЛ)</span>
+    </label>
+    <label class="iaa-row" title="Когато е ВКЛ, ботът сам превключва Soft/Strict според пазара.">
+      <input type="checkbox" id="iaa-filtermode-auto">
+      <span>Auto режим</span>
+    </label>
+    <div id="iaa-filtermode-manual-wrap">
+      <div class="iaa-subtitle">Ръчен режим</div>
+      <label class="iaa-row" title="Soft: по-малко строги филтри (по-лесно влиза, повече шум).">
+        <input type="radio" name="iaa-filtermode-manual" value="soft" id="iaa-filtermode-soft">
+        <span>Soft</span>
+      </label>
+      <label class="iaa-row" title="Strict: по-строги филтри (по-малко входове, по-чисто).">
+        <input type="radio" name="iaa-filtermode-manual" value="strict" id="iaa-filtermode-strict">
+        <span>Strict</span>
+      </label>
+    </div>
+    <div id="iaa-filtermode-auto-wrap">
+      <div class="iaa-subtitle">Auto настройки</div>
+      <div class="iaa-field" title="Колко минути назад гледа Auto режимът, за да реши дали да е Soft или Strict.">
+        <div class="iaa-field-label">Прозорец (минути)</div>
+        <input id="iaa-filtermode-auto-window" type="number" min="3" max="60" step="1" />
+      </div>
+      <div class="iaa-field" title="Колко 'flip' промени (BUY↔SELL) в прозореца се считат за шум → Strict.">
+        <div class="iaa-field-label">Праг flips</div>
+        <input id="iaa-filtermode-auto-flips" type="number" min="1" max="20" step="1" />
+      </div>
+      <div class="iaa-field" title="Колко 'рязък спад след delay' в прозореца се считат за нестабилност → Strict.">
+        <div class="iaa-field-label">Праг спадове</div>
+        <input id="iaa-filtermode-auto-drops" type="number" min="1" max="20" step="1" />
+      </div>
+      <div class="iaa-hint" title="Auto режимът не пипа праговете ти. Само решава дали Chop/Bias/Confirmation да са по-мекo или по-строго приложени.">
+        Auto превключване: при шум → Strict, при стабилност → Soft.
+      </div>
+    </div>
+  </div>
+</div>
+
+
         <div id="iaa-settings-panel">
           <button id="iaa-settings-close">×</button>
 <div id="iaa-settings-sniper" style="display:block;">
@@ -8298,6 +8717,7 @@ const signal = {
                 <button class="iaa-tab-btn active" data-tab="basic">ОСНОВНИ</button>
                 <button class="iaa-tab-btn" data-tab="advanced">РАЗШИРЕНИ</button>
                                 <button class="iaa-tab-btn" data-tab="analyses">АНАЛИЗИ</button>
+                <button class="iaa-tab-btn" data-tab="dynamic">DYNAMIC/KILLER</button>
               </div>
 
               <div id="iaa-tab-basic" class="iaa-tab-body">
@@ -8443,24 +8863,7 @@ const signal = {
                   <span class="iaa-field-label">Поредни загуби</span>
                   <input type="number" id="iaa-sniper-max-loss-streak" min="0" step="1" value="0">
                 </div>
-                <div class="iaa-field-row">
-                  <label title="Разрешава няколко последователни входа при силна увереност."><input type="checkbox" id="iaa-sniper-multi-enabled"> Мулти входове</label>
-                  <button id="iaa-sniper-multi-toggle" type="button" class="iaa-toggle-btn">▾</button>
-                </div>
-                <div id="iaa-sniper-multi-body">
-                  <div class="iaa-field-row" title="Минимален процент увереност за мулти входове.">
-                    <span class="iaa-field-label">Праг мулти % (0–100)</span>
-                    <input type="number" id="iaa-sniper-multi-threshold" min="0" max="100" step="1" value="99">
-                  </div>
-                  <div class="iaa-field-row" title="Брой допълнителни входове в серия.">
-                    <span class="iaa-field-label">Брой мулти (0–20)</span>
-                    <input type="number" id="iaa-sniper-multi-count" min="0" max="20" step="1" value="2">
-                  </div>
-                  <div class="iaa-field-row" title="Процент от базовата сума за мулти входовете.">
-                    <span class="iaa-field-label">Сума мулти % (0–100)</span>
-                    <input type="number" id="iaa-sniper-multi-amount" min="0" max="100" step="1" value="50">
-                  </div>
-                </div>
+              </div>
               </div>
 
               <div id="iaa-tab-features" class="iaa-tab-body" style="display:none;">
@@ -8475,6 +8878,11 @@ const signal = {
 
                 <div class="iaa-subtitle">Candlestick Pattern</div>
                 <label class="iaa-checkbox"><input type="checkbox" id="iaa-candle-pattern-enabled"> Candlestick Pattern On/Off</label>
+                <div class="iaa-field-row iaa-field-toggle" title="Ако последната свещ е срещу посоката на входа, сигналът се блокира.">
+                    <span class="iaa-field-label">Свещ срещу входа = твърд стоп</span>
+                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-candle-hardstop"></label>
+                  </div>
+
                 <div class="iaa-field-row" title="Минимална увереност за candle pattern филтъра.">
                   <span class="iaa-field-label">Мин. увереност свещи % (1–100)</span>
                   <input type="number" id="iaa-candle-pattern-min-conf" min="1" max="100" step="1" value="60">
@@ -8483,22 +8891,22 @@ const signal = {
                   <span class="iaa-field-label">Тежест свещи % (1–100)</span>
                   <input type="number" id="iaa-candle-pattern-weight" min="1" max="100" step="1" value="25">
                 </div>
-                <div class="iaa-subtitle">TF readiness gate</div>
+                <div class="iaa-subtitle">Време за готовност/История</div>
                 <div class="iaa-grid-2">
                   <div class="iaa-field-row iaa-compact-row" title="Минимални готови барове за 1m потвърждение.">
-                    <span class="iaa-field-label">1m bars</span>
+                    <span class="iaa-field-label">1M свещи</span>
                     <input type="number" id="iaa-partner-ready-1m" min="1" max="40" step="1" value="10">
                   </div>
                   <div class="iaa-field-row iaa-compact-row" title="Минимални готови барове за 3m потвърждение.">
-                    <span class="iaa-field-label">3m bars</span>
+                    <span class="iaa-field-label">3M свещи</span>
                     <input type="number" id="iaa-partner-ready-3m" min="1" max="40" step="1" value="6">
                   </div>
                   <div class="iaa-field-row iaa-compact-row" title="Минимални готови барове за 5m потвърждение.">
-                    <span class="iaa-field-label">5m bars</span>
+                    <span class="iaa-field-label">5M свещи</span>
                     <input type="number" id="iaa-partner-ready-5m" min="1" max="40" step="1" value="3">
                   </div>
                   <div class="iaa-field-row iaa-compact-row" title="Минимални готови барове за 15m потвърждение.">
-                    <span class="iaa-field-label">15m bars</span>
+                    <span class="iaa-field-label">15M свещи</span>
                     <input type="number" id="iaa-partner-ready-15m" min="1" max="40" step="1" value="2">
                   </div>
                 </div>
@@ -8521,6 +8929,103 @@ const signal = {
                 <div class="iaa-field-row" title="RSI ниво за прекупеност.">
                   <span class="iaa-field-label">RSI Overbought (50–90)</span>
                   <input type="number" id="iaa-ema-rsi-overbought" min="50" max="90" step="1" value="65">
+                </div>
+              </div>
+
+              <div id="iaa-tab-dynamic" class="iaa-tab-body" style="display:none;">
+                <div class="iaa-field-row"><span class="iaa-field-label">DYNAMIC ▾</span><button id="iaa-dynamic-core-toggle" type="button" class="iaa-toggle-btn">${S.dynamicCoreCollapsed ? '▸' : '▾'}</button></div>
+                <div id="iaa-dynamic-core-body" style="${S.dynamicCoreCollapsed ? 'display:none;' : ''}">
+                  <div class="iaa-field-row iaa-field-toggle" title="Включва/изключва Dynamic expiry логиката. При OFF ботът използва само фиксирани времена.">
+                    <span class="iaa-field-label">Dynamic активен</span>
+                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-dynamic-enabled-settings"></label>
+                  </div>
+                  <div class="iaa-field-row" title="Режим на Dynamic: Изкл / Само Dynamic / Hybrid (умно превключване).">
+                    <span class="iaa-field-label">Режим Dynamic</span>
+                    <select id="iaa-dynamic-mode">
+                      <option value="off">Изкл</option>
+                      <option value="dynamic">Само Dynamic</option>
+                      <option value="hybrid">Hybrid</option>
+                    </select>
+                  </div>
+                  <div class="iaa-field-row" title="Списък с кандидати за секунди, разделени със запетая. Пример: 15,30,45,60,90,120,180.">
+                    <span class="iaa-field-label">Кандидати (сек)</span>
+                    <input type="text" id="iaa-dynamic-candidates" value="15,30,45,60,90,120,180">
+                  </div>
+                  <div class="iaa-field-row" title="Минимално и максимално позволено време за Dynamic (секунди).">
+                    <span class="iaa-field-label">Диапазон (сек)</span>
+                    <span class="iaa-mini-label">мин</span>
+                    <input type="number" id="iaa-dynamic-min-sec" min="3" max="3600" step="1" value="15">
+                    <span class="iaa-mini-label">макс</span>
+                    <input type="number" id="iaa-dynamic-max-sec" min="3" max="3600" step="1" value="300">
+                  </div>
+                  <div class="iaa-field-row" title="Минимална увереност за Dynamic вход. Под прага се ползва fallback/no-trade.">
+                    <span class="iaa-field-label">Мин. увереност %</span>
+                    <input type="number" id="iaa-dynamic-min-conf" min="1" max="100" step="1" value="65">
+                  </div>
+                  <div class="iaa-field-row" title="Минимална увереност за много кратки времена (под 30 сек).">
+                    <span class="iaa-field-label">Мин. увереност sub-30s %</span>
+                    <input type="number" id="iaa-dynamic-sub30-min-conf" min="1" max="100" step="1" value="78">
+                  </div>
+                  <div class="iaa-field-row" title="Максимално време след начало на свещ, в което Dynamic е разрешен.">
+                    <span class="iaa-field-label">Late-entry лимит (сек)</span>
+                    <input type="number" id="iaa-dynamic-late-max-sec" min="0" max="300" step="1" value="35">
+                  </div>
+                  <div class="iaa-field-row" title="Бюджет в ms за задаване на Dynamic време в UI. Ако е над бюджета -> наказание/fallback.">
+                    <span class="iaa-field-label">Latency бюджет (ms)</span>
+                    <input type="number" id="iaa-dynamic-set-budget-ms" min="200" max="5000" step="50" value="1200">
+                  </div>
+                  <div class="iaa-field-row" title="Минимален score за Dynamic избор. Под него -> no-trade или fallback към fixed.">
+                    <span class="iaa-field-label">Мин. score %</span>
+                    <input type="number" id="iaa-dynamic-score-min" min="0" max="100" step="1" value="25">
+                  </div>
+                  <label class="iaa-checkbox" title="При слаб Dynamic score се връща към фиксиран expiry (1m/3m/5m)."><input type="checkbox" id="iaa-dynamic-fallback-fixed" checked> Fallback към фиксирано време</label>
+                  <label class="iaa-checkbox" title="Разрешава пропуск на сделката при слаб Dynamic score."><input type="checkbox" id="iaa-dynamic-no-trade" checked> No-trade при слаб score</label>
+                </div>
+
+                <div class="iaa-field-row" style="margin-top:8px;"><span class="iaa-field-label">KILLER (ново) ▾</span><button id="iaa-killer-dynamic-toggle" type="button" class="iaa-toggle-btn">${S.killerDynamicCollapsed ? '▸' : '▾'}</button></div>
+                <div id="iaa-killer-dynamic-body" style="${S.killerDynamicCollapsed ? 'display:none;' : ''}">
+                  <div class="iaa-field-row iaa-field-toggle" title="Включва/изключва KILLER логиката. При OFF ботът работи по текущите филтри.">
+                    <span class="iaa-field-label">KILLER активен</span>
+                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-enabled"></label>
+                  </div>
+<div class="iaa-field-row" title="Минимален брой съвпадения (CONFLUENCE), за да се счита сигналът за валиден.">
+                    <span class="iaa-field-label">Минимум съвпадения (CONFLUENCE)</span>
+                    <select id="iaa-killer-min-confluence">
+                      <option value="4">4/8</option>
+                      <option value="5">5/8</option>
+                      <option value="6">6/8</option>
+                      <option value="7">7/8</option>
+                    </select>
+                  </div>
+                  <div class="iaa-field-row" title="Минимално доминиране LONG/SHORT за разрешен вход.">
+                    <span class="iaa-field-label">Праг доминиране (%)</span>
+                    <input type="number" id="iaa-killer-dominance-threshold" min="50" max="90" step="1" value="68">
+                  </div>
+                  <div class="iaa-field-row iaa-field-toggle" title="Вход само при първо задействане на сигнал (edge trigger).">
+                    <span class="iaa-field-label">Perfect Time (първо задействане)</span>
+                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-perfect-time"></label>
+                  </div>
+                  <div class="iaa-field-row" title="Минимална пауза между две Perfect Time задействания за същия TF.">
+                    <span class="iaa-field-label">Пауза след сигнал (сек)</span>
+                    <input type="number" id="iaa-killer-cooldown-sec" min="0" max="30" step="1" value="5">
+                  </div>
+                  <div class="iaa-field-row iaa-field-toggle" title="Адаптивен праг: при слаб тренд (нисък ADX proxy) става по-строго, при силен тренд — по-леко.">
+                    <span class="iaa-field-label">ADX динамичен праг</span>
+                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-adx-dynamic"></label>
+                  </div>
+                  
+                  <div class="iaa-field-row iaa-field-toggle" title="Позволява участието на Partner стратегиите в KILLER оценката.">
+                    <span class="iaa-field-label">Стратегиите влияят в оценката</span>
+                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-use-strategy-votes"></label>
+                  </div>
+                  <div class="iaa-field-row" title="Минимален брой стратегии в една посока, за да се зачете стратегия-вот.">
+                    <span class="iaa-field-label">Мин. съгласие стратегии</span>
+                    <select id="iaa-killer-strategy-agreement">
+                      <option value="1">1</option>
+                      <option value="2">2</option>
+                      <option value="3">3</option>
+                    </select>
+                  </div>
                 </div>
               </div>
           </div>
@@ -8574,6 +9079,7 @@ const signal = {
       setStatusOverlay(formatStatus('looking_for_opportunity'), '', false);
       applyStatusLabels();
       renderTradeStats();
+      renderKillerHud();
 
       let dragging = false, off = {x:0, y:0};
       const dragHandle = $id('iaa-panel');
@@ -8600,6 +9106,36 @@ const signal = {
           if (dragHandle) dragHandle.style.cursor = 'grab';
         }
       });
+
+      let killerDragging = false;
+      let killerOff = { x: 0, y: 0 };
+      const killerPanel = $id('iaa-killer-panel');
+      const killerHeader = $id('iaa-killer-header');
+      if (killerPanel && killerHeader) {
+        if (Number.isFinite(S.killerHudPos?.x) && Number.isFinite(S.killerHudPos?.y)) {
+          killerPanel.style.left = `${S.killerHudPos.x}px`;
+          killerPanel.style.top = `${S.killerHudPos.y}px`;
+          killerPanel.style.right = 'auto';
+        }
+        killerHeader.addEventListener('mousedown', (e) => {
+          killerDragging = true;
+          killerOff.x = e.clientX - killerPanel.offsetLeft;
+          killerOff.y = e.clientY - killerPanel.offsetTop;
+          e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+          if (!killerDragging) return;
+          killerPanel.style.left = `${Math.max(0, e.clientX - killerOff.x)}px`;
+          killerPanel.style.top = `${Math.max(0, e.clientY - killerOff.y)}px`;
+          killerPanel.style.right = 'auto';
+        });
+        document.addEventListener('mouseup', () => {
+          if (!killerDragging) return;
+          killerDragging = false;
+          S.killerHudPos = { x: killerPanel.offsetLeft, y: killerPanel.offsetTop };
+          persistSettings();
+        });
+      }
 
       const logo = $id('iaa-logo'); 
       if (logo) {
@@ -8628,19 +9164,58 @@ const signal = {
         if (popup) popup.style.display = 'block';
       }
 
+      function placePopupNear(popupId, anchorEl) {
+        try {
+          const popup = $id(popupId);
+          if (!popup || !anchorEl) return;
+          const prevDisp = popup.style.display;
+          const prevVis = popup.style.visibility;
+          if (getComputedStyle(popup).display === 'none') popup.style.display = 'block';
+          popup.style.visibility = 'hidden';
+
+          const r = anchorEl.getBoundingClientRect();
+          const pad = 8;
+          const w = popup.offsetWidth || 340;
+          const h = popup.offsetHeight || 260;
+
+          let left = r.left;
+          let top = r.bottom + 6;
+          if (top + h > window.innerHeight - pad) top = r.top - h - 6;
+
+          left = Math.max(pad, Math.min(left, window.innerWidth - w - pad));
+          top = Math.max(pad, Math.min(top, window.innerHeight - h - pad));
+
+          popup.style.position = 'fixed';
+          popup.style.left = left + 'px';
+          popup.style.top = top + 'px';
+          popup.style.right = 'auto';
+          popup.style.bottom = 'auto';
+          popup.style.transform = 'none';
+
+          popup.style.visibility = prevVis || '';
+          popup.style.display = prevDisp || 'block';
+        } catch(e) {}
+      }
+
       function hidePopups() {
         const settings = $id('iaa-settings-panel');
         const mouse = $id('iaa-mouse-panel');
         const debug = $id('iaa-debug-panel');
-        const calibration = $id('iaa-calibration-panel');
+        const calibration = $id('iaa-calib-panel');
+        const filterMode = $id('iaa-filtermode-panel');
+
         if (settings) settings.style.display = 'none';
         if (mouse) mouse.style.display = 'none';
         if (debug) debug.style.display = 'none';
         if (calibration) calibration.style.display = 'none';
-        S.settingsPanelOpen = false;
+        if (filterMode) filterMode.style.display = 'none';
+
+        S.settingsOpen = false;
         S.mousePanelOpen = false;
-        S.calibrationPanelOpen = false;
-        S.strategiesPanelOpen = false;
+        S.debugOpen = false;
+        S.calibOpen = false;
+        S.filterModePanelOpen = false;
+        persistSettings();
       }
 
       const settingsToggle = $id('iaa-settings-toggle');
@@ -8649,14 +9224,19 @@ const signal = {
       const mouseClose = $id('iaa-mouse-close');
       const calibrationClose = $id('iaa-calibration-close');
       const debugToggle = $id('iaa-debug-toggle');
+      const killerToggle = $id('iaa-killer-toggle');
       const debugClose = $id('iaa-debug-close');
+      const killerClose = $id('iaa-killer-close');
       const debugCopy = $id('iaa-debug-copy');
+      const filterModeClose = $id('iaa-filtermode-close');
       const lossCopy = $id('iaa-loss-copy');
       const debugTabStatus = $id('iaa-debug-tab-status');
       const debugTabLoss = $id('iaa-debug-tab-loss');
       const consoleCopy = $id('iaa-console-copy');
       const consoleClear = $id('iaa-console-clear');
+      const consoleAnalyze = $id('iaa-console-analyze');
       const calibrationFromMouse = $id('iaa-calibration-open');
+      const filterModeToggle = $id('iaa-filtermode-toggle');
 
       const openSettingsPanel = () => {
         hidePopups();
@@ -8670,6 +9250,13 @@ const signal = {
         showPopup('iaa-mouse-panel');
         S.mousePanelOpen = true;
         renderMousePanel();
+      };
+
+      const openFilterModePanel = () => {
+        hidePopups();
+        showPopup('iaa-filtermode-panel');
+        S.filterModePanelOpen = true;
+        if (filterModeToggle) placePopupNear('iaa-filtermode-panel', filterModeToggle);
       };
 
 
@@ -8730,17 +9317,20 @@ setTimeout(() => {
 
 
       if (mouseToggle) {
-        mouseToggle.addEventListener('click', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (S.mousePanelOpen) hidePopups();
-          else openMousePanel();
-        });
+        // handled by central popup delegation in ensurePanelHandlers
       }
       if (calibrationFromMouse) {
         calibrationFromMouse.addEventListener('click', () => {
           if (S.calibrationPanelOpen) hidePopups();
           else { hidePopups(); showPopup('iaa-calibration-panel'); S.calibrationPanelOpen = true; }
+        });
+      }
+
+      if (filterModeToggle) {
+        filterModeToggle.addEventListener('click', () => {
+          const panel = $id('iaa-filtermode-panel');
+          if (panel && panel.style.display === 'block') hidePopups();
+          else openFilterModePanel();
         });
       }
 
@@ -8761,8 +9351,22 @@ setTimeout(() => {
 
       if (settingsClose) settingsClose.addEventListener('click', hidePopups);
       if (mouseClose) mouseClose.addEventListener('click', hidePopups);
+      if (filterModeClose) filterModeClose.addEventListener('click', (e) => { e?.stopPropagation?.(); hidePopups(); });
       if (calibrationClose) calibrationClose.addEventListener('click', hidePopups);
       if (debugClose) debugClose.addEventListener('click', hidePopups);
+
+      if (!S._globalPopupCloser) {
+        S._globalPopupCloser = true;
+        document.addEventListener('mousedown', (ev) => {
+          const t = ev.target;
+          const within = (el) => el && (el === t || el.contains(t));
+          const panels = [$id('iaa-settings-panel'), $id('iaa-mouse-panel'), $id('iaa-debug-panel'), $id('iaa-calibration-panel'), $id('iaa-filtermode-panel')];
+          const toggles = [settingsToggle, mouseToggle, calibrationFromMouse, debugToggle, filterModeToggle];
+          if (panels.some(p => within(p))) return;
+          if (toggles.some(b => within(b))) return;
+          hidePopups();
+        }, true);
+      }
       if (debugCopy) {
         debugCopy.addEventListener('click', async () => {
           const ok = await copyDebugInfo();
@@ -8815,6 +9419,12 @@ setTimeout(() => {
           renderConsole();
         });
       }
+
+      if (consoleAnalyze) {
+        consoleAnalyze.addEventListener('click', () => {
+          try { exportSessionHtml(); } catch (e) { console.warn('[IAA] analyze export failed', e); }
+        });
+      }
       rebindPanelPopupButtons();
     }
 
@@ -8837,6 +9447,25 @@ setTimeout(() => {
       }
     }
 
+    function getLiveExpiryLabel(signal) {
+      const active = Array.isArray(S.activeTrades) ? S.activeTrades : [];
+      if (active.length) {
+        const latestActive = [...active].sort((a, b) => (b.startTime || 0) - (a.startTime || 0))[0];
+        const liveExpiry = normalizeTradeExpiry(latestActive?.expiry);
+        if (liveExpiry && liveExpiry !== '—') return liveExpiry;
+      }
+      const pending = Array.isArray(S.pendingTradeConfirmations) ? S.pendingTradeConfirmations : [];
+      if (pending.length) {
+        const latestPending = [...pending].sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+        const pendingExpiry = normalizeTradeExpiry(latestPending?.trade?.expiry);
+        if (pendingExpiry && pendingExpiry !== '—') return pendingExpiry;
+      }
+      const lastHistory = Array.isArray(S.tradeHistory) ? S.tradeHistory[0] : null;
+      const historyExpiry = normalizeTradeExpiry(lastHistory?.expiry);
+      if (historyExpiry && historyExpiry !== '—') return historyExpiry;
+      return normalizeTradeExpiry(signal?.expiry || S.expirySetting);
+    }
+
     function renderChip(signal){
       const wrap=$id('iaa-chip-wrap'), chip=$id('iaa-chip'), arrow=$id('iaa-arrow'), text=$id('iaa-text');
       if (!wrap || !chip || !arrow || !text) return;
@@ -8849,7 +9478,7 @@ setTimeout(() => {
         const assetEl = $id('iaa-asset');
         const expEl = $id('iaa-exp');
         if (assetEl) assetEl.textContent = signal.asset || '—';
-        if (expEl) expEl.textContent = signal.expiry || '—';
+        if (expEl) expEl.textContent = getLiveExpiryLabel(signal) || '—';
       } else {
         wrap.style.display='none';
       }
@@ -8872,10 +9501,12 @@ setTimeout(() => {
     }
     function renderPendingTrades(){
       const execEl = $id('iaa-exec');
-      if (S.currentSignal && execEl) execEl.textContent = fmtHHMMSSLocal(new Date(S.currentSignal.targetTsMs));
+      if (null && execEl) execEl.textContent = fmtHHMMSSLocal(new Date(null.targetTsMs));
       else if (execEl) execEl.textContent = '—';
 
-      renderChip(S.currentSignal);
+      renderChip(null);
+      const expEl = $id('iaa-exp');
+      if (expEl) expEl.textContent = getLiveExpiryLabel(null || null) || '—';
 
       const confEl = $id('iaa-analysis-score');
       if (confEl) {
@@ -8902,40 +9533,84 @@ setTimeout(() => {
         const bridgeState = S.wsBridgeReady ? 'ON' : 'OFF';
         const source = S.lastFeedSource || 'none';
         feedEl.innerHTML = `Цена: ${price} • История: ${historyLen} (✓${acceptedTicks}/dup:${duplicateTicks})`;
+        feedEl.title = `Историята се пази до ${PRICE_HISTORY_MAX_POINTS} точки (лимит по брой, не по време).`;
       }
     }
 
     async function restoreSettings(){
       const base = await storage.get(BASE_AMOUNT_KEY);
       if (typeof base === 'number' && base > 0) S.baseAmount = base;
-      if (!Number.isFinite(S.baseAmount) || S.baseAmount <= 0) {
-        S.baseAmount = 1;
-      }
       const ex  = await storage.get(EXPIRY_KEY); if (typeof ex === 'string') S.expirySetting = normalizeExpiry(ex) || '1M';
+      const maxSessionLoss = await storage.get(MAX_SESSION_ЗАГУБИ_KEY);
+      if (typeof maxSessionLoss === 'number' && Number.isFinite(maxSessionLoss)) S.maxSessionLossCents = Math.max(0, Math.round(maxSessionLoss));
+      const maxConsecLosses = await storage.get(MAX_CONSECUTIVE_ЗАГУБИES_KEY);
+      if (typeof maxConsecLosses === 'number' && Number.isFinite(maxConsecLosses)) S.maxConsecutiveLosses = Math.max(0, Math.round(maxConsecLosses));
       const analysisEnabled = await storage.get(ANALYSIS_ENABLED_KEY); if (typeof analysisEnabled === 'boolean') S.analysisEnabled = analysisEnabled;
+      const fmEnabled = await storage.get(FILTERMODE_ENABLED_KEY);
+      if (typeof fmEnabled === 'boolean') S.filterModeEnabled = fmEnabled;
+      const fmMode = await storage.get(FILTERMODE_MODE_KEY);
+      if (typeof fmMode === 'string' && ['soft','auto','strict'].includes(fmMode)) S.filterMode = fmMode;
+      const fmWin = await storage.get(FILTERMODE_AUTO_WINDOW_MIN_KEY);
+      if (typeof fmWin === 'number' && fmWin>0) S.filterAutoWindowMin = Math.max(1, Math.min(60, Math.round(fmWin)));
+      const fmFlip = await storage.get(FILTERMODE_AUTO_FLIP_THRESH_KEY);
+      if (typeof fmFlip === 'number' && fmFlip>0) S.filterAutoFlipThreshold = Math.max(1, Math.min(10, Math.round(fmFlip)));
+      const fmDrop = await storage.get(FILTERMODE_AUTO_DROP_THRESH_KEY);
+      if (typeof fmDrop === 'number' && fmDrop>0) S.filterAutoDropThreshold = Math.max(5, Math.min(50, Math.round(fmDrop)));
+            const keepAlive = await storage.get(KEEP_ALIVE_KEY);
+      if (typeof keepAlive === 'boolean') { S.keepAliveEnabled = keepAlive; S.sniperKeepAliveEnabled = keepAlive; }
       const analysisConfidence = await storage.get(ANALYSIS_CONFIDENCE_KEY); if (typeof analysisConfidence === 'number') S.analysisConfidenceThreshold = analysisConfidence;
       const tradeIntervalMin = await storage.get(TRADE_INTERVAL_MIN_KEY); if (typeof tradeIntervalMin === 'number') S.tradeIntervalMin = tradeIntervalMin;
-      const maxTradesPerMinute = await storage.get(MAX_TRADES_PER_MIN_KEY); if (typeof maxTradesPerMinute === 'number') S.maxTradesPerMinute = maxTradesPerMinute; else if (!Number.isFinite(S.maxTradesPerMinute)) S.maxTradesPerMinute = 5;
-      const maxOpenTrades = await storage.get(MAX_OPEN_TRADES_KEY); if (typeof maxOpenTrades === 'number') S.maxOpenTrades = maxOpenTrades; else if (!Number.isFinite(S.maxOpenTrades)) S.maxOpenTrades = 5;
-      const ewEnabled = await storage.get(ENTRYWIN_TF_ENABLED_KEY);
+      const maxTradesPerMinute = await storage.get(MAX_СДЕЛКИ_PER_MIN_KEY); if (typeof maxTradesPerMinute === 'number') S.maxTradesPerMinute = maxTradesPerMinute; else if (!Number.isFinite(S.maxTradesPerMinute)) S.maxTradesPerMinute = 5;
+      const maxOpenTrades = await storage.get(MAX_OPEN_СДЕЛКИ_KEY); if (typeof maxOpenTrades === 'number') S.maxOpenTrades = maxOpenTrades; else if (!Number.isFinite(S.maxOpenTrades)) S.maxOpenTrades = 5;
+      const ewEnabled = await storage.get(ENTRYПЕЧАЛБИ_TF_ENABLED_KEY);
       if (typeof ewEnabled === 'boolean') S.entryWindowTfEnabled = ewEnabled;
-      const ew1m = await storage.get(ENTRYWIN_1M_SEC_KEY);
+      const ew1m = await storage.get(ENTRYПЕЧАЛБИ_1M_SEC_KEY);
       if (typeof ew1m === 'number') S.entryWindowSec1m = Math.max(0, Math.min(60, Math.round(ew1m)));
-      const ew3m = await storage.get(ENTRYWIN_3M_SEC_KEY);
+      const ew3m = await storage.get(ENTRYПЕЧАЛБИ_3M_SEC_KEY);
       if (typeof ew3m === 'number') S.entryWindowSec3m = Math.max(0, Math.min(180, Math.round(ew3m)));
       const payoutMin = await storage.get(PAYOUT_MIN_KEY); if (typeof payoutMin === 'number') S.payoutMin = payoutMin;
       const payoutMax = await storage.get(PAYOUT_MAX_KEY); if (typeof payoutMax === 'number') S.payoutMax = payoutMax;
       const payoutRequired = await storage.get(PAYOUT_REQUIRED_KEY); if (typeof payoutRequired === 'boolean') S.payoutRequired = payoutRequired;
       const dynamicTimeEnabled = await storage.get(DYNAMIC_TIME_KEY); if (typeof dynamicTimeEnabled === 'boolean') S.dynamicExpiryEnabled = dynamicTimeEnabled;
+      const dynamicMode = await storage.get(DYNAMIC_MODE_KEY); if (typeof dynamicMode === 'string') S.dynamicMode = ['off', 'dynamic', 'hybrid'].includes(dynamicMode) ? dynamicMode : 'off';
+      const dynamicCandidates = await storage.get(DYNAMIC_CANDIDATES_KEY); if (typeof dynamicCandidates === 'string') S.dynamicCandidatesSec = parseDynamicCandidatesSeconds(dynamicCandidates, S.dynamicCandidatesSec);
+      const dynamicMinSec = await storage.get(DYNAMIC_MIN_SEC_KEY); if (typeof dynamicMinSec === 'number') S.dynamicMinSec = Math.max(3, Math.min(3600, Math.round(dynamicMinSec)));
+      const dynamicMaxSec = await storage.get(DYNAMIC_MAX_SEC_KEY); if (typeof dynamicMaxSec === 'number') S.dynamicMaxSec = Math.max(3, Math.min(3600, Math.round(dynamicMaxSec)));
+      const dynamicMinConf = await storage.get(DYNAMIC_MIN_CONF_KEY); if (typeof dynamicMinConf === 'number') S.dynamicMinConfidence = clamp01(dynamicMinConf);
+      const dynamicSub30MinConf = await storage.get(DYNAMIC_SUB30_MIN_CONF_KEY); if (typeof dynamicSub30MinConf === 'number') S.dynamicSub30MinConfidence = clamp01(dynamicSub30MinConf);
+      const dynamicLateEntryMax = await storage.get(DYNAMIC_LATE_ENTRY_MAX_SEC_KEY); if (typeof dynamicLateEntryMax === 'number') S.dynamicLateEntryMaxSec = Math.max(0, Math.min(300, Math.round(dynamicLateEntryMax)));
+      const dynamicSetBudgetMs = await storage.get(DYNAMIC_SET_BUDGET_MS_KEY); if (typeof dynamicSetBudgetMs === 'number') S.dynamicSetBudgetMs = Math.max(200, Math.min(5000, Math.round(dynamicSetBudgetMs)));
+      const dynamicScoreMin = await storage.get(DYNAMIC_SCORE_MIN_KEY); if (typeof dynamicScoreMin === 'number') S.dynamicScoreMin = clamp01(dynamicScoreMin);
+      const dynamicFallbackFixed = await storage.get(DYNAMIC_FALLBACK_FIXED_KEY); if (typeof dynamicFallbackFixed === 'boolean') S.dynamicFallbackToFixed = dynamicFallbackFixed;
+      const dynamicAllowNoTrade = await storage.get(DYNAMIC_ALLOW_NO_TRADE_KEY); if (typeof dynamicAllowNoTrade === 'boolean') S.dynamicAllowNoTrade = dynamicAllowNoTrade;
+      const dynamicCoreCollapsed = await storage.get(DYNAMIC_CORE_COLLAPSED_KEY); if (typeof dynamicCoreCollapsed === 'boolean') S.dynamicCoreCollapsed = dynamicCoreCollapsed;
+      const killerDynamicCollapsed = await storage.get(KILLER_DYNAMIC_COLLAPSED_KEY); if (typeof killerDynamicCollapsed === 'boolean') S.killerDynamicCollapsed = killerDynamicCollapsed;
+      const killerEnabled = await storage.get(KILLER_ENABLED_KEY); if (typeof killerEnabled === 'boolean') S.killerEnabled = killerEnabled;
+      const killerHudEnabled = await storage.get(KILLER_HUD_ENABLED_KEY); if (typeof killerHudEnabled === 'boolean') S.killerHudEnabled = killerHudEnabled;
+      const killerMinConfluence = await storage.get(KILLER_MIN_CONFLUENCE_KEY); if (typeof killerMinConfluence === 'number') S.killerMinConfluence = Math.max(4, Math.min(7, Math.round(killerMinConfluence)));
+      const killerDomThreshold = await storage.get(KILLER_DOM_THRESHOLD_KEY); if (typeof killerDomThreshold === 'number') S.killerDominanceThreshold = Math.max(50, Math.min(90, Math.round(killerDomThreshold)));
+      const killerPerfectTime = await storage.get(KILLER_PERFECT_TIME_KEY); if (typeof killerPerfectTime === 'boolean') S.killerPerfectTimeEnabled = killerPerfectTime;
+      const killerAdxDynamic = await storage.get(KILLER_ADX_DYNAMIC_KEY); if (typeof killerAdxDynamic === 'boolean') S.killerAdxDynamicEnabled = killerAdxDynamic;
+      const killerCandleHardStop = await storage.get(KILLER_CANDLE_HARDSTOP_KEY); if (typeof killerCandleHardStop === 'boolean') S.killerCandleAgainstHardStop = killerCandleHardStop;
+      const killerSignalCooldownSec = await storage.get(KILLER_SIGNAL_COOLDOWN_SEC_KEY); if (typeof killerSignalCooldownSec === 'number') S.killerSignalCooldownSec = Math.max(0, Math.min(30, Math.round(killerSignalCooldownSec)));
+      const killerUseStrategyVotes = await storage.get(KILLER_USE_STRATEGY_VOTES_KEY); if (typeof killerUseStrategyVotes === 'boolean') S.killerUseStrategyVotes = killerUseStrategyVotes;
+      const killerStrategyAgreement = await storage.get(KILLER_STRATEGY_AGREEMENT_KEY); if (typeof killerStrategyAgreement === 'number') S.killerStrategyAgreementMin = Math.max(1, Math.min(3, Math.round(killerStrategyAgreement)));
+      const killerHudPos = await storage.get(KILLER_HUD_POS_KEY);
+      if (killerHudPos && Number.isFinite(killerHudPos.x) && Number.isFinite(killerHudPos.y)) {
+        S.killerHudPos = { x: killerHudPos.x, y: killerHudPos.y };
+      }
+      if (S.dynamicMinSec > S.dynamicMaxSec) {
+        const tmp = S.dynamicMinSec;
+        S.dynamicMinSec = S.dynamicMaxSec;
+        S.dynamicMaxSec = tmp;
+      }
       const idleSwitchEnabled = await storage.get(IDLE_SWITCH_ENABLED_KEY); if (typeof idleSwitchEnabled === 'boolean') S.idleSwitchEnabled = idleSwitchEnabled;
       const idleSwitchMinutes = await storage.get(IDLE_SWITCH_MIN_KEY); if (typeof idleSwitchMinutes === 'number') S.idleSwitchMinutes = idleSwitchMinutes;
       const maxTradeAmount = await storage.get(MAX_TRADE_AMOUNT_KEY); if (typeof maxTradeAmount === 'number') S.maxTradeAmountCents = maxTradeAmount;
       const maxTradeMultiplier = await storage.get(MAX_TRADE_MULTIPLIER_KEY); if (typeof maxTradeMultiplier === 'number') S.maxTradeAmountMultiplier = maxTradeMultiplier;
-      const analysisWindowSec = await storage.get(ANALYSIS_WINDOW_SEC_KEY); if (typeof analysisWindowSec === 'number') S.analysisWindowSec = analysisWindowSec;
+      const analysisWindowSec = await storage.get(ANALYSIS_ПЕЧАЛБИDOW_SEC_KEY); if (typeof analysisWindowSec === 'number') S.analysisWindowSec = analysisWindowSec;
       const analysisWarmupMin = await storage.get(ANALYSIS_WARMUP_MIN_KEY); if (typeof analysisWarmupMin === 'number') S.analysisWarmupMin = analysisWarmupMin;
       const selfTradeEnabled = await storage.get(SELF_TRADE_ENABLED_KEY); if (typeof selfTradeEnabled === 'boolean') S.selfTradeEnabled = selfTradeEnabled;
-      const signalOffset = await storage.get(SIGNAL_TIME_OFFSET_MIN_KEY);
-      if (typeof signalOffset === 'number') S.signalTimeOffsetMin = signalOffset;
       const savedMethod = await storage.get(BUY_SELL_METHOD_KEY);
       if (savedMethod && ['auto', 'xpath'].includes(savedMethod)) {
         S.buySellMethod = savedMethod;
@@ -8984,11 +9659,11 @@ setTimeout(() => {
       const sniperRsiOverbought = await storage.get(SNIPER_RSI_OVERBOUGHT_KEY);
       if (typeof sniperRsiOverbought === 'number') S.sniperRsiOverbought = Math.max(50, Math.min(95, Math.round(sniperRsiOverbought)));
       const sniperVwapWeight = await storage.get(SNIPER_VWAP_WEIGHT_KEY);
-      if (typeof sniperVwapWeight === 'number') S.sniperVwapWeight = sniperVwapWeight;
+      if (typeof sniperVwapWeight === 'number') S.sniperVwapWeight = sniperVwapWeight > 1 ? clamp01(sniperVwapWeight / 100) : clamp01(sniperVwapWeight);
       const sniperMomentumWeight = await storage.get(SNIPER_MOMENTUM_WEIGHT_KEY);
-      if (typeof sniperMomentumWeight === 'number') S.sniperMomentumWeight = sniperMomentumWeight;
+      if (typeof sniperMomentumWeight === 'number') S.sniperMomentumWeight = sniperMomentumWeight > 1 ? clamp01(sniperMomentumWeight / 100) : clamp01(sniperMomentumWeight);
       const sniperVolumeWeight = await storage.get(SNIPER_VOLUME_WEIGHT_KEY);
-      if (typeof sniperVolumeWeight === 'number') S.sniperVolumeWeight = sniperVolumeWeight;
+      if (typeof sniperVolumeWeight === 'number') S.sniperVolumeWeight = sniperVolumeWeight > 1 ? clamp01(sniperVolumeWeight / 100) : clamp01(sniperVolumeWeight);
       const sniperVwapEnabled = await storage.get(SNIPER_VWAP_ENABLED_KEY);
       if (typeof sniperVwapEnabled === 'boolean') S.sniperVwapEnabled = sniperVwapEnabled;
       const sniperMomentumEnabled = await storage.get(SNIPER_MOMENTUM_ENABLED_KEY);
@@ -8999,14 +9674,6 @@ setTimeout(() => {
       if (typeof sniperChopEnabled === 'boolean') S.sniperChopEnabled = sniperChopEnabled;
       const sniperOverrideConfidencePct = await storage.get(SNIPER_OVERRIDE_CONF_PCT_KEY);
       if (typeof sniperOverrideConfidencePct === 'number') S.sniperOverrideConfidencePct = sniperOverrideConfidencePct;
-      const sniperMultiThresholdPct = await storage.get(SNIPER_MULTI_THRESHOLD_KEY);
-      if (typeof sniperMultiThresholdPct === 'number') S.sniperMultiThresholdPct = sniperMultiThresholdPct;
-      const sniperMultiCount = await storage.get(SNIPER_MULTI_COUNT_KEY);
-      if (typeof sniperMultiCount === 'number') S.sniperMultiCount = sniperMultiCount;
-      const sniperMultiAmountPct = await storage.get(SNIPER_MULTI_AMOUNT_PCT_KEY);
-      if (typeof sniperMultiAmountPct === 'number') S.sniperMultiAmountPct = sniperMultiAmountPct;
-      const sniperMultiEnabled = await storage.get(SNIPER_MULTI_ENABLED_KEY);
-      if (typeof sniperMultiEnabled === 'boolean') S.sniperMultiEnabled = sniperMultiEnabled;
       const savedTimeframes = await storage.get(SNIPER_TIMEFRAMES_KEY);
       if (savedTimeframes && typeof savedTimeframes === 'object') {
         S.sniperEnabledTimeframes = Object.assign({}, S.sniperEnabledTimeframes, savedTimeframes);
@@ -9027,10 +9694,10 @@ setTimeout(() => {
       const phaseReload = await storage.get(PHASE_RELOAD_SNIPER_KEY); if (typeof phaseReload === 'boolean') S.phaseReloadSniperEnabled = phaseReload;
       const featureTimeframes = await storage.get(FEATURE_TIMEFRAMES_KEY);
       if (featureTimeframes && typeof featureTimeframes === 'object') {
-        S.featureTimeframes = Object.assign({}, S.featureTimeframes, featureTimeframes);
+        S.sniperEnabledTimeframes = Object.assign({}, S.sniperEnabledTimeframes, featureTimeframes);
         // Remove deprecated TFs
-        delete S.featureTimeframes['15s'];
-        delete S.featureTimeframes['30m'];
+        delete S.sniperEnabledTimeframes['15s'];
+        delete S.sniperEnabledTimeframes['30m'];
       }
       const autoSwitchStrategy = await storage.get(STRATEGY_AUTO_SWITCH_KEY);
       if (typeof autoSwitchStrategy === 'boolean') S.autoSwitchStrategy = autoSwitchStrategy;
@@ -9038,9 +9705,9 @@ setTimeout(() => {
       if (typeof strategyWrWeight === 'number') S.strategyWeightWr = strategyWrWeight;
       const strategyPnlWeight = await storage.get(STRATEGY_PNL_WEIGHT_KEY);
       if (typeof strategyPnlWeight === 'number') S.strategyWeightPnl = strategyPnlWeight;
-      const strategyLearningTrades = await storage.get(STRATEGY_LEARNING_TRADES_KEY);
+      const strategyLearningTrades = await storage.get(STRATEGY_LEARNING_СДЕЛКИ_KEY);
       if (typeof strategyLearningTrades === 'number') S.strategyLearningTrades = strategyLearningTrades;
-      const strategyLossStreakLimit = await storage.get(STRATEGY_LOSS_STREAK_LIMIT_KEY);
+      const strategyLossStreakLimit = await storage.get(STRATEGY_ЗАГУБИ_STREAK_LIMIT_KEY);
       if (typeof strategyLossStreakLimit === 'number') S.strategyLossStreakLimit = strategyLossStreakLimit;
       const strategyConfigs = await storage.get(STRATEGY_CONFIG_KEY);
       if (strategyConfigs && typeof strategyConfigs === 'object') {
@@ -9052,19 +9719,19 @@ setTimeout(() => {
       if (typeof rsiDivergenceLookback === 'number') S.rsiDivergenceLookback = Math.max(6, Math.round(rsiDivergenceLookback));
       const rsiDivergenceMinDelta = await storage.get(RSI_DIVERGENCE_MIN_DELTA_KEY);
       if (typeof rsiDivergenceMinDelta === 'number') S.rsiDivergenceMinDelta = Math.max(1, Math.round(rsiDivergenceMinDelta));
-      const rsiDivergenceRsiWindow = await storage.get(RSI_DIVERGENCE_RSI_WINDOW_KEY);
+      const rsiDivergenceRsiWindow = await storage.get(RSI_DIVERGENCE_RSI_ПЕЧАЛБИDOW_KEY);
       if (typeof rsiDivergenceRsiWindow === 'number') S.rsiDivergenceRsiWindow = Math.max(5, Math.round(rsiDivergenceRsiWindow));
       const candlestickPatternMinConf = await storage.get(CANDLE_PATTERN_MIN_CONF_KEY);
-      if (typeof candlestickPatternMinConf === 'number') S.candlestickPatternMinConfidence = clamp01(candlestickPatternMinConf);
+      if (typeof candlestickPatternMinConf === 'number') S.candlestickPatternMinConfidence = candlestickPatternMinConf > 1 ? clamp01(candlestickPatternMinConf / 100) : clamp01(candlestickPatternMinConf);
       const candlestickPatternEnabled = await storage.get(CANDLE_PATTERN_ENABLED_KEY);
       if (typeof candlestickPatternEnabled === 'boolean') S.candlestickPatternEnabled = candlestickPatternEnabled;
       const candlestickPatternWeight = await storage.get(CANDLE_PATTERN_WEIGHT_KEY);
-      if (typeof candlestickPatternWeight === 'number') S.candlestickPatternWeight = clamp01(candlestickPatternWeight);
+      if (typeof candlestickPatternWeight === 'number') S.candlestickPatternWeight = candlestickPatternWeight > 1 ? clamp01(candlestickPatternWeight / 100) : clamp01(candlestickPatternWeight);
       const emaRsiFast = await storage.get(EMA_RSI_FAST_KEY);
       if (typeof emaRsiFast === 'number') S.emaRsiFast = Math.max(2, Math.round(emaRsiFast));
       const emaRsiSlow = await storage.get(EMA_RSI_SLOW_KEY);
       if (typeof emaRsiSlow === 'number') S.emaRsiSlow = Math.max(3, Math.round(emaRsiSlow));
-      const emaRsiWindow = await storage.get(EMA_RSI_RSI_WINDOW_KEY);
+      const emaRsiWindow = await storage.get(EMA_RSI_RSI_ПЕЧАЛБИDOW_KEY);
       if (typeof emaRsiWindow === 'number') S.emaRsiWindow = Math.max(5, Math.round(emaRsiWindow));
       const emaRsiOversold = await storage.get(EMA_RSI_OVERSOLD_KEY);
       if (typeof emaRsiOversold === 'number') S.emaRsiOversold = Math.max(10, Math.min(50, Math.round(emaRsiOversold)));
@@ -9186,6 +9853,24 @@ setTimeout(() => {
     hookCheckbox(FLIPDELAY_ENABLED, ()=>{ S.filterFlipDelayEnabled = !!FLIPDELAY_ENABLED.checked; });
     hookInput(FLIPDELAY_SEC, ()=>{ S.filterFlipDelaySec = clamp(parseNumberFlexible(FLIPDELAY_SEC.value) || 0, 0, 300); });
 
+    // "Дръж таба активен" (checkbox lives in the existing settings UI)
+    // NOTE: keep the reference local here to avoid relying on a later-scoped const.
+    const keepTabActiveEl = $id('iaa-sniper-keep-alive');
+    if (keepTabActiveEl) keepTabActiveEl.checked = !!S.sniperKeepAliveEnabled;
+    hookCheckbox(keepTabActiveEl, ()=>{ S.sniperKeepAliveEnabled = !!keepTabActiveEl.checked; S.sniperKeepAliveEnabled = S.sniperKeepAliveEnabled; try{ if (typeof persistSettings==='function') persistSettings(); }catch(e){} });
+  // Delegated listener: settings UI may re-render; bind by id too
+  if (!window.__iaa_keepAliveDelegated) {
+    window.__iaa_keepAliveDelegated = true;
+    document.addEventListener('change', (ev) => {
+      const el = ev && ev.target;
+      if (!el || el.id !== 'iaa-sniper-keep-alive') return;
+      S.sniperKeepAliveEnabled = !!el.checked;
+      S.sniperKeepAliveEnabled = S.sniperKeepAliveEnabled;
+      try { persistSettings(); } catch (e) {}
+    }, true);
+  }
+
+
     hookCheckbox(IMPULSECAP_ENABLED, ()=>{ S.impulseCapEnabled = !!IMPULSECAP_ENABLED.checked; });
     hookInput(IMPULSECAP_MAX, ()=>{
       S.impulseCapMaxPerCandle = clamp(parseNumberFlexible(IMPULSECAP_MAX.value) || 2, 1, 5);
@@ -9203,27 +9888,57 @@ setTimeout(() => {
       storage.set(ANALYSIS_ENABLED_KEY, S.analysisEnabled);
       storage.set(ANALYSIS_CONFIDENCE_KEY, S.analysisConfidenceThreshold);
       storage.set(TRADE_INTERVAL_MIN_KEY, S.tradeIntervalMin);
-      storage.set(MAX_TRADES_PER_MIN_KEY, S.maxTradesPerMinute);
-      storage.set(MAX_OPEN_TRADES_KEY, S.maxOpenTrades);
-      storage.set(ENTRYWIN_TF_ENABLED_KEY, !!S.entryWindowTfEnabled);
-      storage.set(ENTRYWIN_1M_SEC_KEY, Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15);
-      storage.set(ENTRYWIN_3M_SEC_KEY, Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35);
+      storage.set(MAX_СДЕЛКИ_PER_MIN_KEY, S.maxTradesPerMinute);
+      storage.set(MAX_OPEN_СДЕЛКИ_KEY, S.maxOpenTrades);
+      storage.set(MAX_SESSION_ЗАГУБИ_KEY, Math.max(0, Math.round(S.maxSessionLossCents || 0)));
+      storage.set(MAX_CONSECUTIVE_ЗАГУБИES_KEY, Math.max(0, Math.round(S.maxConsecutiveLosses || 0)));
+      storage.set(ENTRYПЕЧАЛБИ_TF_ENABLED_KEY, !!S.entryWindowTfEnabled);
+      storage.set(ENTRYПЕЧАЛБИ_1M_SEC_KEY, Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15);
+      storage.set(ENTRYПЕЧАЛБИ_3M_SEC_KEY, Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35);
       storage.set(PAYOUT_MIN_KEY, S.payoutMin);
       storage.set(PAYOUT_MAX_KEY, S.payoutMax);
       storage.set(PAYOUT_REQUIRED_KEY, S.payoutRequired);
       storage.set(DYNAMIC_TIME_KEY, S.dynamicExpiryEnabled);
+      storage.set(DYNAMIC_MODE_KEY, getDynamicMode());
+      storage.set(DYNAMIC_CANDIDATES_KEY, formatDynamicCandidatesSeconds(S.dynamicCandidatesSec || [15, 30, 45, 60, 90, 120, 180]));
+      storage.set(DYNAMIC_MIN_SEC_KEY, S.dynamicMinSec);
+      storage.set(DYNAMIC_MAX_SEC_KEY, S.dynamicMaxSec);
+      storage.set(DYNAMIC_MIN_CONF_KEY, S.dynamicMinConfidence);
+      storage.set(DYNAMIC_SUB30_MIN_CONF_KEY, S.dynamicSub30MinConfidence);
+      storage.set(DYNAMIC_LATE_ENTRY_MAX_SEC_KEY, S.dynamicLateEntryMaxSec);
+      storage.set(DYNAMIC_SET_BUDGET_MS_KEY, S.dynamicSetBudgetMs);
+      storage.set(DYNAMIC_SCORE_MIN_KEY, S.dynamicScoreMin);
+      storage.set(DYNAMIC_FALLBACK_FIXED_KEY, !!S.dynamicFallbackToFixed);
+      storage.set(DYNAMIC_ALLOW_NO_TRADE_KEY, !!S.dynamicAllowNoTrade);
+      storage.set(DYNAMIC_CORE_COLLAPSED_KEY, !!S.dynamicCoreCollapsed);
+      storage.set(KILLER_DYNAMIC_COLLAPSED_KEY, !!S.killerDynamicCollapsed);
+      storage.set(KILLER_ENABLED_KEY, !!S.killerEnabled);
+      storage.set(KILLER_HUD_ENABLED_KEY, !!S.killerHudEnabled);
+      storage.set(KILLER_MIN_CONFLUENCE_KEY, S.killerMinConfluence);
+      storage.set(KILLER_DOM_THRESHOLD_KEY, S.killerDominanceThreshold);
+      storage.set(KILLER_PERFECT_TIME_KEY, !!S.killerPerfectTimeEnabled);
+      storage.set(KILLER_ADX_DYNAMIC_KEY, !!S.killerAdxDynamicEnabled);
+      storage.set(KILLER_CANDLE_HARDSTOP_KEY, !!S.killerCandleAgainstHardStop);
+      storage.set(KILLER_SIGNAL_COOLDOWN_SEC_KEY, S.killerSignalCooldownSec);
+      storage.set(KILLER_USE_STRATEGY_VOTES_KEY, !!S.killerUseStrategyVotes);
+      storage.set(KILLER_STRATEGY_AGREEMENT_KEY, S.killerStrategyAgreementMin);
+      storage.set(KILLER_HUD_POS_KEY, S.killerHudPos || { x: null, y: null });
       storage.set(IDLE_SWITCH_ENABLED_KEY, S.idleSwitchEnabled);
       storage.set(IDLE_SWITCH_MIN_KEY, S.idleSwitchMinutes);
       storage.set(MAX_TRADE_AMOUNT_KEY, S.maxTradeAmountCents);
       storage.set(MAX_TRADE_MULTIPLIER_KEY, S.maxTradeAmountMultiplier);
-      storage.set(ANALYSIS_WINDOW_SEC_KEY, S.analysisWindowSec);
+      storage.set(ANALYSIS_ПЕЧАЛБИDOW_SEC_KEY, S.analysisWindowSec);
       storage.set(ANALYSIS_WARMUP_MIN_KEY, S.analysisWarmupMin);
       storage.set(SELF_TRADE_ENABLED_KEY, S.selfTradeEnabled);
-      storage.set(SIGNAL_TIME_OFFSET_MIN_KEY, S.signalTimeOffsetMin);
       storage.set(BUY_SELL_METHOD_KEY, S.buySellMethod);
       storage.set(XPATH_SELECTORS_KEY, S.xpathSelectors);
       storage.set(MODE_KEY, getActiveMode());
       storage.set(SNIPER_KEEP_ALIVE_KEY, S.sniperKeepAliveEnabled);
+      storage.set(KEEP_ALIVE_KEY, !!(S.keepAliveEnabled || S.sniperKeepAliveEnabled));
+      storage.set(FILTERMODE_ENABLED_KEY, !!S.filterModeEnabled);
+      storage.set(FILTERMODE_AUTO_KEY, !!S.filterModeAutoEnabled);
+      storage.set(FILTERMODE_MANUAL_KEY, S.filterModeManual || 'soft');
+      // Auto параметрите са сесийни (reset при reload) – не ги пазим в storage.
       storage.set(SNIPER_BASE_AMOUNT_KEY, S.sniperBaseAmount);
       storage.set(SNIPER_THRESHOLD_KEY, S.sniperThreshold);
       storage.set(SNIPER_THRESHOLD_OTC_KEY, S.sniperThresholdOtc);
@@ -9245,10 +9960,6 @@ setTimeout(() => {
       storage.set(SNIPER_VOLUME_ENABLED_KEY, S.sniperVolumeEnabled);
       storage.set(SNIPER_CHOP_ENABLED_KEY, S.sniperChopEnabled);
       storage.set(SNIPER_OVERRIDE_CONF_PCT_KEY, S.sniperOverrideConfidencePct);
-      storage.set(SNIPER_MULTI_THRESHOLD_KEY, S.sniperMultiThresholdPct);
-      storage.set(SNIPER_MULTI_COUNT_KEY, S.sniperMultiCount);
-      storage.set(SNIPER_MULTI_AMOUNT_PCT_KEY, S.sniperMultiAmountPct);
-      storage.set(SNIPER_MULTI_ENABLED_KEY, !!S.sniperMultiEnabled);
       storage.set(SNIPER_TIMEFRAMES_KEY, S.sniperEnabledTimeframes);
       storage.set(FEATURE_VOLUME_REJECTION_KEY, S.featureVolumeRejection);
       storage.set(FEATURE_VWAP_ANALYSIS_KEY, S.featureVwapAnalysis);
@@ -9259,22 +9970,22 @@ setTimeout(() => {
       storage.set(AI_VISION_REQUIRE_MATCH_KEY, S.aiVisionRequireMatch);
       storage.set(PHASE_CATCH_MOVE_KEY, !!S.phaseCatchMoveEnabled);
       storage.set(PHASE_RELOAD_SNIPER_KEY, !!S.phaseReloadSniperEnabled);
-      storage.set(FEATURE_TIMEFRAMES_KEY, S.featureTimeframes);
+      storage.set(FEATURE_TIMEFRAMES_KEY, S.sniperEnabledTimeframes);
       storage.set(STRATEGY_AUTO_SWITCH_KEY, S.autoSwitchStrategy);
       storage.set(STRATEGY_WR_WEIGHT_KEY, S.strategyWeightWr);
       storage.set(STRATEGY_PNL_WEIGHT_KEY, S.strategyWeightPnl);
-      storage.set(STRATEGY_LEARNING_TRADES_KEY, S.strategyLearningTrades);
-      storage.set(STRATEGY_LOSS_STREAK_LIMIT_KEY, S.strategyLossStreakLimit);
+      storage.set(STRATEGY_LEARNING_СДЕЛКИ_KEY, S.strategyLearningTrades);
+      storage.set(STRATEGY_ЗАГУБИ_STREAK_LIMIT_KEY, S.strategyLossStreakLimit);
       storage.set(STRATEGY_CONFIG_KEY, S.strategyConfigs);
       storage.set(RSI_DIVERGENCE_LOOKBACK_KEY, S.rsiDivergenceLookback);
       storage.set(RSI_DIVERGENCE_MIN_DELTA_KEY, S.rsiDivergenceMinDelta);
-      storage.set(RSI_DIVERGENCE_RSI_WINDOW_KEY, S.rsiDivergenceRsiWindow);
+      storage.set(RSI_DIVERGENCE_RSI_ПЕЧАЛБИDOW_KEY, S.rsiDivergenceRsiWindow);
       storage.set(CANDLE_PATTERN_MIN_CONF_KEY, S.candlestickPatternMinConfidence);
       storage.set(CANDLE_PATTERN_ENABLED_KEY, S.candlestickPatternEnabled);
       storage.set(CANDLE_PATTERN_WEIGHT_KEY, S.candlestickPatternWeight);
       storage.set(EMA_RSI_FAST_KEY, S.emaRsiFast);
       storage.set(EMA_RSI_SLOW_KEY, S.emaRsiSlow);
-      storage.set(EMA_RSI_RSI_WINDOW_KEY, S.emaRsiWindow);
+      storage.set(EMA_RSI_RSI_ПЕЧАЛБИDOW_KEY, S.emaRsiWindow);
       storage.set(EMA_RSI_OVERSOLD_KEY, S.emaRsiOversold);
       storage.set(EMA_RSI_OVERBOUGHT_KEY, S.emaRsiOverbought);
       storage.set(PARTNER_READY_1M_BARS_KEY, S.partnerReadyBars1m);
@@ -9306,79 +10017,13 @@ setTimeout(() => {
       await storage.set(RANGE_OSC_PENALTY_ENABLED_KEY, !!S.rangeOscPenaltyEnabled);
       await storage.set(RANGE_OSC_PENALTY_PCT_KEY, Number(S.rangeOscPenaltyPct || 0));
     }
-    function captureSettingsSnapshot() {
-      S.settingsSnapshot = {
-        sniperThreshold: S.sniperThreshold,
-        sniperThresholdOtc: S.sniperThresholdOtc,
-        sniperThresholdReal: S.sniperThresholdReal,
-        sniperOverrideConfidencePct: S.sniperOverrideConfidencePct,
-        sniperBaseAmount: S.sniperBaseAmount,
-        sniperMinPayout: S.sniperMinPayout,
-        sniperEntryWindowSec: S.sniperEntryWindowSec,
-        sniperRsiOversold: S.sniperRsiOversold,
-        sniperRsiOverbought: S.sniperRsiOverbought,
-        maxTradesPerMinute: S.maxTradesPerMinute,
-        maxOpenTrades: S.maxOpenTrades,
-        sniperVolumeThreshold: S.sniperVolumeThreshold,
-        sniperVwapDeviation: S.sniperVwapDeviation,
-        sniperVwapLookbackMin: S.sniperVwapLookbackMin,
-        sniperMomentumThreshold: S.sniperMomentumThreshold,
-        sniperVwapEnabled: S.sniperVwapEnabled,
-        sniperMomentumEnabled: S.sniperMomentumEnabled,
-        sniperVolumeEnabled: S.sniperVolumeEnabled,
-        sniperChopEnabled: S.sniperChopEnabled,
-        sniperVwapWeight: S.sniperVwapWeight,
-        sniperMomentumWeight: S.sniperMomentumWeight,
-        sniperVolumeWeight: S.sniperVolumeWeight,
-        sniperChopThreshold: S.sniperChopThreshold,
-        sniperMultiEnabled: S.sniperMultiEnabled,
-        sniperMultiThresholdPct: S.sniperMultiThresholdPct,
-        sniperMultiCount: S.sniperMultiCount,
-        sniperMultiAmountPct: S.sniperMultiAmountPct,
-        featureVolumeRejection: S.featureVolumeRejection,
-        featureVwapAnalysis: S.featureVwapAnalysis,
-        featureSessionBoost: S.featureSessionBoost,
-        aiVisionEnabled: S.aiVisionEnabled,
-        aiVisionMorningStar: S.aiVisionMorningStar,
-        aiVisionEveningStar: S.aiVisionEveningStar,
-        aiVisionRequireMatch: S.aiVisionRequireMatch,
-        phaseCatchMoveEnabled: S.phaseCatchMoveEnabled,
-        phaseReloadSniperEnabled: S.phaseReloadSniperEnabled,
-        featureTimeframes: { ...(S.featureTimeframes || {}) },
-        dynamicExpiryEnabled: S.dynamicExpiryEnabled,
-        sniperKeepAliveEnabled: S.sniperKeepAliveEnabled,
-        idleSwitchEnabled: S.idleSwitchEnabled,
-        idleSwitchMinutes: S.idleSwitchMinutes,
-        autoSwitchStrategy: S.autoSwitchStrategy,
-        strategyWeightWr: S.strategyWeightWr,
-        strategyWeightPnl: S.strategyWeightPnl,
-        strategyLearningTrades: S.strategyLearningTrades,
-        strategyLossStreakLimit: S.strategyLossStreakLimit,
-        rsiDivergenceLookback: S.rsiDivergenceLookback,
-        rsiDivergenceMinDelta: S.rsiDivergenceMinDelta,
-        rsiDivergenceRsiWindow: S.rsiDivergenceRsiWindow,
-        candlestickPatternMinConfidence: S.candlestickPatternMinConfidence,
-        candlestickPatternEnabled: S.candlestickPatternEnabled,
-        candlestickPatternWeight: S.candlestickPatternWeight,
-        emaRsiFast: S.emaRsiFast,
-        emaRsiSlow: S.emaRsiSlow,
-        emaRsiWindow: S.emaRsiWindow,
-        emaRsiOversold: S.emaRsiOversold,
-        emaRsiOverbought: S.emaRsiOverbought
-      };
-    }
+    function captureSettingsSnapshot(){}
 
-    function restoreSettingsSnapshot() {
-      if (!S.settingsSnapshot) return;
-      Object.assign(S, S.settingsSnapshot);
-      persistSettings();
-      renderSettingsPanel();
-    }
+
+    function restoreSettingsSnapshot(){}
+
 
     function renderSettingsPanel(){
-      const l1 = $id('iaa-l1'), l2 = $id('iaa-l2');
-      if (l1) { l1.checked = false; const row = l1.closest('.iaa-row') || l1.closest('.iaa-field-row'); if (row) row.style.display = 'none'; }
-      if (l2) { l2.checked = false; const row = l2.closest('.iaa-row') || l2.closest('.iaa-field-row'); if (row) row.style.display = 'none'; }
 
       const modeSignals = $id('iaa-mode-signals');
       const modeSniper = $id('iaa-mode-sniper');
@@ -9390,23 +10035,47 @@ setTimeout(() => {
       const sniperCollapse = $id('iaa-sniper-collapse');
       const sniperWeightsToggle = $id('iaa-sniper-weights-toggle');
       const sniperWeightsBody = $id('iaa-sniper-weights-body');
-      const sniperMultiToggle = $id('iaa-sniper-multi-toggle');
-      const sniperMultiBody = $id('iaa-sniper-multi-body');
       const sniperVwapToggle = $id('iaa-sniper-vwap-toggle');
       const newFiltersBody = $id('iaa-newfilters-body');
       const newFiltersToggle = $id('iaa-newfilters-toggle');
 
+      const dynamicCoreToggle = $id('iaa-dynamic-core-toggle');
+      const dynamicCoreBody = $id('iaa-dynamic-core-body');
+      const killerDynamicToggle = $id('iaa-killer-dynamic-toggle');
+      const killerDynamicBody = $id('iaa-killer-dynamic-body');
+
       if (newFiltersToggle && newFiltersBody) {
-        // Toggle without full re-render (prevents losing the click handler).
-        newFiltersToggle.addEventListener('click', () => {
+        // Single binding (onclick) to avoid double-toggle after re-renders.
+        newFiltersToggle.onclick = () => {
           S.sniperNewFiltersCollapsed = !S.sniperNewFiltersCollapsed;
           persistSettings();
           newFiltersBody.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
           newFiltersToggle.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
-        });
+        };
         // Initial paint
         newFiltersBody.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
         newFiltersToggle.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
+      }
+
+      if (dynamicCoreToggle && dynamicCoreBody) {
+        dynamicCoreToggle.onclick = () => {
+          S.dynamicCoreCollapsed = !S.dynamicCoreCollapsed;
+          persistSettings();
+          dynamicCoreBody.style.display = S.dynamicCoreCollapsed ? 'none' : '';
+          dynamicCoreToggle.textContent = S.dynamicCoreCollapsed ? '▸' : '▾';
+        };
+        dynamicCoreBody.style.display = S.dynamicCoreCollapsed ? 'none' : '';
+        dynamicCoreToggle.textContent = S.dynamicCoreCollapsed ? '▸' : '▾';
+      }
+      if (killerDynamicToggle && killerDynamicBody) {
+        killerDynamicToggle.onclick = () => {
+          S.killerDynamicCollapsed = !S.killerDynamicCollapsed;
+          persistSettings();
+          killerDynamicBody.style.display = S.killerDynamicCollapsed ? 'none' : '';
+          killerDynamicToggle.textContent = S.killerDynamicCollapsed ? '▸' : '▾';
+        };
+        killerDynamicBody.style.display = S.killerDynamicCollapsed ? 'none' : '';
+        killerDynamicToggle.textContent = S.killerDynamicCollapsed ? '▸' : '▾';
       }
 
       const sniperVwapBody = $id('iaa-sniper-vwap-body');
@@ -9416,7 +10085,6 @@ setTimeout(() => {
       const sniperEngineBody = $id('iaa-sniper-engine-body');
       const sniperRiskToggle = $id('iaa-sniper-risk-toggle');
       const sniperRiskBody = $id('iaa-sniper-risk-body');
-      const sniperMultiEnabled = $id('iaa-sniper-multi-enabled');
       const sniperThreshold = $id('iaa-sniper-threshold');
       const sniperThresholdOtc = $id('iaa-sniper-threshold-otc');
       const sniperThresholdReal = $id('iaa-sniper-threshold-real');
@@ -9425,9 +10093,9 @@ setTimeout(() => {
       const SNIPER_MIN_PAYOUT = sniperMinPayout;
       const SNIPER_MIN_PAYOUT_ENABLED = $id('iaa-sniper-min-payout-enabled');
 
-      const ENTRYWIN_ENABLED = $id('iaa-entrywin-enabled');
-      const ENTRYWIN_1M = $id('iaa-entrywin-1m');
-      const ENTRYWIN_3M = $id('iaa-entrywin-3m');
+      const ENTRYПЕЧАЛБИ_ENABLED = $id('iaa-entrywin-enabled');
+      const ENTRYПЕЧАЛБИ_1M = $id('iaa-entrywin-1m');
+      const ENTRYПЕЧАЛБИ_3M = $id('iaa-entrywin-3m');
       const sniperChop = $id('iaa-sniper-chop');
       const sniperWarmup = $id('iaa-sniper-warmup');
       const sniperMaxSessionLoss = $id('iaa-sniper-max-session-loss');
@@ -9456,10 +10124,20 @@ setTimeout(() => {
       const sniperTf30m = $id('iaa-sniper-tf-30m');
       const sniperTf3s = $id('iaa-sniper-tf-3s');
       const sniperKeepAlive = $id('iaa-sniper-keep-alive');
-      const sniperMultiThreshold = $id('iaa-sniper-multi-threshold');
-      const sniperMultiCount = $id('iaa-sniper-multi-count');
-      const sniperMultiAmount = $id('iaa-sniper-multi-amount');
+      if (sniperKeepAlive) sniperKeepAlive.checked = !!S.sniperKeepAliveEnabled;
       const dynamicTimeToggleSettings = $id('iaa-dynamic-time-toggle-settings');
+      const dynamicEnabledSettings = $id('iaa-dynamic-enabled-settings');
+      const dynamicModeSettings = $id('iaa-dynamic-mode');
+      const dynamicCandidatesSettings = $id('iaa-dynamic-candidates');
+      const dynamicMinSecSettings = $id('iaa-dynamic-min-sec');
+      const dynamicMaxSecSettings = $id('iaa-dynamic-max-sec');
+      const dynamicMinConfSettings = $id('iaa-dynamic-min-conf');
+      const dynamicSub30ConfSettings = $id('iaa-dynamic-sub30-min-conf');
+      const dynamicLateMaxSettings = $id('iaa-dynamic-late-max-sec');
+      const dynamicSetBudgetSettings = $id('iaa-dynamic-set-budget-ms');
+      const dynamicScoreMinSettings = $id('iaa-dynamic-score-min');
+      const dynamicFallbackFixedSettings = $id('iaa-dynamic-fallback-fixed');
+      const dynamicNoTradeSettings = $id('iaa-dynamic-no-trade');
       const featureVolumeRejection = $id('iaa-feature-volume-rejection');
       const featureVwapAnalysis = $id('iaa-feature-vwap-analysis');
       const featureSessionBoost = $id('iaa-feature-session-boost');
@@ -9522,8 +10200,6 @@ setTimeout(() => {
       const analysisWindow = $id('iaa-analysis-window');
       const analysisWarmup = $id('iaa-analysis-warmup');
       const selfTradeEnabled = $id('iaa-self-trade-enabled');
-      const signalTimeOffset = $id('iaa-signal-time-offset');
-      if (signalTimeOffset) { const row = signalTimeOffset.closest('.iaa-row') || signalTimeOffset.closest('.iaa-field-row'); if (row) row.style.display='none'; }
 
       if (exp) exp.value = S.expirySetting;
       if (base) base.value = (S.baseAmount ?? 100)/100;
@@ -9538,7 +10214,6 @@ setTimeout(() => {
       if (analysisWindow) analysisWindow.value = S.analysisWindowSec || 300;
       if (analysisWarmup) analysisWarmup.value = S.analysisWarmupMin || 5;
       if (selfTradeEnabled) selfTradeEnabled.checked = S.selfTradeEnabled;
-      if (signalTimeOffset) signalTimeOffset.value = S.signalTimeOffsetMin ?? 0;
       if (sniper5sSettings) sniper5sSettings.style.display = 'block';
       if (sniperThreshold) sniperThreshold.value = Math.round(((S.sniperThreshold ?? 0.7) * 100));
       if (sniperBase) sniperBase.value = (S.sniperBaseAmount ?? 10000) / 100;
@@ -9546,9 +10221,9 @@ setTimeout(() => {
       const sniperMinPayoutEnabled = $id('iaa-sniper-min-payout-enabled');
       if (sniperMinPayoutEnabled) sniperMinPayoutEnabled.checked = (S.sniperMinPayoutEnabled ?? true);
       if (sniperMinPayout && sniperMinPayoutEnabled) sniperMinPayout.disabled = !sniperMinPayoutEnabled.checked;
-      if (ENTRYWIN_ENABLED) ENTRYWIN_ENABLED.checked = !!S.entryWindowTfEnabled;
-      if (ENTRYWIN_1M) ENTRYWIN_1M.value = Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15;
-      if (ENTRYWIN_3M) ENTRYWIN_3M.value = Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35;
+      if (ENTRYПЕЧАЛБИ_ENABLED) ENTRYПЕЧАЛБИ_ENABLED.checked = !!S.entryWindowTfEnabled;
+      if (ENTRYПЕЧАЛБИ_1M) ENTRYПЕЧАЛБИ_1M.value = Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15;
+      if (ENTRYПЕЧАЛБИ_3M) ENTRYПЕЧАЛБИ_3M.value = Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35;
       if (sniperChop) sniperChop.value = Math.round(((S.sniperChopThreshold ?? 0.7) * 100));
       if (sniperWarmup) sniperWarmup.value = S.sniperWarmupMin ?? 10;
       if (sniperMaxSessionLoss) sniperMaxSessionLoss.value = (S.maxSessionLossCents || 0) / 100;
@@ -9578,10 +10253,39 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       if (sniperTf5m) sniperTf5m.checked = S.sniperEnabledTimeframes['5m'];
       if (sniperTf30m) sniperTf30m.checked = S.sniperEnabledTimeframes['30m'];
       if (sniperKeepAlive) sniperKeepAlive.checked = S.sniperKeepAliveEnabled;
-      if (sniperMultiThreshold) sniperMultiThreshold.value = S.sniperMultiThresholdPct ?? 99;
-      if (sniperMultiCount) sniperMultiCount.value = S.sniperMultiCount ?? 2;
-      if (sniperMultiAmount) sniperMultiAmount.value = S.sniperMultiAmountPct ?? 50;
-      if (sniperMultiEnabled) sniperMultiEnabled.checked = !!S.sniperMultiEnabled;
+      if (dynamicEnabledSettings) dynamicEnabledSettings.checked = !!S.dynamicExpiryEnabled;
+      if (dynamicModeSettings) dynamicModeSettings.value = getDynamicMode();
+      if (dynamicCandidatesSettings) dynamicCandidatesSettings.value = formatDynamicCandidatesSeconds(S.dynamicCandidatesSec || [15, 30, 45, 60, 90, 120, 180]);
+      if (dynamicMinSecSettings) dynamicMinSecSettings.value = Number.isFinite(S.dynamicMinSec) ? S.dynamicMinSec : 15;
+      if (dynamicMaxSecSettings) dynamicMaxSecSettings.value = Number.isFinite(S.dynamicMaxSec) ? S.dynamicMaxSec : 300;
+      if (dynamicMinConfSettings) dynamicMinConfSettings.value = Math.round(clamp01(S.dynamicMinConfidence ?? 0.65) * 100);
+      if (dynamicSub30ConfSettings) dynamicSub30ConfSettings.value = Math.round(clamp01(S.dynamicSub30MinConfidence ?? 0.78) * 100);
+      if (dynamicLateMaxSettings) dynamicLateMaxSettings.value = Number.isFinite(S.dynamicLateEntryMaxSec) ? S.dynamicLateEntryMaxSec : 35;
+      if (dynamicSetBudgetSettings) dynamicSetBudgetSettings.value = Number.isFinite(S.dynamicSetBudgetMs) ? S.dynamicSetBudgetMs : 1200;
+      if (dynamicScoreMinSettings) dynamicScoreMinSettings.value = Math.round(clamp01(S.dynamicScoreMin ?? 0.25) * 100);
+      if (dynamicFallbackFixedSettings) dynamicFallbackFixedSettings.checked = !!S.dynamicFallbackToFixed;
+
+      if (dynamicNoTradeSettings) dynamicNoTradeSettings.checked = !!S.dynamicAllowNoTrade;
+      const killerEnabledSettings = $id('iaa-killer-enabled');
+      const killerHudEnabledSettings = $id('iaa-killer-hud-enabled');
+      const killerMinConfluenceSettings = $id('iaa-killer-min-confluence');
+      const killerDomThresholdSettings = $id('iaa-killer-dominance-threshold');
+      const killerPerfectTimeSettings = $id('iaa-killer-perfect-time');
+      const killerCooldownSettings = $id('iaa-killer-cooldown-sec');
+      const killerAdxDynamicSettings = $id('iaa-killer-adx-dynamic');
+      const killerCandleHardStopSettings = $id('iaa-killer-candle-hardstop');
+      const killerUseStrategyVotesSettings = $id('iaa-killer-use-strategy-votes');
+      const killerStrategyAgreementSettings = $id('iaa-killer-strategy-agreement');
+      if (killerEnabledSettings) killerEnabledSettings.checked = !!S.killerEnabled;
+      if (killerHudEnabledSettings) killerHudEnabledSettings.checked = !!S.killerHudEnabled;
+      if (killerMinConfluenceSettings) killerMinConfluenceSettings.value = Math.max(4, Math.min(7, Math.round(S.killerMinConfluence || 5)));
+      if (killerDomThresholdSettings) killerDomThresholdSettings.value = Math.max(50, Math.min(90, Math.round(S.killerDominanceThreshold || 68)));
+      if (killerPerfectTimeSettings) killerPerfectTimeSettings.checked = !!S.killerPerfectTimeEnabled;
+      if (killerCooldownSettings) killerCooldownSettings.value = Math.max(0, Math.min(30, Math.round(S.killerSignalCooldownSec || 5)));
+      if (killerAdxDynamicSettings) killerAdxDynamicSettings.checked = !!S.killerAdxDynamicEnabled;
+      if (killerCandleHardStopSettings) killerCandleHardStopSettings.checked = !!S.killerCandleAgainstHardStop;
+      if (killerUseStrategyVotesSettings) killerUseStrategyVotesSettings.checked = !!S.killerUseStrategyVotes;
+      if (killerStrategyAgreementSettings) killerStrategyAgreementSettings.value = Math.max(1, Math.min(3, Math.round(S.killerStrategyAgreementMin || 1)));
       if (featureVolumeRejection) featureVolumeRejection.checked = !!S.featureVolumeRejection;
       if (featureVwapAnalysis) featureVwapAnalysis.checked = !!S.featureVwapAnalysis;
       if (featureSessionBoost) featureSessionBoost.checked = !!S.featureSessionBoost;
@@ -9591,12 +10295,12 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       if (aiVisionMorningStar) aiVisionMorningStar.checked = !!S.aiVisionMorningStar;
       if (aiVisionEveningStar) aiVisionEveningStar.checked = !!S.aiVisionEveningStar;
       if (aiVisionRequireMatch) aiVisionRequireMatch.checked = !!S.aiVisionRequireMatch;
-      if (featureTf15s) featureTf15s.checked = !!S.featureTimeframes?.['15s'];
-      if (featureTf1m) featureTf1m.checked = !!S.featureTimeframes?.['1m'];
-      if (featureTf3m) featureTf3m.checked = !!S.featureTimeframes?.['3m'];
-      if (featureTf5m) featureTf5m.checked = !!S.featureTimeframes?.['5m'];
-      if (featureTf15m) featureTf15m.checked = !!S.featureTimeframes?.['15m'];
-      if (featureTf30m) featureTf30m.checked = !!S.featureTimeframes?.['30m'];
+      if (featureTf15s) featureTf15s.checked = !!S.sniperEnabledTimeframes?.['15s'];
+      if (featureTf1m) featureTf1m.checked = !!S.sniperEnabledTimeframes?.['1m'];
+      if (featureTf3m) featureTf3m.checked = !!S.sniperEnabledTimeframes?.['3m'];
+      if (featureTf5m) featureTf5m.checked = !!S.sniperEnabledTimeframes?.['5m'];
+      if (featureTf15m) featureTf15m.checked = !!S.sniperEnabledTimeframes?.['15m'];
+      if (featureTf30m) featureTf30m.checked = !!S.sniperEnabledTimeframes?.['30m'];
       if (emaRsiPullbackEnabled) emaRsiPullbackEnabled.checked = isStrategyEnabled('ema_rsi_pullback');
       if (scalpMicrotrendEnabled) scalpMicrotrendEnabled.checked = isStrategyEnabled('scalp_microtrend');
       if (partnerReady1m) partnerReady1m.value = S.partnerReadyBars1m ?? 10;
@@ -9609,8 +10313,8 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       if (emaRsiOversold) emaRsiOversold.value = S.emaRsiOversold ?? 35;
       if (emaRsiOverbought) emaRsiOverbought.value = S.emaRsiOverbought ?? 65;
       if (candlePatternEnabled) candlePatternEnabled.checked = !!S.candlestickPatternEnabled;
-      if (candlePatternMinConf) candlePatternMinConf.value = Number(S.candlestickPatternMinConfidence ?? 0.6).toFixed(2);
-      if (candlePatternWeight) candlePatternWeight.value = Number(S.candlestickPatternWeight ?? 0.25).toFixed(2);
+      if (candlePatternMinConf) candlePatternMinConf.value = Math.round((S.candlestickPatternMinConfidence ?? 0.6) * 100);
+      if (candlePatternWeight) candlePatternWeight.value = Math.round((S.candlestickPatternWeight ?? 0.25) * 100);
       if (maxTradesPerMinute) maxTradesPerMinute.value = S.maxTradesPerMinute ?? 5;
       if (maxOpenTrades) maxOpenTrades.value = S.maxOpenTrades ?? 5;
       if (regimeStrength) regimeStrength.value = (S.regimeStrength ?? 0.6).toFixed(2);
@@ -9626,29 +10330,32 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       if (sniperThreshold) applyStrictnessColor(sniperThreshold, parseNumberFlexible(sniperThreshold.value), { min: 0, max: 1, highIsStrict: true });
       if (sniperVwap) applyStrictnessColor(sniperVwap, parseNumberFlexible(sniperVwap.value), { min: 0, max: vwapMax, highIsStrict: true });
       if (sniperMomentum) applyStrictnessColor(sniperMomentum, parseNumberFlexible(sniperMomentum.value), { min: 0, max: momentumMax, highIsStrict: true });
-      if (sniperVwapWeight) applyStrictnessColor(sniperVwapWeight, parseNumberFlexible(sniperVwapWeight.value), { min: 0, max: 1, highIsStrict: true });
-      if (sniperMomentumWeight) applyStrictnessColor(sniperMomentumWeight, parseNumberFlexible(sniperMomentumWeight.value), { min: 0, max: 1, highIsStrict: false });
-      if (sniperVolumeWeight) applyStrictnessColor(sniperVolumeWeight, parseNumberFlexible(sniperVolumeWeight.value), { min: 0, max: 1, highIsStrict: false });
-      if (sniperChop) applyStrictnessColor(sniperChop, parseNumberFlexible(sniperChop.value), { min: 0, max: 1, highIsStrict: true });
+      if (sniperVwapWeight) applyStrictnessColor(sniperVwapWeight, parseNumberFlexible(sniperVwapWeight.value), { min: 1, max: 100, highIsStrict: true });
+      if (sniperMomentumWeight) applyStrictnessColor(sniperMomentumWeight, parseNumberFlexible(sniperMomentumWeight.value), { min: 1, max: 100, highIsStrict: false });
+      if (sniperVolumeWeight) applyStrictnessColor(sniperVolumeWeight, parseNumberFlexible(sniperVolumeWeight.value), { min: 1, max: 100, highIsStrict: false });
+      if (sniperChop) applyStrictnessColor(sniperChop, parseNumberFlexible(sniperChop.value), { min: 1, max: 100, highIsStrict: true });
       if (sniperVolumeThreshold) applyStrictnessColor(sniperVolumeThreshold, parseNumberFlexible(sniperVolumeThreshold.value), { min: 0, max: 1, highIsStrict: true });
       if (regimeStrength) applyStrictnessColor(regimeStrength, parseNumberFlexible(regimeStrength.value), { min: 0, max: 1, highIsStrict: true });
       if (confirmationStrength) applyStrictnessColor(confirmationStrength, parseNumberFlexible(confirmationStrength.value), { min: 0, max: 1, highIsStrict: true });
       if (biasStrength) applyStrictnessColor(biasStrength, parseNumberFlexible(biasStrength.value), { min: 0, max: 1, highIsStrict: true });
       if (conflictStrength) applyStrictnessColor(conflictStrength, parseNumberFlexible(conflictStrength.value), { min: 0, max: 1, highIsStrict: true });
       // Mini bars (проба само на 2 реда)
-      if (sniperThreshold) setMiniBar('iaa-bar-threshold', parseNumberFlexible(sniperThreshold.value), 1, 100, 10);
-      if (sniperVwap) setMiniBar('iaa-bar-vwapdev', parseNumberFlexible(sniperVwap.value), 0, 0.30, 10);
+      if (sniperThreshold) setMiniBar('iaa-bar-threshold', parseNumberFlexible(sniperThreshold.value), 1, 100, 10, { highIsStrict: true });
+      if (sniperVwap) setMiniBar('iaa-bar-vwapdev', parseNumberFlexible(sniperVwap.value), 0, 0.30, 10, { highIsStrict: true });
+      applySettingsInputColors();
 
       if (sniperSettingsBody) sniperSettingsBody.style.display = S.sniperSettingsCollapsed ? 'none' : 'block';
       if (sniperCollapse) sniperCollapse.textContent = S.sniperSettingsCollapsed ? '▸' : '▾';
       if (sniperWeightsBody) sniperWeightsBody.style.display = S.sniperWeightsCollapsed ? 'none' : 'block';
       if (sniperWeightsToggle) sniperWeightsToggle.textContent = S.sniperWeightsCollapsed ? '▸' : '▾';
-      if (sniperMultiBody) sniperMultiBody.style.display = S.sniperMultiCollapsed ? 'none' : 'block';
-      if (sniperMultiToggle) sniperMultiToggle.textContent = S.sniperMultiCollapsed ? '▸' : '▾';
       if (sniperVwapBody) sniperVwapBody.style.display = S.sniperVwapCollapsed ? 'none' : 'block';
       if (newFiltersBody) newFiltersBody.style.display = S.sniperNewFiltersCollapsed ? 'none' : 'block';
       if (sniperVwapToggle) sniperVwapToggle.textContent = S.sniperVwapCollapsed ? '▸' : '▾';
       if (newFiltersToggle) newFiltersToggle.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
+      if (dynamicCoreBody) dynamicCoreBody.style.display = S.dynamicCoreCollapsed ? 'none' : 'block';
+      if (dynamicCoreToggle) dynamicCoreToggle.textContent = S.dynamicCoreCollapsed ? '▸' : '▾';
+      if (killerDynamicBody) killerDynamicBody.style.display = S.killerDynamicCollapsed ? 'none' : 'block';
+      if (killerDynamicToggle) killerDynamicToggle.textContent = S.killerDynamicCollapsed ? '▸' : '▾';
       if (sniperSmartBody) sniperSmartBody.style.display = S.sniperSmartCollapsed ? 'none' : 'block';
       if (sniperSmartToggle) sniperSmartToggle.textContent = S.sniperSmartCollapsed ? '▸' : '▾';
       if (sniperEngineBody) sniperEngineBody.style.display = S.sniperEngineCollapsed ? 'none' : 'block';
@@ -9668,7 +10375,8 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
         basic: $id('iaa-tab-basic'),
         advanced: $id('iaa-tab-advanced'),
         features: $id('iaa-tab-features'),
-        analyses: $id('iaa-tab-analyses')
+        analyses: $id('iaa-tab-analyses'),
+        dynamic: $id('iaa-tab-dynamic')
       };
       if (!tabBodies[S.sniperSettingsTab]) {
         S.sniperSettingsTab = 'basic';
@@ -9689,7 +10397,47 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
 
 
 
-    function handlePanelPopupAction(action) {
+    
+    function openMousePanel(){
+      try { if (typeof renderMousePanel === 'function') renderMousePanel(); } catch(e){}
+      showPopup('iaa-mouse-panel');
+    }
+    function openKillerPanel(){
+      // Killer HUD is opened ONLY via the 🔫 button on the main panel (no settings toggle).
+      S.killerHudEnabled = true;
+      try { if (typeof renderKillerHud === 'function') renderKillerHud(); } catch(e){}
+      showPopup('iaa-killer-panel');
+    }
+
+
+// --- UI helper: position a popup near an anchor element (fallback if earlier helper isn't in scope)
+function placePopupNear(popupId, anchorEl){
+  try{
+    const pop = document.getElementById(popupId);
+    if(!pop || !anchorEl) return;
+    pop.style.position = 'fixed';
+    pop.style.left = '0px';
+    pop.style.top  = '0px';
+    pop.style.display = 'block';
+    const ar = anchorEl.getBoundingClientRect();
+    // Measure after display
+    const pr = pop.getBoundingClientRect();
+    const margin = 8;
+    let left = ar.left;
+    let top  = ar.bottom + margin;
+    // Flip above if needed
+    if(top + pr.height > window.innerHeight - margin){
+      top = ar.top - pr.height - margin;
+    }
+    // Clamp
+    left = Math.max(margin, Math.min(left, window.innerWidth - pr.width - margin));
+    top  = Math.max(margin, Math.min(top,  window.innerHeight - pr.height - margin));
+    pop.style.left = Math.round(left) + 'px';
+    pop.style.top  = Math.round(top)  + 'px';
+  }catch(e){}
+}
+
+function handlePanelPopupAction(action) {
       const showPopup = (popupId) => {
         const popup = $id(popupId);
         if (popup) popup.style.display = 'block';
@@ -9699,10 +10447,15 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
         const mouse = $id('iaa-mouse-panel');
         const debug = $id('iaa-debug-panel');
         const calibration = $id('iaa-calibration-panel');
+        const killer = $id('iaa-killer-panel');
         if (settings) settings.style.display = 'none';
         if (mouse) mouse.style.display = 'none';
         if (debug) debug.style.display = 'none';
         if (calibration) calibration.style.display = 'none';
+        if (killer) killer.style.display = 'none';
+        const filterMode = $id('iaa-filtermode-panel');
+        if (filterMode) filterMode.style.display = 'none';
+        S.filterModePanelOpen = false;
         S.settingsPanelOpen = false;
         S.mousePanelOpen = false;
         S.calibrationPanelOpen = false;
@@ -9728,7 +10481,23 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
           debug.style.display = 'block';
           setDebugTab(S.debugTab || 'status');
         }
+        return;
       }
+      if (action === 'filtermode') {
+        const fm = $id('iaa-filtermode-panel');
+        if (!fm) return;
+        if (S.filterModePanelOpen) { hidePopups(); return; }
+        hidePopups();
+        // Open next to the toolbar button (same behavior as Mouse Mapping)
+        showPopup('iaa-filtermode-panel');
+        const anchor = $id('iaa-newfilters-toggle') || $id('iaa-filtermode-toggle');
+        if (anchor) placePopupNear('iaa-filtermode-panel', anchor);
+        S.filterModePanelOpen = true;
+        try { bindFilterModeUI(); syncFilterModeUI(); } catch (e) {}
+        try { persistSettings(); } catch(e) {}
+        return;
+      }
+      if (action === 'killer') { return; }
     }
 
     function rebindPanelPopupButtons() {
@@ -9739,6 +10508,8 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       clearInline('iaa-settings-toggle');
       clearInline('iaa-mouse-toggle');
       clearInline('iaa-debug-toggle');
+      clearInline('iaa-killer-toggle');
+      clearInline('iaa-filtermode-toggle');
     }
 
     function ensurePanelHandlers(){
@@ -9756,7 +10527,9 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
           if (!(target instanceof Element)) return;
           if (target.closest('#iaa-settings-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('settings'); return; }
           if (target.closest('#iaa-mouse-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('mouse'); return; }
-          if (target.closest('#iaa-debug-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('debug'); }
+          if (target.closest('#iaa-filtermode-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('filtermode'); return; }
+          if (target.closest('#iaa-debug-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('debug'); return; }
+          if (target.closest('#iaa-killer-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('killer'); }
         }, true);
       }
 
@@ -9773,11 +10546,26 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       const mouseToggleBtn = $id('iaa-mouse-toggle');
       if (mouseToggleBtn && !mouseToggleBtn.dataset.boundPopupClick) {
         mouseToggleBtn.dataset.boundPopupClick = '1';
-        mouseToggleBtn.addEventListener('click', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
+        mouseToggleBtn.onclick = (event) => {
+          if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
           handlePanelPopupAction('mouse');
-        });
+          return false;
+        };
+      }
+      const killerToggleBtn = $id('iaa-killer-toggle');
+      if (killerToggleBtn && !killerToggleBtn.dataset.boundPopupClick) {
+        killerToggleBtn.dataset.boundPopupClick = '1';
+        killerToggleBtn.onclick = (event) => {
+          if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+          handlePanelPopupAction('killer');
+          return false;
+        };
       }
 
       const settingsPanel = $id('iaa-settings-panel');
@@ -9810,7 +10598,59 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
         });
       });
 
-      const closeSettingsPanel = () => {
+      
+
+const renderFilterModeIndicator = () => {
+  const el = $id('iaa-filtermode-indicator');
+  if (!el) return;
+  const autoOn = !!S.filterModeAutoEnabled;
+  const effective = (S.filterModeCurrent || S.filterModeManual || 'soft');
+  const pill = (label, active) => `<span class="iaa-fm-pill${active ? ' active' : ''}">${label}</span>`;
+  el.innerHTML = pill('Soft', !autoOn && effective === 'soft') + pill('AUTO', autoOn) + pill('Strict', !autoOn && effective === 'strict');
+};
+
+const syncFilterModeUI = () => {
+  const cbEnabled = $id('iaa-filtermode-enabled');
+  const cbAuto = $id('iaa-filtermode-auto');
+  if (cbEnabled && !cbEnabled.dataset.boundChange) {
+    cbEnabled.dataset.boundChange = '1';
+    cbEnabled.addEventListener('change', () => {
+      S.filterModeEnabled = !!cbEnabled.checked;
+      // Safety: когато е ИЗКЛ, не позволяваме режими
+      if (!S.filterModeEnabled) {
+        S.filterModeCurrent = 'off';
+      } else {
+        S.filterModeCurrent = (S.filterModeAutoEnabled ? 'auto' : (S.filterModeManual || 'soft'));
+      }
+      const wrap = $id('iaa-filtermode-controls-wrap');
+      if (wrap) {
+        const disabled = !S.filterModeEnabled;
+        wrap.style.opacity = disabled ? '0.45' : '1';
+        wrap.style.pointerEvents = disabled ? 'none' : 'auto';
+        wrap.style.filter = disabled ? 'grayscale(0.25)' : 'none';
+      }
+      persistSettings();
+    });
+  }
+  if (inFlips && !inFlips.dataset.boundChange) {
+    inFlips.dataset.boundChange = '1';
+    inFlips.addEventListener('change', () => {
+      S.filterAutoFlipThreshold = clampInt(inFlips.value, 1, 20, 3);
+      inFlips.value = String(S.filterAutoFlipThreshold);
+      persistSettings();
+    });
+  }
+  if (inDrops && !inDrops.dataset.boundChange) {
+    inDrops.dataset.boundChange = '1';
+    inDrops.addEventListener('change', () => {
+      S.filterAutoDropThreshold = clampInt(inDrops.value, 1, 20, 2);
+      inDrops.value = String(S.filterAutoDropThreshold);
+      persistSettings();
+    });
+  }
+};
+
+const closeSettingsPanel = () => {
         const panel = $id('iaa-settings-panel');
         if (panel) panel.style.display = 'none';
         S.settingsPanelOpen = false;
@@ -9835,7 +10675,7 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
             renderLagStatus();
             startPriceMonitoring();
             resetRiskSession();
-            S.recentSignalKeys.clear();
+            (S.recentSignalKeys instanceof Set ? S.recentSignalKeys.clear() : (S.recentSignalKeys = new Set()));
             S.analysisReadyAt = S.analysisEnabled
               ? Date.now() + Math.max(1, S.analysisWarmupMin) * 60 * 1000
               : 0;
@@ -9865,6 +10705,7 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
               updateProfitDisplay();
               updateBalanceSummary();
             }
+            try { sessionResetAndStart(); } catch (e) {}
 
             if (getEffectiveKeepAliveEnabled()) {
               startKeepAlive();
@@ -9874,13 +10715,9 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
             S.loop = null;
             stopKeepAlive();
             stopPriceMonitoring();
-            S.tradeSequenceActive = false;
-            S.currentSignal = null;
             S.assetSelecting = false;
             S.assetSelectedForSignal = false;
             S.assetSelectionAttempted = false;
-            S.signalBuffer.length = 0;
-            S.hasLiveSignal = false;
             S.forceImmediate = false;
             S.activeTrades = [];
             S.sniperLastDecision = null;
@@ -9893,6 +10730,7 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
             renderWarmup(0);
             renderSniperMatrix();
             renderPendingTrades();
+            try { sessionStop(); } catch (e) {}
             logConsoleLine(formatStatus('bot_stopped'));
             renderTradeStats();
           }
@@ -9922,19 +10760,106 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
         });
       }
 
+      const dynamicEnabledInput = $id('iaa-dynamic-enabled-settings');
+      const dynamicModeInput = $id('iaa-dynamic-mode');
+      const dynamicCandidatesInput = $id('iaa-dynamic-candidates');
+      const dynamicMinSecInput = $id('iaa-dynamic-min-sec');
+      const dynamicMaxSecInput = $id('iaa-dynamic-max-sec');
+      const dynamicMinConfInput = $id('iaa-dynamic-min-conf');
+      const dynamicSub30Input = $id('iaa-dynamic-sub30-min-conf');
+      const dynamicLateMaxInput = $id('iaa-dynamic-late-max-sec');
+      const dynamicSetBudgetInput = $id('iaa-dynamic-set-budget-ms');
+      const dynamicScoreMinInput = $id('iaa-dynamic-score-min');
+      const dynamicFallbackInput = $id('iaa-dynamic-fallback-fixed');
+      const dynamicNoTradeInput = $id('iaa-dynamic-no-trade');
+
       if (dynamicTimeToggle) {
         dynamicTimeToggle.checked = !!S.dynamicExpiryEnabled;
         dynamicTimeToggle.addEventListener('change', () => {
-          S.dynamicExpiryEnabled = false;
+          S.dynamicExpiryEnabled = !!dynamicTimeToggle.checked;
           if (dynamicTimeToggleSettings) dynamicTimeToggleSettings.checked = S.dynamicExpiryEnabled;
+          if (dynamicEnabledInput) dynamicEnabledInput.checked = S.dynamicExpiryEnabled;
           persistSettings();
         });
       }
 
-      const L1 = $id('iaa-l1');
-      const L2 = $id('iaa-l2');
-      const L1M = $id('iaa-l1-multiplier');
-      const L2M = $id('iaa-l2-multiplier');
+      const applyDynamicUiState = () => {
+        const enabled = !!S.dynamicExpiryEnabled;
+        const mode = getDynamicMode();
+        const controls = [
+          dynamicModeInput,
+          dynamicCandidatesInput,
+          dynamicMinSecInput,
+          dynamicMaxSecInput,
+          dynamicMinConfInput,
+          dynamicSub30Input,
+          dynamicLateMaxInput,
+          dynamicSetBudgetInput,
+          dynamicScoreMinInput,
+          dynamicFallbackInput,
+          dynamicNoTradeInput
+        ];
+        controls.forEach((el) => { if (el) el.disabled = !enabled; });
+        if (dynamicModeInput) dynamicModeInput.disabled = !enabled;
+        if (!enabled) return;
+        S.dynamicMode = (mode === 'dynamic' || mode === 'hybrid') ? mode : 'off';
+      };
+
+      if (dynamicEnabledInput) {
+        dynamicEnabledInput.addEventListener('change', () => {
+          S.dynamicExpiryEnabled = !!dynamicEnabledInput.checked;
+          if (dynamicTimeToggleSettings) dynamicTimeToggleSettings.checked = S.dynamicExpiryEnabled;
+          if (dynamicTimeToggle) dynamicTimeToggle.checked = S.dynamicExpiryEnabled;
+          applyDynamicUiState();
+          persistSettings();
+        });
+      }
+      if (dynamicModeInput) {
+        dynamicModeInput.addEventListener('change', () => {
+          const mode = String(dynamicModeInput.value || 'off').toLowerCase();
+          S.dynamicMode = (mode === 'dynamic' || mode === 'hybrid') ? mode : 'off';
+          persistSettings();
+        });
+      }
+      if (dynamicCandidatesInput) {
+        dynamicCandidatesInput.addEventListener('change', () => {
+          S.dynamicCandidatesSec = parseDynamicCandidatesSeconds(dynamicCandidatesInput.value, [15, 30, 45, 60, 90, 120, 180]);
+          dynamicCandidatesInput.value = formatDynamicCandidatesSeconds(S.dynamicCandidatesSec);
+          persistSettings();
+        });
+      }
+      if (dynamicMinSecInput) dynamicMinSecInput.addEventListener('input', () => { const d = parseNumberFlexible(dynamicMinSecInput.value); S.dynamicMinSec = Math.max(3, Math.min(3600, Math.round(Number.isFinite(d) ? d : 15))); persistSettings(); });
+      if (dynamicMaxSecInput) dynamicMaxSecInput.addEventListener('input', () => { const d = parseNumberFlexible(dynamicMaxSecInput.value); S.dynamicMaxSec = Math.max(3, Math.min(3600, Math.round(Number.isFinite(d) ? d : 300))); persistSettings(); });
+      if (dynamicMinConfInput) dynamicMinConfInput.addEventListener('input', () => { const d = parseNumberFlexible(dynamicMinConfInput.value); S.dynamicMinConfidence = clamp01((Number.isFinite(d) ? d : 65) / 100); persistSettings(); });
+      if (dynamicSub30Input) dynamicSub30Input.addEventListener('input', () => { const d = parseNumberFlexible(dynamicSub30Input.value); S.dynamicSub30MinConfidence = clamp01((Number.isFinite(d) ? d : 78) / 100); persistSettings(); });
+      if (dynamicLateMaxInput) dynamicLateMaxInput.addEventListener('input', () => { const d = parseNumberFlexible(dynamicLateMaxInput.value); S.dynamicLateEntryMaxSec = Math.max(0, Math.min(300, Math.round(Number.isFinite(d) ? d : 35))); persistSettings(); });
+      if (dynamicSetBudgetInput) dynamicSetBudgetInput.addEventListener('input', () => { const d = parseNumberFlexible(dynamicSetBudgetInput.value); S.dynamicSetBudgetMs = Math.max(200, Math.min(5000, Math.round(Number.isFinite(d) ? d : 1200))); persistSettings(); });
+      if (dynamicScoreMinInput) dynamicScoreMinInput.addEventListener('input', () => { const d = parseNumberFlexible(dynamicScoreMinInput.value); S.dynamicScoreMin = clamp01((Number.isFinite(d) ? d : 25) / 100); persistSettings(); });
+      if (dynamicFallbackInput) dynamicFallbackInput.addEventListener('change', () => { S.dynamicFallbackToFixed = !!dynamicFallbackInput.checked; persistSettings(); });
+      if (dynamicNoTradeInput) dynamicNoTradeInput.addEventListener('change', () => { S.dynamicAllowNoTrade = !!dynamicNoTradeInput.checked; persistSettings(); });
+      // --- KILLER settings (bind after elements exist) ---
+      const killerEnabledSettings = $id('iaa-killer-enabled');
+      const killerHudEnabledSettings = $id('iaa-killer-hud-enabled');
+      const killerMinConfluenceSettings = $id('iaa-killer-min-confluence');
+      const killerDomThresholdSettings = $id('iaa-killer-dominance-threshold');
+      const killerPerfectTimeSettings = $id('iaa-killer-perfect-time');
+      const killerCooldownSettings = $id('iaa-killer-cooldown-sec');
+      const killerAdxDynamicSettings = $id('iaa-killer-adx-dynamic');
+      const killerCandleHardstopSettings = $id('iaa-killer-candle-hardstop');
+      const killerUseStrategyVotesSettings = $id('iaa-killer-use-strategy-votes');
+      const killerStrategyAgreementSettings = $id('iaa-killer-strategy-agreement');
+
+      if (killerEnabledSettings) killerEnabledSettings.addEventListener('change', () => { S.killerEnabled = !!killerEnabledSettings.checked; void persistSettings(); });
+      if (killerHudEnabledSettings) killerHudEnabledSettings.addEventListener('change', () => { S.killerHudEnabled = !!killerHudEnabledSettings.checked; void persistSettings(); });
+      if (killerMinConfluenceSettings) killerMinConfluenceSettings.addEventListener('change', () => { const v = parseNumberFlexible(killerMinConfluenceSettings.value); S.killerMinConfluence = Math.max(4, Math.min(7, Math.round(Number.isFinite(v) ? v : 5))); void persistSettings(); });
+      if (killerDomThresholdSettings) killerDomThresholdSettings.addEventListener('input', () => { const v = parseNumberFlexible(killerDomThresholdSettings.value); S.killerDominanceThreshold = Math.max(50, Math.min(90, Math.round(Number.isFinite(v) ? v : 68))); void persistSettings(); });
+      if (killerPerfectTimeSettings) killerPerfectTimeSettings.addEventListener('change', () => { S.killerPerfectTimeEnabled = !!killerPerfectTimeSettings.checked; void persistSettings(); });
+      if (killerCooldownSettings) killerCooldownSettings.addEventListener('input', () => { const v = parseNumberFlexible(killerCooldownSettings.value); S.killerSignalCooldownSec = Math.max(0, Math.min(30, Math.round(Number.isFinite(v) ? v : 5))); void persistSettings(); });
+      if (killerAdxDynamicSettings) killerAdxDynamicSettings.addEventListener('change', () => { S.killerAdxDynamicEnabled = !!killerAdxDynamicSettings.checked; void persistSettings(); });
+      if (killerCandleHardstopSettings) killerCandleHardstopSettings.addEventListener('change', () => { S.killerCandleAgainstHardStop = !!killerCandleHardstopSettings.checked; void persistSettings(); });
+      if (killerUseStrategyVotesSettings) killerUseStrategyVotesSettings.addEventListener('change', () => { S.killerUseStrategyVotes = !!killerUseStrategyVotesSettings.checked; void persistSettings(); });
+      if (killerStrategyAgreementSettings) killerStrategyAgreementSettings.addEventListener('change', () => { const v = parseNumberFlexible(killerStrategyAgreementSettings.value); S.killerStrategyAgreementMin = Math.max(1, Math.min(3, Math.round(Number.isFinite(v) ? v : 1))); void persistSettings(); });
+      applyDynamicUiState();
       const EXP = $id('iaa-expiry-setting');
       const BASE = $id('iaa-base-amount');
       const ANALYSIS_ENABLED = $id('iaa-analysis-enabled');
@@ -9945,23 +10870,44 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       const PAYOUT_REQUIRED = $id('iaa-payout-required');
       const MAX_TRADE_AMOUNT = $id('iaa-max-trade-amount');
       const MAX_TRADE_MULTIPLIER = $id('iaa-max-trade-multiplier');
-      const ANALYSIS_WINDOW = $id('iaa-analysis-window');
+      const ANALYSIS_ПЕЧАЛБИDOW = $id('iaa-analysis-window');
       const ANALYSIS_WARMUP = $id('iaa-analysis-warmup');
       const SELF_TRADE_ENABLED = $id('iaa-self-trade-enabled');
-      const SIGNAL_TIME_OFFSET = $id('iaa-signal-time-offset');
       const SETTINGS_SAVE = $id('iaa-settings-save');
       const SETTINGS_CANCEL = $id('iaa-settings-cancel');
-      const SNIPER_MAX_SESSION_LOSS = $id('iaa-sniper-max-session-loss');
-      const SNIPER_MAX_LOSS_STREAK = $id('iaa-sniper-max-loss-streak');
+      const SNIPER_MAX_SESSION_ЗАГУБИ = $id('iaa-sniper-max-session-loss');
+      const SNIPER_MAX_ЗАГУБИ_STREAK = $id('iaa-sniper-max-loss-streak');
       const MODE_SNIPER = $id('iaa-mode-sniper');
       const SNIPER_THRESHOLD = $id('iaa-sniper-threshold');
       const SNIPER_THRESHOLD_OTC = $id('iaa-sniper-threshold-otc');
       const SNIPER_THRESHOLD_REAL = $id('iaa-sniper-threshold-real');
       const SNIPER_BASE = $id('iaa-sniper-base');
       const SNIPER_MIN_PAYOUT = $id('iaa-sniper-min-payout');
-      const ENTRYWIN_ENABLED = $id('iaa-entrywin-enabled');
-      const ENTRYWIN_1M = $id('iaa-entrywin-1m');
-      const ENTRYWIN_3M = $id('iaa-entrywin-3m');
+      const DYNAMIC_ENABLED_SETTINGS = $id('iaa-dynamic-enabled-settings');
+      const DYNAMIC_MODE_SETTINGS = $id('iaa-dynamic-mode');
+      const DYNAMIC_CANDIDATES_SETTINGS = $id('iaa-dynamic-candidates');
+      const DYNAMIC_MIN_SEC_SETTINGS = $id('iaa-dynamic-min-sec');
+      const DYNAMIC_MAX_SEC_SETTINGS = $id('iaa-dynamic-max-sec');
+      const DYNAMIC_MIN_CONF_SETTINGS = $id('iaa-dynamic-min-conf');
+      const DYNAMIC_SUB30_MIN_CONF_SETTINGS = $id('iaa-dynamic-sub30-min-conf');
+      const DYNAMIC_LATE_MAX_SETTINGS = $id('iaa-dynamic-late-max-sec');
+      const DYNAMIC_SET_BUDGET_SETTINGS = $id('iaa-dynamic-set-budget-ms');
+      const DYNAMIC_SCORE_MIN_SETTINGS = $id('iaa-dynamic-score-min');
+      const DYNAMIC_FALLBACK_FIXED_SETTINGS = $id('iaa-dynamic-fallback-fixed');
+      const DYNAMIC_NO_TRADE_SETTINGS = $id('iaa-dynamic-no-trade');
+      const KILLER_ENABLED_SETTINGS = $id('iaa-killer-enabled');
+      const KILLER_HUD_ENABLED_SETTINGS = $id('iaa-killer-hud-enabled');
+      const KILLER_MIN_CONFLUENCE_SETTINGS = $id('iaa-killer-min-confluence');
+      const KILLER_DOM_THRESHOLD_SETTINGS = $id('iaa-killer-dominance-threshold');
+      const KILLER_PERFECT_TIME_SETTINGS = $id('iaa-killer-perfect-time');
+      const KILLER_COOLDOWN_SETTINGS = $id('iaa-killer-cooldown-sec');
+      const KILLER_ADX_DYNAMIC_SETTINGS = $id('iaa-killer-adx-dynamic');
+      const KILLER_CANDLE_HARDSTOP_SETTINGS = $id('iaa-killer-candle-hardstop');
+      const KILLER_USE_STRATEGY_VOTES_SETTINGS = $id('iaa-killer-use-strategy-votes');
+      const KILLER_STRATEGY_AGREEMENT_SETTINGS = $id('iaa-killer-strategy-agreement');
+      const ENTRYПЕЧАЛБИ_ENABLED = $id('iaa-entrywin-enabled');
+      const ENTRYПЕЧАЛБИ_1M = $id('iaa-entrywin-1m');
+      const ENTRYПЕЧАЛБИ_3M = $id('iaa-entrywin-3m');
       const SNIPER_CHOP = $id('iaa-sniper-chop');
       const SNIPER_WARMUP = $id('iaa-sniper-warmup');
       const SNIPER_EMA_FAST = $id('iaa-sniper-ema-fast');
@@ -9980,10 +10926,10 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       const SNIPER_VOLUME_ENABLED = $id('iaa-sniper-volume-enabled');
       const SNIPER_CHOP_ENABLED = $id('iaa-sniper-chop-enabled');
       const SNIPER_OVERRIDE_CONF = $id('iaa-sniper-override-confidence');
-      const SNIPER_MULTI_ENABLED = $id('iaa-sniper-multi-enabled');
       const SNIPER_SETTINGS_COLLAPSE = $id('iaa-sniper-collapse');
+      const SNIPER_VWAP_TOGGLE = $id('iaa-sniper-vwap-toggle');
+      const KEEP_TAB_ACTIVE = $id('iaa-sniper-keep-alive');
       const SNIPER_WEIGHTS_TOGGLE = $id('iaa-sniper-weights-toggle');
-      const SNIPER_MULTI_TOGGLE = $id('iaa-sniper-multi-toggle');
       const SNIPER_SMART_TOGGLE = $id('iaa-sniper-smart-toggle');
       const SNIPER_ENGINE_TOGGLE = $id('iaa-sniper-engine-toggle');
       const SNIPER_RISK_TOGGLE = $id('iaa-sniper-risk-toggle');
@@ -9995,9 +10941,6 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       const SNIPER_TF_30M = $id('iaa-sniper-tf-30m');
       const SNIPER_TF_3S = $id('iaa-sniper-tf-3s');
       const SNIPER_KEEP_ALIVE = $id('iaa-sniper-keep-alive');
-      const SNIPER_MULTI_THRESHOLD = $id('iaa-sniper-multi-threshold');
-      const SNIPER_MULTI_COUNT = $id('iaa-sniper-multi-count');
-      const SNIPER_MULTI_AMOUNT = $id('iaa-sniper-multi-amount');
       const FEATURE_VOLUME_REJECTION = $id('iaa-feature-volume-rejection');
       const FEATURE_VWAP_ANALYSIS = $id('iaa-feature-vwap-analysis');
       const FEATURE_SESSION_BOOST = $id('iaa-feature-session-boost');
@@ -10013,7 +10956,7 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       const STRATEGY_WEIGHT_WR = $id('iaa-strategy-weight-wr');
       const STRATEGY_WEIGHT_PNL = $id('iaa-strategy-weight-pnl');
       const STRATEGY_LEARNING = $id('iaa-strategy-learning-trades');
-      const STRATEGY_LOSS_STREAK = $id('iaa-strategy-loss-streak');
+      const STRATEGY_ЗАГУБИ_STREAK = $id('iaa-strategy-loss-streak');
       const STRATEGY_EMA_RSI_PULLBACK = $id('iaa-strategy-ema-rsi-pullback-enabled');
       const STRATEGY_SCALP_MICROTREND = $id('iaa-strategy-scalp-microtrend-enabled');
       const PARTNER_READY_1M = $id('iaa-partner-ready-1m');
@@ -10022,11 +10965,11 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
       const PARTNER_READY_15M = $id('iaa-partner-ready-15m');
       const EMA_RSI_FAST = $id('iaa-ema-rsi-fast');
       const EMA_RSI_SLOW = $id('iaa-ema-rsi-slow');
-      const EMA_RSI_WINDOW = $id('iaa-ema-rsi-window');
+      const EMA_RSI_ПЕЧАЛБИDOW = $id('iaa-ema-rsi-window');
       const EMA_RSI_OVERSOLD = $id('iaa-ema-rsi-oversold');
       const EMA_RSI_OVERBOUGHT = $id('iaa-ema-rsi-overbought');
-      const MAX_TRADES_PER_MIN = $id('iaa-max-trades-per-minute');
-      const MAX_OPEN_TRADES = $id('iaa-max-open-trades');
+      const MAX_СДЕЛКИ_PER_MIN = $id('iaa-max-trades-per-minute');
+      const MAX_OPEN_СДЕЛКИ = $id('iaa-max-open-trades');
       const STRATEGY_AUTO_SWITCH_PANEL = $id('iaa-strategy-auto-switch-panel');
       const STRATEGY_DOWNLOAD = $id('iaa-strategy-download');
       const REGIME_STRENGTH = $id('iaa-regime-strength');
@@ -10050,23 +10993,16 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
           closeSettingsPanel();
         });
       }
-
-      if (L1) L1.addEventListener('change',()=>{ S.l1Active=false; persistSettings(); });
-      if (L2) L2.addEventListener('change',()=>{ S.l2Active=false; persistSettings(); });
-      if (L1M) { const row = L1M.closest('.iaa-row') || L1M.closest('.iaa-field-row'); if (row) row.style.display='none'; L1M.addEventListener('input',()=>{ S.l1Multiplier=1; persistSettings(); }); }
-      if (L2M) { const row = L2M.closest('.iaa-row') || L2M.closest('.iaa-field-row'); if (row) row.style.display='none'; L2M.addEventListener('input',()=>{ S.l2Multiplier=1; persistSettings(); }); }
-      if (EXP) EXP.addEventListener('change',()=>{ S.expirySetting=normalizeExpiry(EXP.value)||'1M'; persistSettings(); });
-      if (BASE) BASE.addEventListener('input',()=>{ const d=parseNumberFlexible(BASE.value)||1; S.baseAmount = Math.max(1, Math.round(d))*100; persistSettings(); });
-      if (SNIPER_MAX_SESSION_LOSS) {
-        SNIPER_MAX_SESSION_LOSS.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_MAX_SESSION_LOSS.value) || 0;
+      if (SNIPER_MAX_SESSION_ЗАГУБИ) {
+        SNIPER_MAX_SESSION_ЗАГУБИ.addEventListener('input', () => {
+          const d = parseNumberFlexible(SNIPER_MAX_SESSION_ЗАГУБИ.value) || 0;
           S.maxSessionLossCents = Math.max(0, Math.round(d)) * 100;
           persistSettings();
         });
       }
-      if (SNIPER_MAX_LOSS_STREAK) {
-        SNIPER_MAX_LOSS_STREAK.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_MAX_LOSS_STREAK.value) || 0;
+      if (SNIPER_MAX_ЗАГУБИ_STREAK) {
+        SNIPER_MAX_ЗАГУБИ_STREAK.addEventListener('input', () => {
+          const d = parseNumberFlexible(SNIPER_MAX_ЗАГУБИ_STREAK.value) || 0;
           S.maxConsecutiveLosses = Math.max(0, Math.round(d));
           persistSettings();
         });
@@ -10130,9 +11066,9 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
           persistSettings();
         });
       }
-      if (ANALYSIS_WINDOW) {
-        ANALYSIS_WINDOW.addEventListener('input',()=>{ 
-          const d = parseNumberFlexible(ANALYSIS_WINDOW.value) || 300;
+      if (ANALYSIS_ПЕЧАЛБИDOW) {
+        ANALYSIS_ПЕЧАЛБИDOW.addEventListener('input',()=>{ 
+          const d = parseNumberFlexible(ANALYSIS_ПЕЧАЛБИDOW.value) || 300;
           S.analysisWindowSec = Math.max(60, Math.round(d));
           persistSettings();
         });
@@ -10155,13 +11091,6 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
           persistSettings();
         });
       }
-      if (SIGNAL_TIME_OFFSET) {
-        SIGNAL_TIME_OFFSET.addEventListener('input', () => {
-          const d = parseNumberFlexible(SIGNAL_TIME_OFFSET.value) || 0;
-          S.signalTimeOffsetMin = Math.max(-180, Math.min(180, Math.round(d)));
-          persistSettings();
-        });
-      }
       if (MODE_SNIPER) {
         MODE_SNIPER.addEventListener('click', () => {
           setMode('sniper');
@@ -10174,7 +11103,7 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
           const pct = Math.max(1, Math.min(100, Math.round(d)));
           S.sniperThreshold = pct / 100;
           applyStrictnessColor(SNIPER_THRESHOLD, pct, { min: 1, max: 100, highIsStrict: true });
-          setMiniBar('iaa-bar-threshold', pct, 1, 100, 10);
+          setMiniBar('iaa-bar-threshold', pct, 1, 100, 10, { highIsStrict: true });
           persistSettings();
         });
       }
@@ -10195,22 +11124,22 @@ if (sniperTf30) sniperTf30.checked = S.sniperEnabledTimeframes['30s'];
           persistSettings();
         });
 }
-      if (ENTRYWIN_ENABLED || ENTRYWIN_1M || ENTRYWIN_3M) {
+      if (ENTRYПЕЧАЛБИ_ENABLED || ENTRYПЕЧАЛБИ_1M || ENTRYПЕЧАЛБИ_3M) {
         const updateEntryWinUi = () => {
-          const en = !!(ENTRYWIN_ENABLED && ENTRYWIN_ENABLED.checked);
+          const en = !!(ENTRYПЕЧАЛБИ_ENABLED && ENTRYПЕЧАЛБИ_ENABLED.checked);
           S.entryWindowTfEnabled = en;
-          if (ENTRYWIN_1M) ENTRYWIN_1M.disabled = !en;
-          if (ENTRYWIN_3M) ENTRYWIN_3M.disabled = !en;
+          if (ENTRYПЕЧАЛБИ_1M) ENTRYПЕЧАЛБИ_1M.disabled = !en;
+          if (ENTRYПЕЧАЛБИ_3M) ENTRYПЕЧАЛБИ_3M.disabled = !en;
           persistSettings();
         };
-        if (ENTRYWIN_ENABLED) ENTRYWIN_ENABLED.addEventListener('change', updateEntryWinUi);
-        if (ENTRYWIN_1M) ENTRYWIN_1M.addEventListener('input', () => {
-          const d = parseNumberFlexible(ENTRYWIN_1M.value);
+        if (ENTRYПЕЧАЛБИ_ENABLED) ENTRYПЕЧАЛБИ_ENABLED.addEventListener('change', updateEntryWinUi);
+        if (ENTRYПЕЧАЛБИ_1M) ENTRYПЕЧАЛБИ_1M.addEventListener('input', () => {
+          const d = parseNumberFlexible(ENTRYПЕЧАЛБИ_1M.value);
           S.entryWindowSec1m = Math.max(0, Math.min(60, Math.round(Number.isFinite(d) ? d : 15)));
           persistSettings();
         });
-        if (ENTRYWIN_3M) ENTRYWIN_3M.addEventListener('input', () => {
-          const d = parseNumberFlexible(ENTRYWIN_3M.value);
+        if (ENTRYПЕЧАЛБИ_3M) ENTRYПЕЧАЛБИ_3M.addEventListener('input', () => {
+          const d = parseNumberFlexible(ENTRYПЕЧАЛБИ_3M.value);
           S.entryWindowSec3m = Math.max(0, Math.min(180, Math.round(Number.isFinite(d) ? d : 35)));
           persistSettings();
         });
@@ -10230,16 +11159,16 @@ if (true) {
           update();
         }
       }
-      if (MAX_TRADES_PER_MIN) {
-        MAX_TRADES_PER_MIN.addEventListener('input', () => {
-          const d = parseNumberFlexible(MAX_TRADES_PER_MIN.value) || 0;
+      if (MAX_СДЕЛКИ_PER_MIN) {
+        MAX_СДЕЛКИ_PER_MIN.addEventListener('input', () => {
+          const d = parseNumberFlexible(MAX_СДЕЛКИ_PER_MIN.value) || 0;
           S.maxTradesPerMinute = Math.max(0, Math.round(d));
           persistSettings();
         });
       }
-      if (MAX_OPEN_TRADES) {
-        MAX_OPEN_TRADES.addEventListener('input', () => {
-          const d = parseNumberFlexible(MAX_OPEN_TRADES.value) || 1;
+      if (MAX_OPEN_СДЕЛКИ) {
+        MAX_OPEN_СДЕЛКИ.addEventListener('input', () => {
+          const d = parseNumberFlexible(MAX_OPEN_СДЕЛКИ.value) || 1;
           S.maxOpenTrades = Math.max(1, Math.round(d));
           persistSettings();
         });
@@ -10274,7 +11203,7 @@ if (true) {
           SNIPER_VWAP.value = clamped.toFixed(2);
           S.sniperVwapDeviation = clamped / 100;
           applyStrictnessColor(SNIPER_VWAP, clamped, { min: 0, max: 0.30, highIsStrict: true });
-          setMiniBar('iaa-bar-vwapdev', clamped, 0, 0.30, 10);
+          setMiniBar('iaa-bar-vwapdev', clamped, 0, 0.30, 10, { highIsStrict: true });
           persistSettings();
         };
         SNIPER_VWAP.addEventListener('input', update);
@@ -10314,8 +11243,10 @@ if (SNIPER_VOLUME_THRESHOLD) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_CHOP.value);
           const normalized = Number.isFinite(d) ? d : 0;
-          S.sniperChopThreshold = Math.max(0, Math.min(1, normalized));
-          applyStrictnessColor(SNIPER_CHOP, S.sniperChopThreshold, { min: 0, max: 1, highIsStrict: true });
+          const pct = Math.max(1, Math.min(100, Math.round(normalized || 0)));
+          S.sniperChopThreshold = pct / 100;
+          SNIPER_CHOP.value = String(pct);
+          applyStrictnessColor(SNIPER_CHOP, pct, { min: 1, max: 100, highIsStrict: true });
           persistSettings();
         };
         SNIPER_CHOP.addEventListener('input', update);
@@ -10348,8 +11279,10 @@ if (SNIPER_VOLUME_THRESHOLD) {
       if (SNIPER_VWAP_WEIGHT) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_VWAP_WEIGHT.value);
-          S.sniperVwapWeight = Math.max(0, Math.min(1, Number.isFinite(d) ? d : 0));
-          applyStrictnessColor(SNIPER_VWAP_WEIGHT, S.sniperVwapWeight, { min: 0, max: 1, highIsStrict: true });
+          const pct = Math.max(1, Math.min(100, Math.round(Number.isFinite(d) ? d : 55)));
+          S.sniperVwapWeight = pct / 100;
+          SNIPER_VWAP_WEIGHT.value = String(pct);
+          applyStrictnessColor(SNIPER_VWAP_WEIGHT, pct, { min: 1, max: 100, highIsStrict: true });
           persistSettings();
         };
         SNIPER_VWAP_WEIGHT.addEventListener('input', update);
@@ -10358,8 +11291,10 @@ if (SNIPER_VOLUME_THRESHOLD) {
       if (SNIPER_MOMENTUM_WEIGHT) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_MOMENTUM_WEIGHT.value);
-          S.sniperMomentumWeight = Math.max(0, Math.min(1, Number.isFinite(d) ? d : 0));
-          applyStrictnessColor(SNIPER_MOMENTUM_WEIGHT, S.sniperMomentumWeight, { min: 0, max: 1, highIsStrict: false });
+          const pct = Math.max(1, Math.min(100, Math.round(Number.isFinite(d) ? d : 35)));
+          S.sniperMomentumWeight = pct / 100;
+          SNIPER_MOMENTUM_WEIGHT.value = String(pct);
+          applyStrictnessColor(SNIPER_MOMENTUM_WEIGHT, pct, { min: 1, max: 100, highIsStrict: false });
           persistSettings();
         };
         SNIPER_MOMENTUM_WEIGHT.addEventListener('input', update);
@@ -10368,8 +11303,10 @@ if (SNIPER_VOLUME_THRESHOLD) {
       if (SNIPER_VOLUME_WEIGHT) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_VOLUME_WEIGHT.value);
-          S.sniperVolumeWeight = Math.max(0, Math.min(1, Number.isFinite(d) ? d : 0));
-          applyStrictnessColor(SNIPER_VOLUME_WEIGHT, S.sniperVolumeWeight, { min: 0, max: 1, highIsStrict: false });
+          const pct = Math.max(1, Math.min(100, Math.round(Number.isFinite(d) ? d : 10)));
+          S.sniperVolumeWeight = pct / 100;
+          SNIPER_VOLUME_WEIGHT.value = String(pct);
+          applyStrictnessColor(SNIPER_VOLUME_WEIGHT, pct, { min: 1, max: 100, highIsStrict: false });
           persistSettings();
         };
         SNIPER_VOLUME_WEIGHT.addEventListener('input', update);
@@ -10381,12 +11318,6 @@ if (SNIPER_VOLUME_THRESHOLD) {
           const nextValue = Math.max(0, Math.min(100, Math.round(d)));
           S.sniperOverrideConfidencePct = nextValue;
           applyPercentColor(SNIPER_OVERRIDE_CONF, nextValue);
-          persistSettings();
-        });
-      }
-      if (SNIPER_MULTI_ENABLED) {
-        SNIPER_MULTI_ENABLED.addEventListener('change', () => {
-          S.sniperMultiEnabled = SNIPER_MULTI_ENABLED.checked;
           persistSettings();
         });
       }
@@ -10402,126 +11333,12 @@ if (SNIPER_VOLUME_THRESHOLD) {
           renderSettingsPanel();
         });
       }
-      if (SNIPER_MULTI_TOGGLE) {
-        SNIPER_MULTI_TOGGLE.addEventListener('click', () => {
-          S.sniperMultiCollapsed = !S.sniperMultiCollapsed;
-          renderSettingsPanel();
-        });
-      }
-      const SNIPER_VWAP_TOGGLE = $id('iaa-sniper-vwap-toggle');
+
       if (SNIPER_VWAP_TOGGLE) {
-        SNIPER_VWAP_TOGGLE.addEventListener('click', () => {
+        SNIPER_VWAP_TOGGLE.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation();
           S.sniperVwapCollapsed = !S.sniperVwapCollapsed;
           renderSettingsPanel();
-        });
-      }
-
-      const NEWFILTERS_TOGGLE = $id('iaa-newfilters-toggle');
-      if (NEWFILTERS_TOGGLE) {
-        const NEWFILTERS_BODY = $id('iaa-newfilters-body');
-        if (NEWFILTERS_BODY) {
-          NEWFILTERS_TOGGLE.addEventListener('click', () => {
-            S.sniperNewFiltersCollapsed = !S.sniperNewFiltersCollapsed;
-            persistSettings();
-            NEWFILTERS_BODY.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
-            NEWFILTERS_TOGGLE.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
-          });
-          // Initial paint
-          NEWFILTERS_BODY.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
-          NEWFILTERS_TOGGLE.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
-        }
-      }
-      if (SNIPER_SMART_TOGGLE) {
-        SNIPER_SMART_TOGGLE.addEventListener('click', () => {
-          S.sniperSmartCollapsed = !S.sniperSmartCollapsed;
-          renderSettingsPanel();
-        });
-      }
-      if (SNIPER_ENGINE_TOGGLE) {
-        SNIPER_ENGINE_TOGGLE.addEventListener('click', () => {
-          S.sniperEngineCollapsed = !S.sniperEngineCollapsed;
-          renderSettingsPanel();
-        });
-      }
-      if (SNIPER_RISK_TOGGLE) {
-        SNIPER_RISK_TOGGLE.addEventListener('click', () => {
-          S.sniperRiskCollapsed = !S.sniperRiskCollapsed;
-          renderSettingsPanel();
-        });
-      }
-      if (SNIPER_TF_15) {
-        SNIPER_TF_15.addEventListener('change', () => {
-          S.sniperEnabledTimeframes['15s'] = SNIPER_TF_15.checked;
-          persistSettings();
-        });
-      }
-      if (SNIPER_TF_3S) {
-        SNIPER_TF_3S.addEventListener('change', () => {
-          S.sniperEnabledTimeframes['3s'] = SNIPER_TF_3S.checked;
-          persistSettings();
-        });
-      }
-      if (SNIPER_TF_30) {
-        SNIPER_TF_30.addEventListener('change', () => {
-          S.sniperEnabledTimeframes['30s'] = SNIPER_TF_30.checked;
-          persistSettings();
-        });
-      }
-      if (SNIPER_TF_1M) {
-        SNIPER_TF_1M.addEventListener('change', () => {
-          S.sniperEnabledTimeframes['1m'] = SNIPER_TF_1M.checked;
-          persistSettings();
-        });
-      }
-      if (SNIPER_TF_3M) {
-        SNIPER_TF_3M.addEventListener('change', () => {
-          S.sniperEnabledTimeframes['3m'] = SNIPER_TF_3M.checked;
-          persistSettings();
-        });
-      }
-      if (SNIPER_TF_5M) {
-        SNIPER_TF_5M.addEventListener('change', () => {
-          S.sniperEnabledTimeframes['5m'] = SNIPER_TF_5M.checked;
-          persistSettings();
-        });
-      }
-      if (SNIPER_TF_30M) {
-        SNIPER_TF_30M.addEventListener('change', () => {
-          S.sniperEnabledTimeframes['30m'] = SNIPER_TF_30M.checked;
-          persistSettings();
-        });
-      }
-      if (SNIPER_KEEP_ALIVE) {
-        SNIPER_KEEP_ALIVE.addEventListener('change', () => {
-          S.sniperKeepAliveEnabled = SNIPER_KEEP_ALIVE.checked;
-          persistSettings();
-          if (S.sniperKeepAliveEnabled && S.running) {
-            startKeepAlive();
-          } else if (!getEffectiveKeepAliveEnabled()) {
-            stopKeepAlive();
-          }
-        });
-      }
-      if (SNIPER_MULTI_THRESHOLD) {
-        SNIPER_MULTI_THRESHOLD.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_MULTI_THRESHOLD.value) || 0;
-          S.sniperMultiThresholdPct = Math.max(0, Math.min(100, Math.round(d)));
-          persistSettings();
-        });
-      }
-      if (SNIPER_MULTI_COUNT) {
-        SNIPER_MULTI_COUNT.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_MULTI_COUNT.value) || 0;
-          const normalized = Math.max(0, Math.min(20, Math.round(d)));
-          S.sniperMultiCount = normalized;
-          persistSettings();
-        });
-      }
-      if (SNIPER_MULTI_AMOUNT) {
-        SNIPER_MULTI_AMOUNT.addEventListener('input', () => {
-          const d = parseNumberFlexible(SNIPER_MULTI_AMOUNT.value) || 0;
-          S.sniperMultiAmountPct = Math.max(0, Math.min(100, d));
-          persistSettings();
         });
       }
       if (FEATURE_VOLUME_REJECTION) {
@@ -10551,14 +11368,16 @@ if (SNIPER_VOLUME_THRESHOLD) {
       if (CANDLE_PATTERN_MIN_CONF) {
         CANDLE_PATTERN_MIN_CONF.addEventListener('input', () => {
           const d = parseNumberFlexible(CANDLE_PATTERN_MIN_CONF.value) || 0;
-          S.candlestickPatternMinConfidence = clamp01(d);
+          S.candlestickPatternMinConfidence = clamp01((Math.max(1, Math.min(100, Math.round(d))) || 60) / 100);
+          CANDLE_PATTERN_MIN_CONF.value = String(Math.round(S.candlestickPatternMinConfidence * 100));
           persistSettings();
         });
       }
       if (CANDLE_PATTERN_WEIGHT) {
         CANDLE_PATTERN_WEIGHT.addEventListener('input', () => {
           const d = parseNumberFlexible(CANDLE_PATTERN_WEIGHT.value) || 0;
-          S.candlestickPatternWeight = clamp01(d);
+          S.candlestickPatternWeight = clamp01((Math.max(1, Math.min(100, Math.round(d))) || 25) / 100);
+          CANDLE_PATTERN_WEIGHT.value = String(Math.round(S.candlestickPatternWeight * 100));
           persistSettings();
         });
       }
@@ -10576,7 +11395,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
        if (PHASE_RELOAD_SNIPE) PHASE_RELOAD_SNIPE.addEventListener('change', () => { S.phaseReloadSniperEnabled = PHASE_RELOAD_SNIPE.checked; persistSettings(); });
       if (FEATURE_TF_1M) {
         FEATURE_TF_1M.addEventListener('change', () => {
-          S.featureTimeframes['1m'] = FEATURE_TF_1M.checked;
+          S.sniperEnabledTimeframes['1m'] = FEATURE_TF_1M.checked;
           S.sniperEnabledTimeframes['1m'] = FEATURE_TF_1M.checked;
           persistSettings();
           renderSniperMatrix();
@@ -10584,7 +11403,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
       }
       if (FEATURE_TF_3M) {
         FEATURE_TF_3M.addEventListener('change', () => {
-          S.featureTimeframes['3m'] = FEATURE_TF_3M.checked;
+          S.sniperEnabledTimeframes['3m'] = FEATURE_TF_3M.checked;
           S.sniperEnabledTimeframes['3m'] = FEATURE_TF_3M.checked;
           persistSettings();
           renderSniperMatrix();
@@ -10592,7 +11411,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
       }
       if (FEATURE_TF_5M) {
         FEATURE_TF_5M.addEventListener('change', () => {
-          S.featureTimeframes['5m'] = FEATURE_TF_5M.checked;
+          S.sniperEnabledTimeframes['5m'] = FEATURE_TF_5M.checked;
           S.sniperEnabledTimeframes['5m'] = FEATURE_TF_5M.checked;
           persistSettings();
           renderSniperMatrix();
@@ -10600,7 +11419,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
       }
       if (FEATURE_TF_15M) {
         FEATURE_TF_15M.addEventListener('change', () => {
-          S.featureTimeframes['15m'] = FEATURE_TF_15M.checked;
+          S.sniperEnabledTimeframes['15m'] = FEATURE_TF_15M.checked;
           S.sniperEnabledTimeframes['15m'] = FEATURE_TF_15M.checked;
           persistSettings();
           renderSniperMatrix();
@@ -10608,7 +11427,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
       }
       if (false /* TF 30m removed */) {
         FEATURE_TF_30M.addEventListener('change', () => {
-          S.featureTimeframes['30m'] = FEATURE_TF_30M.checked;
+          S.sniperEnabledTimeframes['30m'] = FEATURE_TF_30M.checked;
           S.sniperEnabledTimeframes['30m'] = FEATURE_TF_30M.checked;
           persistSettings();
           renderSniperMatrix();
@@ -10678,11 +11497,11 @@ if (SNIPER_VOLUME_THRESHOLD) {
           persistSettings();
         });
       }
-      if (EMA_RSI_WINDOW) {
-        EMA_RSI_WINDOW.addEventListener('input', () => {
-          const d = parseNumberFlexible(EMA_RSI_WINDOW.value) || 14;
+      if (EMA_RSI_ПЕЧАЛБИDOW) {
+        EMA_RSI_ПЕЧАЛБИDOW.addEventListener('input', () => {
+          const d = parseNumberFlexible(EMA_RSI_ПЕЧАЛБИDOW.value) || 14;
           S.emaRsiWindow = Math.max(5, Math.min(30, Math.round(d)));
-          EMA_RSI_WINDOW.value = String(S.emaRsiWindow);
+          EMA_RSI_ПЕЧАЛБИDOW.value = String(S.emaRsiWindow);
           persistSettings();
         });
       }
@@ -10777,7 +11596,6 @@ if (SNIPER_VOLUME_THRESHOLD) {
       ensurePanelHandlers();
     }
 
-    ;
     function renderWarmup(percent){
       const el = $id('iaa-warm'); if (!el) return;
       if (S.running && percent < 1.0) {
@@ -10864,6 +11682,49 @@ if (SNIPER_VOLUME_THRESHOLD) {
         S.wsLastPriceAt = WS_FEED_BUFFER.lastAt || Date.now();
       }
       ensurePanelInit();
+  // ---- Robust popup openers (fix lost handlers after panel re-renders) ----
+  function __iaaTogglePopup(popupId){
+    const el = document.getElementById(popupId);
+    if (!el) return;
+    const isOpen = (el.style.display === 'block');
+    // close any other open popups
+    ['iaa-settings-panel','iaa-killer-panel','iaa-mouse-panel'].forEach(id=>{
+      const p = document.getElementById(id);
+      if (p && id !== popupId) { p.style.display = 'none'; p.setAttribute('aria-hidden','true'); }
+    });
+    if (isOpen) {
+      el.style.display = 'none';
+      el.setAttribute('aria-hidden','true');
+      return;
+    }
+    // sync UI values right before showing settings
+    if (popupId === 'iaa-settings-panel') {
+      try { if (typeof applyDynamicUiState === 'function') applyDynamicUiState(); } catch(_){}
+      try { if (typeof applyAnalysisUiState === 'function') applyAnalysisUiState(); } catch(_){}
+      try { if (typeof applyStrategyUiState === 'function') applyStrategyUiState(); } catch(_){}
+    }
+    el.style.display = 'block';
+    el.setAttribute('aria-hidden','false');
+  }
+
+  if (false && !window.__iaaPopupDelegatesBound) {
+    window.__iaaPopupDelegatesBound = true;
+    document.addEventListener('click', (e)=>{
+      const mouseBtn = e.target && e.target.closest && e.target.closest('#iaa-mouse-toggle');
+      if (mouseBtn) {
+        e.preventDefault(); e.stopPropagation();
+        __iaaTogglePopup('iaa-mouse-panel');
+        return;
+      }
+      const killerBtn = e.target && e.target.closest && e.target.closest('#iaa-killer-toggle');
+      if (killerBtn) {
+        e.preventDefault(); e.stopPropagation();
+        __iaaTogglePopup('iaa-killer-panel');
+        return;
+      }
+    }, true);
+  }
+
       ensureMouseHandlers();
       installPageDebugBridge();
       logConsoleLine(formatStatus('bot_loaded'));
@@ -10886,8 +11747,6 @@ if (SNIPER_VOLUME_THRESHOLD) {
 
     api.S = S;
     api.xpathLocator = xpathLocator;
-    api.parseRawSignalInExtension = parseRawSignalInExtension;
-    api.parseInfinityAISignalFormat = parseInfinityAISignalFormat;
     api.debugLog = debugLog;
     api.logConsole = logConsoleLine;
     api.formatStatus = formatStatus;
@@ -10923,4 +11782,9 @@ if (SNIPER_VOLUME_THRESHOLD) {
       start();
     }
   })();
-})();
+})()
+    function escapeHtml(s){
+      return String(s ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+    }
+
+;
