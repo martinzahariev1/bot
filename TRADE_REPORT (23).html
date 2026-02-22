@@ -1,0 +1,343 @@
+<!doctype html><html lang="bg"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{margin:0;background:#0b0f14;color:#e5e7eb;font-family:system-ui,Segoe UI,Arial}
+  .mz-topbar{position:sticky;top:0;z-index:999;display:flex;gap:10px;align-items:center;justify-content:space-between;
+    padding:10px 12px;background:rgba(10,14,20,.92);backdrop-filter:blur(8px);border-bottom:1px solid rgba(255,255,255,.08)}
+  .mz-topbar .left{display:flex;gap:10px;align-items:center}
+  .mz-pill{font-size:12px;padding:4px 10px;border:1px solid rgba(255,255,255,.12);border-radius:999px;color:#d1d5db}
+  .mz-btn{cursor:pointer;font-size:12px;font-weight:700;letter-spacing:.06em;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.12);
+    background:#111827;color:#fff}
+  .mz-btn:hover{filter:brightness(1.1)}
+  .mz-wrap{padding:0}
+</style></head><body>
+  <div class="mz-topbar">
+    <div class="left">
+      <span class="mz-pill">SESSION</span>
+      <span class="mz-pill">TRADE_REPORT_20260222_025409</span>
+    </div>
+    <div class="right">
+      <button class="mz-btn" id="mz-save-html">ЗАПИШИ HTML</button>
+    </div>
+  </div>
+  <div class="mz-wrap"><!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>СЕСИОНЕН АНАЛИЗ</title>
+<style>
+  :root{
+    --bg:#070a10; --panel:#0b0f1a; --panel2:#0f1526;
+    --txt:#e5e7eb; --muted:#94a3b8; --line:rgba(148,163,184,.18);
+    --green:#22c55e; --red:#ef4444; --cyan:#22d3ee; --amber:#f59e0b;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:radial-gradient(1200px 600px at 55% 0%, rgba(34,211,238,.10), transparent 60%), var(--bg); color:var(--txt); font:14px/1.4 system-ui,Segoe UI,Arial; }
+  .wrap{ max-width:980px; margin:22px auto; padding:0 14px 36px; }
+  .top{ display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+  .h1{ font-size:22px; letter-spacing:.08em; }
+  .date{ color:var(--muted); }
+  .card{ background:linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02)); border:1px solid var(--line); border-radius:14px; padding:14px; box-shadow:0 18px 50px rgba(0,0,0,.55); }
+  .summary{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+  .pill{ display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; border:1px solid var(--line); background:rgba(15,21,38,.6); }
+  .pill b{ letter-spacing:.02em; }
+  .kpi{ display:flex; flex-wrap:wrap; gap:10px; }
+  .kpi .pill{ min-width:140px; justify-content:space-between; }
+  .win{ color:var(--green); }
+  .loss{ color:var(--red); }
+  .neu{ color:#9ca3af; }
+  h2{ margin:18px 0 10px; font-size:14px; letter-spacing:.1em; color:var(--cyan); }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .issues li{ display:flex; justify-content:space-between; padding:8px 10px; border-top:1px solid var(--line); }
+  .issues li:first-child{ border-top:0; }
+  table{ width:100%; border-collapse:collapse; }
+  th,td{ padding:9px 10px; border-bottom:1px solid var(--line); text-align:left; }
+  th{ color:var(--muted); font-size:12px; letter-spacing:.08em; }
+  .tag{ padding:2px 8px; border-radius:999px; border:1px solid var(--line); }
+  .tag.buy{ color:var(--green); }
+  .tag.sell{ color:var(--red); }
+  .charts{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+  .chart{ color:var(--green); }
+  .chart.dom{ color:var(--red); }
+  .chart.pnl{ color:var(--amber); }
+  pre{ background:rgba(0,0,0,.35); border:1px solid var(--line); border-radius:12px; padding:12px; overflow:auto; max-height:320px; white-space:pre-wrap; }
+  details{ border:1px solid var(--line); border-radius:12px; padding:10px 12px; background:rgba(0,0,0,.22); }
+  details summary{ cursor:pointer; color:var(--cyan); letter-spacing:.08em; }
+  .muted{ color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <div class="h1">СЕСИОНЕН АНАЛИЗ</div>
+      <div class="date">22.02.2026 г. 02:54:09 ч.</div>
+    </div>
+    <div class="date">Asset: <b>AUD/USD OTC</b> </div>
+  </div>
+
+  <div class="card summary">
+    <div>
+      <div class="muted">ОБЩО</div>
+      <div class="kpi" style="margin-top:10px;">
+        <div class="pill"><span>START</span><b>$26.56</b></div>
+        <div class="pill"><span>STOP/NOW</span><b>$26.84</b></div>
+        <div class="pill"><span>RESULT</span><b>$0.28</b></div>
+        <div class="pill"><span>СДЕЛКИ</span><b>3</b></div>
+        <div class="pill"><span class="win">ПЕЧАЛБИ</span><b class="win">0</b></div>
+        <div class="pill"><span class="loss">ЗАГУБИ</span><b class="loss">0</b></div>
+        <div class="pill"><span class="neu">НЕУТРАЛНИ</span><b class="neu">3</b></div>
+        <div class="pill"><span>WR</span><b>0.0%</b></div>
+        <div class="pill"><span>AVG CONF</span><b>—</b></div>
+      </div>
+      <div class="muted" style="margin-top:10px;">
+        Начало: 02:28:10 ч. | Край: — | Продължителност: 26 мин
+      </div>
+    </div>
+    <div>
+      <div class="muted">TOP ПРОБЛЕМИ</div>
+      <ul class="issues" style="list-style:none; margin:10px 0 0; padding:0;">
+        <li><span>Накъсан пазар</span><b>12</b></li><li><span>Потвърждение</span><b>6</b></li><li><span>Bias</span><b>4</b></li><li><span>Вход</span><b>3</b></li><li><span>Късен вход</span><b>1</b></li><li><span>Пропуск</span><b>1</b></li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>СДЕЛКИ</h2>
+  <div class="card">
+    <table>
+      <thead><tr>
+        <th>ВРЕМЕ</th><th>АКТИВ</th><th>TF</th><th>ПОСОКА</th><th>УВЕР.</th><th>MODE</th><th>EXPIRY</th><th>РЕЗУЛТАТ</th><th>PNL</th><th>STRATEGY</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+            <td>02:53:13 ч.</td>
+            <td>AUD/USD OTC</td>
+            <td>1M</td>
+            <td><span class="tag sell">SELL</span></td>
+            <td>—</td>
+            <td>AUTO</td>
+            <td>1M</td>
+            <td class="neu"><b></b></td>
+            <td class="neu">—</td>
+            <td>ema_rsi_pullback</td>
+          </tr><tr>
+            <td>02:51:27 ч.</td>
+            <td>AUD/USD OTC</td>
+            <td>3M</td>
+            <td><span class="tag sell">SELL</span></td>
+            <td>—</td>
+            <td>AUTO</td>
+            <td>3M</td>
+            <td class="neu"><b></b></td>
+            <td class="neu">—</td>
+            <td>ema_rsi_pullback</td>
+          </tr><tr>
+            <td>02:49:07 ч.</td>
+            <td>AUD/USD OTC</td>
+            <td>1M</td>
+            <td><span class="tag sell">SELL</span></td>
+            <td>—</td>
+            <td>AUTO</td>
+            <td>1M</td>
+            <td class="neu"><b></b></td>
+            <td class="neu">—</td>
+            <td>ema_rsi_pullback</td>
+          </tr>
+      </tbody>
+    </table>
+    <div class="muted" style="margin-top:8px;">Сделки: 3 | Winrate: 0.0% | Result(balance): $0.28</div>
+  </div>
+
+  <h2>СТРАТЕГИИ (Partner mode)</h2>
+  <div class="card">
+    <table>
+      <thead><tr>
+        <th>STRATEGY</th><th>СДЕЛКИ</th><th>W</th><th>L</th><th>N</th><th>WR</th><th>NET</th><th>AVG CONF</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td>ema_rsi_pullback</td><td>3</td><td class="win">0</td><td class="loss">0</td><td class="neu">3</td>
+          <td>0.0%</td><td>$0.00</td><td>—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>🔫 АНАЛИЗ</h2>
+  <div class="card">
+    <div class="charts">
+      <div class="card chart">
+        <div class="muted">CONFIDENCE OVER TIME</div>
+        <svg width="210" height="46"></svg>
+      </div>
+      <div class="card chart dom">
+        <div class="muted">DOMINANCE (placeholder)</div>
+        <svg width="210" height="46"></svg>
+      </div>
+      <div class="card chart pnl">
+        <div class="muted">PNL TIMELINE</div>
+        <svg width="210" height="46" viewBox="0 0 210 46" preserveAspectRatio="none">
+        <polyline points="0.0,46.0 105.0,46.0 210.0,46.0" fill="none" stroke="currentColor" stroke-width="2" />
+      </svg>
+      </div>
+    </div>
+    <div class="muted" style="margin-top:10px;">
+      Killer: OFF | PASS: 6 | WAIT: 0
+    </div>
+    <div class="muted">Reasons: —</div>
+  </div>
+
+  <h2>АНАЛИЗ НА ЗАГУБИ</h2>
+  <div class="muted">Няма записани загуби.</div>
+
+  <h2>ЛОГ (последни 300)</h2>
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin:-6px 0 6px;">
+    <button onclick="navigator.clipboard.writeText(document.getElementById('mz-short-log').innerText)" style="cursor:pointer;font-size:12px;font-weight:700;padding:6px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:#111827;color:#fff;">КОПИРАЙ</button>
+  </div>
+  <pre id="mz-short-log">[02:29:00 ч.] ℹA|- 0%|праг 65%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">TF not ready&lt;/span>
+[02:30:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">TF not ready&lt;/span>
+[02:31:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">TF not ready&lt;/span>
+[02:32:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Късен вход&lt;/span>
+[02:33:00 ч.] ℹA|BUY 76%|праг 61%|&lt;span class="iaa-console-strategy">EMA+RSI Pullback&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:34:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:35:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:36:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:37:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:38:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:39:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:39:06 ч.] 🔫 3m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 100%(thr 59%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 25&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:39:07 ч.] 🔁 3M
+[02:40:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:41:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:42:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:42:33 ч.] 🔫 3m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 32&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:42:34 ч.] [SCAN V5] READY → BUY 3M (93%)
+[02:42:35 ч.] [SCAN V5] ПРОПУСК: Извън Entry Window след delay (3m t=35s > 35s)
+[02:43:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:44:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Bias&lt;/span> (лош пазар)
+[02:45:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Bias&lt;/span> (лош пазар)
+[02:46:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Bias&lt;/span> (лош пазар)
+[02:47:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:47:05 ч.] 🔫 1m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 29&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:47:06 ч.] 🔁 1M
+[02:48:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Chop&lt;/span> (лош пазар)
+[02:48:05 ч.] 🔫 1m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 32&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:48:07 ч.] [SCAN V5] READY → SELL 1M (90%)
+[02:48:07 ч.] [SCAN V5] INFO: Няма сигнал след delay (1m) → fallback към предишния сигнал
+[02:48:08 ч.] Опит за сделка: AUD/USD OTC SELL 1M
+[02:48:08 ч.] Клик: &lt;span class="iaa-log-sell">SELL&lt;/span> $1.00 | увереност=90%
+[02:48:08 ч.] Изпращане на сделка...
+[02:48:08 ч.] СДЕЛКА!!!
+[02:48:24 ч.] 🔫 3m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 32&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:48:26 ч.] [SCAN V5] READY → SELL 3M (91%)
+[02:48:26 ч.] [SCAN V5] INFO: Няма сигнал след delay (3m) → fallback към предишния сигнал
+[02:48:27 ч.] Опит за сделка: AUD/USD OTC SELL 3M
+[02:48:27 ч.] Клик: &lt;span class="iaa-log-sell">SELL&lt;/span> $1.00 | увереност=91%
+[02:48:27 ч.] Изпращане на сделка...
+[02:48:27 ч.] СДЕЛКА!!!
+[02:49:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:49:07 ч.] ❌ ГУБЕЩА СДЕЛКА ($1.27) [1M]
+[02:50:00 ч.] ℹA|SELL 39%|праг 61%|&lt;span class="iaa-console-strategy">VWAP+Momentum&lt;/span>|&lt;span class="iaa-console-issue">Увереност&lt;/span>
+[02:51:00 ч.] ℹA|SELL 88%|праг 61%|&lt;span class="iaa-console-strategy">VWAP+Momentum&lt;/span>|&lt;span class="iaa-console-issue">Chop&lt;/span> (лош пазар)
+[02:51:27 ч.] ✅ ПЕЧЕЛИВША СДЕЛКА ($0.18) [3M]
+[02:52:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:52:09 ч.] 🔫 1m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 40&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:52:10 ч.] [SCAN V5] READY → SELL 1M (91%)
+[02:52:11 ч.] Опит за сделка: AUD/USD OTC SELL 1M
+[02:52:11 ч.] Клик: &lt;span class="iaa-log-sell">SELL&lt;/span> $1.00 | увереност=91%
+[02:52:11 ч.] Изпращане на сделка...
+[02:52:12 ч.] СДЕЛКА!!!
+[02:53:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:53:13 ч.] ❌ ГУБЕЩА СДЕЛКА ($1.00) [1M]
+[02:54:00 ч.] ℹA|SELL 66%|праг 61%|&lt;span class="iaa-console-strategy">VWAP+Momentum&lt;/span>|&lt;span class="iaa-console-issue">Bias&lt;/span> (лош пазар)</pre>
+
+  <details style="margin-top:12px;">
+    <summary style="cursor:pointer;">ПЪЛЕН ЛОГ (сесия)</summary>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin:8px 0 6px;">
+      <button onclick="navigator.clipboard.writeText(document.getElementById('mz-full-log').innerText)" style="cursor:pointer;font-size:12px;font-weight:700;padding:6px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:#111827;color:#fff;">КОПИРАЙ</button>
+    </div>
+    <pre id="mz-full-log" style="max-height:520px;">[02:29:00 ч.] ℹA|- 0%|праг 65%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">TF not ready&lt;/span>
+[02:30:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">TF not ready&lt;/span>
+[02:31:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">TF not ready&lt;/span>
+[02:32:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Късен вход&lt;/span>
+[02:33:00 ч.] ℹA|BUY 76%|праг 61%|&lt;span class="iaa-console-strategy">EMA+RSI Pullback&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:34:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:35:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:36:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:37:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:38:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:39:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:39:06 ч.] 🔫 3m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 100%(thr 59%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 25&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:39:07 ч.] 🔁 3M
+[02:40:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:41:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:42:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:42:33 ч.] 🔫 3m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 32&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:42:34 ч.] [SCAN V5] READY → BUY 3M (93%)
+[02:42:35 ч.] [SCAN V5] ПРОПУСК: Извън Entry Window след delay (3m t=35s > 35s)
+[02:43:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:44:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Bias&lt;/span> (лош пазар)
+[02:45:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Bias&lt;/span> (лош пазар)
+[02:46:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Bias&lt;/span> (лош пазар)
+[02:47:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:47:05 ч.] 🔫 1m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 29&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:47:06 ч.] 🔁 1M
+[02:48:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Chop&lt;/span> (лош пазар)
+[02:48:05 ч.] 🔫 1m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 32&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:48:07 ч.] [SCAN V5] READY → SELL 1M (90%)
+[02:48:07 ч.] [SCAN V5] INFO: Няма сигнал след delay (1m) → fallback към предишния сигнал
+[02:48:08 ч.] Опит за сделка: AUD/USD OTC SELL 1M
+[02:48:08 ч.] Клик: &lt;span class="iaa-log-sell">SELL&lt;/span> $1.00 | увереност=90%
+[02:48:08 ч.] Изпращане на сделка...
+[02:48:08 ч.] СДЕЛКА!!!
+[02:48:24 ч.] 🔫 3m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 32&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:48:26 ч.] [SCAN V5] READY → SELL 3M (91%)
+[02:48:26 ч.] [SCAN V5] INFO: Няма сигнал след delay (3m) → fallback към предишния сигнал
+[02:48:27 ч.] Опит за сделка: AUD/USD OTC SELL 3M
+[02:48:27 ч.] Клик: &lt;span class="iaa-log-sell">SELL&lt;/span> $1.00 | увереност=91%
+[02:48:27 ч.] Изпращане на сделка...
+[02:48:27 ч.] СДЕЛКА!!!
+[02:49:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Няма данни&lt;/span>
+[02:49:07 ч.] ❌ ГУБЕЩА СДЕЛКА ($1.27) [1M]
+[02:50:00 ч.] ℹA|SELL 39%|праг 61%|&lt;span class="iaa-console-strategy">VWAP+Momentum&lt;/span>|&lt;span class="iaa-console-issue">Увереност&lt;/span>
+[02:51:00 ч.] ℹA|SELL 88%|праг 61%|&lt;span class="iaa-console-strategy">VWAP+Momentum&lt;/span>|&lt;span class="iaa-console-issue">Chop&lt;/span> (лош пазар)
+[02:51:27 ч.] ✅ ПЕЧЕЛИВША СДЕЛКА ($0.18) [3M]
+[02:52:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:52:09 ч.] 🔫 1m|&lt;span style="color:#22c55e;font-weight:800;">READY&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">CONF 6/8 (мин 6)&lt;/span>|&lt;span style="color:#22c55e;font-weight:800;">DOM 67%(thr 53%)&lt;/span>|&lt;span style="color:#a5b4fc;font-weight:700;">ADX 40&lt;/span>|&lt;span style="color:#e5e7eb;">PT ✓&lt;/span>
+[02:52:10 ч.] [SCAN V5] READY → SELL 1M (91%)
+[02:52:11 ч.] Опит за сделка: AUD/USD OTC SELL 1M
+[02:52:11 ч.] Клик: &lt;span class="iaa-log-sell">SELL&lt;/span> $1.00 | увереност=91%
+[02:52:11 ч.] Изпращане на сделка...
+[02:52:12 ч.] СДЕЛКА!!!
+[02:53:00 ч.] ℹA|- 0%|праг 61%|&lt;span class="iaa-console-strategy">—&lt;/span>|&lt;span class="iaa-console-issue">Потвърждение&lt;/span> (лош пазар)
+[02:53:13 ч.] ❌ ГУБЕЩА СДЕЛКА ($1.00) [1M]
+[02:54:00 ч.] ℹA|SELL 66%|праг 61%|&lt;span class="iaa-console-strategy">VWAP+Momentum&lt;/span>|&lt;span class="iaa-console-issue">Bias&lt;/span> (лош пазар)</pre>
+  </details>
+
+</div>
+</body>
+</html></div>
+
+<script>
+window.__REPORT_FNAME__ = "TRADE_REPORT_20260222_025409.html";
+(function(){
+  const btn = document.getElementById('mz-save-html');
+  if(!btn) return;
+  btn.addEventListener('click', () => {
+    try{
+      const html = '<!doctype html>' + document.documentElement.outerHTML;
+      const blob = new Blob([html], {type:'text/html;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (window.__REPORT_FNAME__ || "TRADE_REPORT.html");
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(()=>{ try{ URL.revokeObjectURL(url);}catch(e){} try{a.remove();}catch(e){} }, 250);
+    }catch(e){
+      alert('Грешка при запис: ' + (e && e.message ? e.message : e));
+    }
+  });
+})();
+</script>
+</body></html>
