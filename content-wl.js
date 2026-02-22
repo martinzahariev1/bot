@@ -190,7 +190,8 @@
     vwapDeviation: 0.0012,
     vwapLookbackMin: 2,
     momentumThreshold: 0.0014,
-    chopThreshold: 0.7,
+    // Mapped from UI 1..100 to an actual range threshold ratio (1%=lenient, 100%=strict)
+    chopThreshold: 0.021,
     rsiOversold: 22,
     rsiOverbought: 78,
     rsiWindow: 10,
@@ -1806,8 +1807,12 @@
 
     function sessionRecordTrade(trade, outcome, profitCents) {
       const sess = _sessionEnsure();
-      if (!sess.active) return;
       const now = Date.now();
+      if (!sess.active) {
+        sess.active = true;
+        if (!sess.startedAt) sess.startedAt = now;
+        if (!Number.isFinite(sess.startBalanceCents)) sess.startBalanceCents = readBalanceCents();
+      }
 
       const entry = {
         t: now,
@@ -5278,8 +5283,7 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     function confirmTradeByBalance(trade, clickedAt) {
-      // Строга верификация "отворена сделка" по баланс делта (без толеранс):
-      // bal трябва да стане точно (bal0 - stake) в рамките на 0–1200ms.
+      // Верификация на отворена сделка по баланс делта с толеранс за UI/latency jitter.
       return (async () => {
         const stakeCents = Math.max(0, trade.stakeCents || 0);
 
@@ -5292,14 +5296,17 @@ function getMinHistoryWindowForReadinessMs() {
           return false;
         }
 
-        const expected = before - stakeCents;
-        const deadline = Date.now() + 1200;
+        const openConfirmWindowMs = 2200;
+        const toleranceCents = Math.max(2, Math.round(stakeCents * 0.03));
+        const minDebit = Math.max(0, stakeCents - toleranceCents);
+        const deadline = Date.now() + openConfirmWindowMs;
 
         while (Date.now() <= deadline) {
           const now = readBalanceCents();
-          if (Number.isFinite(now) && now === expected) {
+          const debit = Number.isFinite(now) ? (before - now) : NaN;
+          if (Number.isFinite(debit) && debit >= minDebit) {
             trade.openConfirmed = true;
-            trade.openConfirmedBy = 'BALANCE_DELTA_STRICT';
+            trade.openConfirmedBy = 'BALANCE_DELTA_TOLERANT';
             trade.balanceAfterOpen = now;
             trade.openAt = clickedAt || Date.now();
             return true;
@@ -5321,7 +5328,7 @@ function getMinHistoryWindowForReadinessMs() {
         if (!item || !item.trade) continue;
 
         // Hard timeout so we never block the engine (строг баланс check)
-        if ((Date.now() - Number(item.at || 0)) > 1400) {
+        if ((Date.now() - Number(item.at || 0)) > 3200) {
           logConsoleLine('ПРОПУСК: Няма потвърждение за отворена сделка след клик');
           // cleanup: remove any shadow trade state
           try { S.activeTrades = (S.activeTrades||[]).filter(t => t && t.id !== item.trade.id); } catch {}
@@ -5385,7 +5392,8 @@ function getMinHistoryWindowForReadinessMs() {
           let settleReason = null;
 
           // Ако сделката е "самостоятелна" (без други активни по време на клик) – най-точно е чистата разлика bal1-bal0.
-          if (trade.balanceEligible && Number.isFinite(trade.balanceBefore)) {
+          const canUseBalanceDelta = trade.balanceEligible && Number.isFinite(trade.balanceBefore) && tradesSorted.length <= 1;
+          if (canUseBalanceDelta) {
             const nowBal = readBalanceCents();
             if (Number.isFinite(nowBal)) {
               profitCents = (nowBal - trade.balanceBefore);
@@ -6052,6 +6060,21 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
     function clamp(value, min, max) {
       return Math.max(min, Math.min(max, value));
     }
+
+    function mapChopUiPctToThreshold(uiPct) {
+      const pct = clamp(Number(uiPct) || 1, 1, 100);
+      const tMin = 0.001;
+      const tMax = 0.03;
+      const ratio = (pct - 1) / 99;
+      return tMin + (tMax - tMin) * ratio;
+    }
+
+    function mapChopThresholdToUiPct(threshold) {
+      const t = clamp(Number(threshold) || 0.001, 0.001, 0.03);
+      const ratio = (t - 0.001) / (0.03 - 0.001);
+      return Math.round(1 + ratio * 99);
+    }
+
 function getRecentPrices(count) {
       if (!S.priceHistory.length) return [];
       return S.priceHistory.slice(-count).map(p => p.price);
@@ -9546,6 +9569,10 @@ setTimeout(() => {
       }
       const sniperChopThreshold = await storage.get(SNIPER_CHOP_KEY);
       if (typeof sniperChopThreshold === 'number') S.sniperChopThreshold = sniperChopThreshold;
+      // Legacy migration: old versions used pct/100 directly (e.g. 70% => 0.7, too strict for rangePct).
+      if (Number.isFinite(S.sniperChopThreshold) && S.sniperChopThreshold > 0.06) {
+        S.sniperChopThreshold = mapChopUiPctToThreshold(Math.round(S.sniperChopThreshold * 100));
+      }
       const sniperVwapDeviation = await storage.get(SNIPER_VWAP_DEV_KEY);
       if (typeof sniperVwapDeviation === 'number') S.sniperVwapDeviation = sniperVwapDeviation;
       const sniperVwapLookback = await storage.get(SNIPER_VWAP_LOOKBACK_KEY);
@@ -10094,7 +10121,7 @@ setTimeout(() => {
       if (ENTRYПЕЧАЛБИ_ENABLED) ENTRYПЕЧАЛБИ_ENABLED.checked = !!S.entryWindowTfEnabled;
       if (ENTRYПЕЧАЛБИ_1M) ENTRYПЕЧАЛБИ_1M.value = Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15;
       if (ENTRYПЕЧАЛБИ_3M) ENTRYПЕЧАЛБИ_3M.value = Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35;
-      if (sniperChop) sniperChop.value = Math.round(((S.sniperChopThreshold ?? 0.7) * 100));
+      if (sniperChop) sniperChop.value = mapChopThresholdToUiPct(S.sniperChopThreshold ?? SNIPER_5S_DEFAULTS.chopThreshold);
       if (sniperWarmup) sniperWarmup.value = S.sniperWarmupMin ?? 10;
       if (sniperMaxSessionLoss) sniperMaxSessionLoss.value = (S.maxSessionLossCents || 0) / 100;
       if (sniperMaxLossStreak) sniperMaxLossStreak.value = S.maxConsecutiveLosses || 0;
@@ -11064,7 +11091,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
           const d = parseNumberFlexible(SNIPER_CHOP.value);
           const normalized = Number.isFinite(d) ? d : 0;
           const pct = Math.max(1, Math.min(100, Math.round(normalized || 0)));
-          S.sniperChopThreshold = pct / 100;
+          S.sniperChopThreshold = mapChopUiPctToThreshold(pct);
           SNIPER_CHOP.value = String(pct);
           applyStrictnessColor(SNIPER_CHOP, pct, { min: 1, max: 100, highIsStrict: true });
           persistSettings();
