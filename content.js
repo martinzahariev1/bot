@@ -1085,6 +1085,17 @@
     /* ------------------------------ STATE ------------------------------ */
     const S = {
       running:false, loop:null,
+      scanLoop: null,
+      execLoop: null,
+      settleLoop: null,
+      executionQueue: [],
+      execWorkerBusy: false,
+      scanBusy: false,
+      settleBusy: false,
+      maxExecutionQueueLen: 3,
+      queueMetrics: { queueLen: 0, avgExecMs: 0, avgSettleMs: 0, scanCycleMs: 0, _execN: 0, _settleN: 0, _scanN: 0 },
+      metrics: { queueLen: 0, avgExecMs: 0, avgSettleMs: 0, scanCycleMs: 0 },
+      stabilityCache: {},
       lastPrice:null, priceHistory:[],
       lastPriceAt: 0,
       lastAssetLabel: null,
@@ -1105,6 +1116,7 @@
       balanceBeforeTrade: null,
       // balance event ledger
       lastBalanceCents: null,
+      balanceEventSeq: 0,
       balanceEvents: [],
       balanceEventsMax: 500,
       // selection guards
@@ -1171,6 +1183,8 @@
       // trade log
       trades: [],
       tradeStats: { total: 0, wins: 0, losses: 0, evens: 0 },
+      unresolvedTrades: 0,
+      unresolvedStreak: 0,
       tradeStatsByExpiry: {},
       tradeStatsMulti: { total: 0, wins: 0, losses: 0, evens: 0, profitCents: 0, winCents: 0, lossCents: 0 },
       tradeStatsSummary: { total: 0, wins: 0, losses: 0, evens: 0, profitCents: 0, winCents: 0, lossCents: 0 },
@@ -1621,7 +1635,7 @@
       S.sniperLastTradeByTf = {};
       S.sniperNextTradeByTf = {};
       S.sniperTfStatus = {};
-      renderSniperMatrix();
+      refreshUI('legacy_direct_render_replaced');
       persistSettings();
       renderSettingsPanel();
       if (S.running) {
@@ -1757,6 +1771,9 @@
           logs: [],
           issues: Object.create(null),
           trades: [],
+          settledTrades: [],
+          unresolvedTrades: [],
+          stats: { wins: 0, losses: 0, pnlCents: 0, unresolved: 0 },
           tradeIds: Object.create(null),
           lossReports: [],
           strategies: Object.create(null),
@@ -1781,6 +1798,9 @@
       sess.logs = [];
       sess.issues = Object.create(null);
       sess.trades = [];
+      sess.settledTrades = [];
+      sess.unresolvedTrades = [];
+      sess["stats"] = { wins: 0, losses: 0, pnlCents: 0, unresolved: 0 };
       sess.tradeIds = Object.create(null);
       sess.strategies = Object.create(null);
       sess.killer = { enabledAtStart: !!S.killerEnabled, pass: 0, wait: 0, reasons: Object.create(null), lastByTf: Object.create(null) };
@@ -1829,16 +1849,8 @@
     }
 
     function sessionRecordTrade(trade, outcome, profitCents) {
-      const sess = _sessionEnsure();
       const now = Date.now();
-      if (!sess.active) {
-        sess.active = true;
-        if (!sess.startedAt) sess.startedAt = now;
-        if (!Number.isFinite(sess.startBalanceCents)) sess.startBalanceCents = readBalanceCents();
-      }
-
       const tradeId = trade?.id || trade?.tradeId || null;
-      if (tradeId && sess.tradeIds?.[tradeId]) return;
       const rawConfidence = Number.isFinite(trade?.confidence)
         ? trade.confidence
         : (Number.isFinite(trade?.expectedConfidence)
@@ -1849,6 +1861,7 @@
         : null;
 
       const entry = {
+        id: tradeId,
         tradeId,
         t: now,
         time: new Date(now).toLocaleTimeString(),
@@ -1865,6 +1878,7 @@
         threshold: Number.isFinite(trade?.entryContext?.scoreCard?.threshold) ? trade.entryContext.scoreCard.threshold : null,
         breakdown: Array.isArray(trade?.entryContext?.scoreCard?.breakdown) ? trade.entryContext.scoreCard.breakdown.slice(0, 10) : [],
         payoutPercent: Number.isFinite(trade?.payoutPercent) ? trade.payoutPercent : null,
+        payoutSnapshot: Number.isFinite(trade?.payoutPercentSnapshot) ? trade.payoutPercentSnapshot : null,
         expirySeconds: Number.isFinite(trade?.expiryMs) ? Math.round(trade.expiryMs / 1000) : null,
         dynamicMode: trade?.dynamicMode || null,
         dynamicSimWinrate: Number.isFinite(trade?.dynamicSimWinrate) ? trade.dynamicSimWinrate : null,
@@ -1873,25 +1887,24 @@
         stakeMultiplier: Number.isFinite(trade?.stakeMultiplier) ? trade.stakeMultiplier : null,
         scoreBreakdown: Array.isArray(trade?.entryContext?.scoreCard?.breakdown) ? trade.entryContext.scoreCard.breakdown.slice(0, 10) : [],
         hardStopsHit: Array.isArray(trade?.hardStopsHit) ? trade.hardStopsHit.slice(0, 10) : [],
+        timeIntoCandleSec: Number.isFinite(trade?.entryContext?.entryMeta?.timeInCandle) ? trade.entryContext.entryMeta.timeInCandle : null,
+        entryWindowSec: Number.isFinite(trade?.entryContext?.entryMeta?.entryWindowSec) ? trade.entryContext.entryMeta.entryWindowSec : null,
+        biasStrength: Number.isFinite(trade?.entryContext?.entryMeta?.biasStrength) ? trade.entryContext.entryMeta.biasStrength : null,
+        regimeStrength: Number.isFinite(trade?.entryContext?.entryMeta?.regimeStrength) ? trade.entryContext.entryMeta.regimeStrength : null,
+        spikeFlag: !!trade?.entryContext?.entryMeta?.volatility?.spikeFlag,
+        stablePass: !!trade?.entryContext?.entryMeta?.stablePass,
+        passesCount: Number(trade?.entryContext?.entryMeta?.passesCount || 0),
+        settleReason: trade?.outcomeMethod || null,
+        evidenceDelta: Number.isFinite(trade?.evidence?.matchedEvent?.delta) ? trade.evidence.matchedEvent.delta : (Number.isFinite(trade?.evidence?.balanceDelta) ? trade.evidence.balanceDelta : null),
+        driftSec: Number.isFinite(trade?.driftSec) ? trade.driftSec : null,
+        mismatch: !!trade?.evidence?.mismatch,
+        platformOutcomeBadge: trade?.platformOutcomeBadge || null,
         outcome,
         outcomeMethod: trade?.outcomeMethod || null,
+        evidenceSummary: String(trade?.evidence?.summary || (Number.isFinite(trade?.evidence?.matchedEvent?.delta) ? `Δ=${trade.evidence.matchedEvent.delta}` : (Number.isFinite(trade?.evidence?.balanceDelta) ? `Δ=${trade.evidence.balanceDelta}` : '—'))),
         profitCents: Number.isFinite(profitCents) ? profitCents : null
       };
-
-      sess.trades.push(entry);
-      if (tradeId) sess.tradeIds[tradeId] = true;
-
-      const key = entry.strategyKey || '—';
-      if (!sess.strategies[key]) {
-        sess.strategies[key] = { trades: 0, wins: 0, losses: 0, neutral: 0, pnlCents: 0, confSum: 0, confN: 0 };
-      }
-      const st = sess.strategies[key];
-      st.trades += 1;
-      if (outcome === 'ПЕЧАЛБИ') st.wins += 1;
-      else if (outcome === 'ЗАГУБИ') st.losses += 1;
-      else st.neutral += 1;
-      if (Number.isFinite(entry.profitCents)) st.pnlCents += entry.profitCents;
-      if (Number.isFinite(entry.confidence)) { st.confSum += entry.confidence; st.confN += 1; }
+      return entry;
     }
 
     function sessionRecordKiller(tf, snapshot, verdict, reason) {
@@ -1950,8 +1963,6 @@
     function exportSessionHtml() {
       const sess = _sessionEnsure();
       
-      // Fallback: if session trade list is empty but legacy list exists, copy it.
-      try { if ((!sess.trades || !sess.trades.length) && Array.isArray(S.trades) && S.trades.length) sess.trades = S.trades.slice(); } catch(e){}
 const nowBal = readBalanceCents();
       const startBal = Number.isFinite(sess.startBalanceCents) ? sess.startBalanceCents : null;
       const stopBal = Number.isFinite(sess.stopBalanceCents) ? sess.stopBalanceCents : nowBal;
@@ -2059,11 +2070,15 @@ window.__REPORT_FNAME__ = "${fname}";
       const asset = S.lastAssetLabel || '';
       const tf = (S.activeTimeframe || '').toString().toUpperCase();
 
-      const trades = sess.trades || [];
-      const wins = trades.filter(t=>t.outcome==='ПЕЧАЛБИ').length;
-      const losses = trades.filter(t=>t.outcome==='ЗАГУБИ').length;
-      const neu = trades.length - wins - losses;
-      const winrate = trades.length ? (wins/trades.length*100) : 0;
+      const settled = sess.settledTrades || [];
+      const unresolved = sess.unresolvedTrades || [];
+      const trades = [...settled, ...unresolved];
+      const wins = settled.filter(t => (t.outcome === 'ПЕЧАЛБИ' || t.outcome === 'WIN')).length;
+      const losses = settled.filter(t => (t.outcome === 'ЗАГУБИ' || t.outcome === 'LOSS')).length;
+      const neu = settled.filter(t=>t.outcome==='EVEN').length;
+      const unresolvedCount = unresolved.length;
+      const wrBase = Math.max(1, wins + losses);
+      const winrate = ((wins/wrBase)*100);
 
       const avgConf = (() => {
         const xs = trades.map(t=>t.confidence).filter(x=>Number.isFinite(x));
@@ -2334,8 +2349,8 @@ window.__REPORT_FNAME__ = "${fname}";
   </tbody></table></div>
 
   <h2>ПОСЛЕДНИ 30 СДЕЛКИ</h2>
-  <div class="card"><table><thead><tr><th>Time</th><th>Strategy</th><th>Regime</th><th>Points/Thr</th><th>Dir</th><th>ExpSec</th><th>DynMode</th><th>Stake</th><th>Outcome</th><th>PnL</th></tr></thead><tbody>
-  ${trades.slice(-30).reverse().map(t=>`<tr><td>${t.time||'—'}</td><td>${t.strategyKey||'—'}</td><td>${t.regime||'—'}</td><td>${t.points||'—'}/${t.threshold||'—'}${Number(t.threshold)===8?` <span style="color:#f59e0b;font-weight:700;">STRICT</span>`:''}</td><td>${t.direction||'—'}</td><td>${t.expirySeconds||'—'}</td><td>${t.dynamicMode||'fixed'}</td><td>${Number.isFinite(t.stakeCents)?_fmtMoney(t.stakeCents):'—'}</td><td>${t.outcome||'—'}</td><td>${_fmtMoney(t.profitCents)}</td></tr>`).join('')}
+  <div class="card"><table><thead><tr><th>Time</th><th>Strategy</th><th>Regime</th><th>Points/Thr</th><th>Dir</th><th>ExpSec</th><th>DynMode</th><th>Stake</th><th>Method</th><th>Evidence</th><th>SettleReason</th><th>DriftSec</th><th>Stability</th><th>Outcome</th><th>PnL</th></tr></thead><tbody>
+  ${trades.slice(-30).reverse().map(t=>`<tr><td>${t.time||'—'}</td><td>${t.strategyKey||'—'}</td><td>${t.regime||'—'}</td><td>${t.points||'—'}/${t.threshold||'—'}${Number(t.threshold)===8?` <span style="color:#f59e0b;font-weight:700;">STRICT</span>`:''}</td><td>${t.direction||'—'}</td><td>${t.expirySeconds||'—'}</td><td>${t.dynamicMode||'fixed'}</td><td>${Number.isFinite(t.stakeCents)?_fmtMoney(t.stakeCents):'—'}</td><td>${t.outcomeMethod||'—'}</td><td>${t.evidenceSummary || (Number.isFinite(t.evidenceDelta)?_fmtMoney(t.evidenceDelta):'—')} ${t.mismatch?'<span style=\"color:#ef4444;font-weight:700;\">MISMATCH</span>':''}</td><td>${t.settleReason||'—'}</td><td>${Number.isFinite(t.driftSec)?t.driftSec.toFixed(1):'—'}</td><td>${t.stablePass?`${t.passesCount||2}/2`:'false'}</td><td>${t.outcome==='UNRESOLVED'?`<span class="muted">UNRESOLVED</span>`:t.outcome||'—'}</td><td>${_fmtMoney(t.profitCents)}</td></tr>`).join('')}
   </tbody></table></div>
 
   <h2>СТРАТЕГИИ (Partner mode)</h2>
@@ -2863,7 +2878,8 @@ window.__REPORT_FNAME__ = "${fname}";
         rangePct: meta.rangePct ?? meta.candleRangePct ?? null,
         trendDir: meta.trendDir ?? null,
         trendAligned: meta.trendAligned ?? null,
-        volumeOk: meta.volumeOk ?? null
+        volumeOk: meta.volumeOk ?? null,
+        entryMeta: meta || null
       };
     }
 
@@ -2958,46 +2974,13 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
   } else if (out === 'EVEN') {
     // Neutral trade should never print stake or 100x amounts; it is 0 PnL by definition.
     logConsoleLine(`➖ НЕУТРАЛНА СДЕЛКА ($0.00) [${tfLabel}]`);
+  } else if (String(out).toUpperCase() === 'UNRESOLVED') {
+    logConsoleLine(`⚪ НЕПОТВЪРДЕН РЕЗУЛТАТ (UNRESOLVED) [${tfLabel}]`);
   } else {
     // Fallback
     logConsoleLine(`ℹ РЕЗУЛТАТ: ${out} (${money(pc)}) [${tfLabel}]`);
   }
 }
-
-    function detectOutcomeByResultDelta(trade, epsilonCents = 3) {
-      if (!trade) return null;
-      const startBalance = Number.isFinite(S.botStartBalance) ? S.botStartBalance : null;
-      const resultBefore = Number.isFinite(trade.resultBeforeCents) ? trade.resultBeforeCents : null;
-      const currentBalance = readBalanceCents();
-      if (startBalance == null || resultBefore == null || !Number.isFinite(currentBalance)) return null;
-      const resultNow = currentBalance - startBalance;
-      const delta = resultNow - resultBefore;
-      if (delta > epsilonCents) return { outcome: 'ПЕЧАЛБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
-      if (delta < -epsilonCents) return { outcome: 'ЗАГУБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
-      return { outcome: 'EVEN', profitCents: 0, method: 'RESULT_DELTA' };
-    }
-
-    function finalizeTradeOutcome(trade, outcome, profitCents, settledAt = Date.now(), method = '') {
-      if (!trade || !outcome) return;
-      if (trade.outcomeChecked) return;
-      trade.outcomeChecked = true;
-      trade.outcome = outcome;
-      trade.settledAt = settledAt;
-      trade.profitCents = profitCents;
-      trade.outcomeMethod = method || trade.outcomeMethod || 'UNKNOWN';
-
-      recordTradeOutcomeStats(trade, outcome, profitCents);
-      recordTradeHistoryEntry(trade, outcome, profitCents);
-
-      // --- Session HTML report trade record (normalized) ---
-      try {
-        sessionRecordTrade(trade, outcome, profitCents);
-      } catch (e) { /* never block outcome finalize */ }
-
-      recordTradeOutcomeForRisk(outcome, profitCents);
-      applyRiskLimits();
-      try { logTradeOutcome(trade, outcome, profitCents); } catch (e) { console.warn('[IAA] logTradeOutcome failed', e); }
-    }
 
     function renderLagStatus() {
       const lagEl = $id('iaa-live-lag');
@@ -3007,6 +2990,16 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
         return;
       }
       lagEl.textContent = `${S.lastSignalLagSec}s`;
+    }
+
+    function refreshUI(reason = '', payload = null) {
+      renderSniperMatrix();
+      renderPendingTrades();
+      updateProfitDisplay();
+      renderTradeStats();
+      if (S.debugOpen) renderDebugInfo();
+      if (reason) S.lastUiRefreshReason = reason;
+      S.lastUiRefreshPayload = payload || null;
     }
 
     function renderTradeStats() {
@@ -3275,7 +3268,11 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
         { key: 'обновен', value: analysisUpdatedLabel, severity: analysisUpdatedSeverity },
         { key: 'следваща', value: getNextEtaLabel(), severity: '' },
         { key: 'последен пропуск', value: S.lastSkipReason || '—', severity: lastSkipSeverity },
-        { key: 'пропуски (топ)', value: getTopSkipReasonsLabel(), severity: '' }
+        { key: 'пропуски (топ)', value: getTopSkipReasonsLabel(), severity: '' },
+        { key: 'queueLen', value: String(S.metrics?.queueLen ?? S.queueMetrics?.queueLen ?? 0), severity: '' },
+        { key: 'avgExecMs', value: `${Math.round(S.metrics?.avgExecMs || S.queueMetrics?.avgExecMs || 0)}ms`, severity: '' },
+        { key: 'avgSettleMs', value: `${Math.round(S.metrics?.avgSettleMs || S.queueMetrics?.avgSettleMs || 0)}ms`, severity: '' },
+        { key: 'scanCycleMs', value: `${Math.round(S.metrics?.scanCycleMs || S.queueMetrics?.scanCycleMs || 0)}ms`, severity: '' }
       ];
       return lines;
     }
@@ -3600,7 +3597,7 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       S.clockDriftSec = Math.round(driftSec * 10) / 10;
     }
 
-    function renderSniperMatrix() {
+    function renderSniperMatrix () {
       const tfs = ['1m', '3m', '5m', '15m'];
       tfs.forEach(tf => {
         const textEl = $id(`iaa-tf-${tf}`);
@@ -4657,6 +4654,41 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     /* ------------------------- BALANCE OBSERVER --------------------------- */
+    function classifyBalanceEventType(delta) {
+      if (delta > 0) return 'CREDIT';
+      if (delta < 0) return 'DEBIT';
+      return 'ZERO';
+    }
+
+    function appendBalanceEvent(curBalance, deltaCents) {
+      if (!Number.isFinite(deltaCents) || deltaCents === 0) return null;
+      S.balanceEvents = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
+      const ev = {
+        t: Date.now(),
+        seq: ++S.balanceEventSeq,
+        balanceCents: curBalance,
+        deltaCents,
+        type: classifyBalanceEventType(deltaCents),
+        used: false
+      };
+      S.balanceEvents.push(ev);
+      const activeTrades = Array.isArray(S.activeTrades) ? S.activeTrades : [];
+      for (const t of activeTrades) {
+        if (!t || t.outcomeChecked) continue;
+        const inWindow = Number.isFinite(t.settleWindowStart) && Number.isFinite(t.settleWindowEnd) && ev.t >= t.settleWindowStart && ev.t <= t.settleWindowEnd;
+        const tol = Math.max(5, Math.round(Math.abs(Number(t.stakeCents || 0)) * 0.05));
+        const absDelta = Math.abs(Number(ev.deltaCents || 0));
+        const expected = Math.abs(Number(t.expectedGrossCents || t.expectedProfitCents || 0));
+        if (!inWindow && absDelta > Math.max(5, tol) && expected > 0) {
+          t.exclusiveSession = false;
+          t.noNoiseSession = false;
+        }
+      }
+      const maxEv = Math.max(2000, Number(S.maxBalanceEvents || 0) || Number(S.balanceEventsMax || 500));
+      if (S.balanceEvents.length > maxEv) S.balanceEvents.splice(0, S.balanceEvents.length - maxEv);
+      return ev;
+    }
+
     function ensureBalancePoller() {
       if (S.balancePoller) return;
       // Polling is the most robust way to capture balance debits/credits without depending on a specific DOM node.
@@ -4670,12 +4702,7 @@ function getMinHistoryWindowForReadinessMs() {
         S.lastBalanceCents = cur;
         S.balance = cur;
 
-        if (delta !== 0) {
-          S.balanceEvents = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
-          S.balanceEvents.push({ t: Date.now(), balanceCents: cur, deltaCents: delta, used: false });
-          const maxEv = Math.max(2000, Number(S.maxBalanceEvents || 0) || 0);
-          if (S.balanceEvents.length > maxEv) S.balanceEvents.splice(0, S.balanceEvents.length - maxEv);
-        }
+        appendBalanceEvent(cur, delta);
       }, 250);
     }
 
@@ -4699,12 +4726,7 @@ function getMinHistoryWindowForReadinessMs() {
           S.lastBalanceCents = cur;
           S.balance = cur;
 
-          if (delta !== 0) {
-            S.balanceEvents = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
-            S.balanceEvents.push({ t: Date.now(), balanceCents: cur, deltaCents: delta, used: false });
-            const maxEv = Math.max(50, Number.isFinite(S.balanceEventsMax) ? S.balanceEventsMax : 500);
-            if (S.balanceEvents.length > maxEv) S.balanceEvents.splice(0, S.balanceEvents.length - maxEv);
-          }
+          appendBalanceEvent(cur, delta);
 
           updateBalanceSummary();
         }
@@ -4930,6 +4952,128 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     /* ========================= ENHANCED TRADE EXECUTION WITH EXACT TIMING ========================= */
+    function markOtherTradesNonExclusive() {
+      const active = Array.isArray(S.activeTrades) ? S.activeTrades : [];
+      for (const t of active) {
+        if (!t || t.outcomeChecked) continue;
+        t.exclusiveSession = false;
+      }
+    }
+
+    function attachTradeBaseline(trade, signal, entryContext) {
+      const now = Date.now();
+      const payoutSnapshot = Number.isFinite(trade.payoutPercent) ? trade.payoutPercent : Number(S.lastPayoutPercent || 0);
+      trade.id = trade.id || ('T' + now.toString(36) + '_' + Math.random().toString(16).slice(2));
+      trade.state = 'CLICKED';
+      trade.clickedAt = now;
+      trade.balanceBeforeClickCents = Number.isFinite(trade.balanceBefore) ? trade.balanceBefore : readBalanceCents();
+      trade.payoutPercentSnapshot = payoutSnapshot;
+      trade.expectedProfitCents = Math.floor(Number(trade.stakeCents || 0) * (payoutSnapshot / 100));
+      trade.expectedGrossCents = Number(trade.stakeCents || 0) + Math.max(0, Number(trade.expectedProfitCents || 0));
+      trade.asset = trade.asset || signal?.asset || getCurrentAssetLabel();
+      trade.tf = trade.tf || trade.expiry || signal?.expiry || '';
+      trade.direction = trade.direction || signal?.direction || '';
+      trade.expirySec = Number.isFinite(trade.expiryMs) ? Math.round(trade.expiryMs / 1000) : null;
+      trade.tradeKey = `${trade.asset}|${trade.tf}|${trade.direction}|${trade.clickedAt}`;
+      trade.uiExpirySecondsAtOpen = readUiRemainingSeconds();
+      trade.uiExpiryReadAtMs = Date.now();
+      if (Number.isFinite(trade.uiExpirySecondsAtOpen)) trade.uiExpectedEndMs = trade.uiExpiryReadAtMs + trade.uiExpirySecondsAtOpen * 1000 + 1000;
+      trade.settleAttempts = 0;
+      trade.lastSettleTryAt = 0;
+      trade.recheckAttempts = 0;
+      trade.exclusiveSession = true;
+      trade.noNoiseSession = true;
+      trade.entryContext = entryContext || trade.entryContext || null;
+      trade.settleWindowStart = null;
+      trade.settleWindowEnd = null;
+      markOtherTradesNonExclusive();
+    }
+
+    function enqueueExecutionCandidate(candidate) {
+      S.executionQueue = Array.isArray(S.executionQueue) ? S.executionQueue : [];
+      const maxLen = Math.max(1, Number(S.maxExecutionQueueLen || 3));
+      const threshold = Number(candidate?.score?.threshold || candidate?.decision?.scoreCard?.threshold || 0);
+      const points = Number(candidate?.score?.points || candidate?.points || 0);
+      const isStrict = points >= (threshold + 1);
+      if (S.executionQueue.length > 3 && !isStrict) {
+        logConsoleLine('BACKPRESSURE_DROP');
+        return false;
+      }
+      if (S.executionQueue.length > 3 && isStrict) logConsoleLine('BACKPRESSURE_STRICT_ENQUEUE');
+      if (S.executionQueue.length >= maxLen && !isStrict) {
+        logConsoleLine(`[EXEC QUEUE] DROP: queue backpressure (${S.executionQueue.length}/${maxLen})`);
+        return false;
+      }
+      S.executionQueue.push(candidate);
+      S.queueMetrics.queueLen = S.executionQueue.length;
+      S.metrics.queueLen = S.queueMetrics.queueLen;
+      return true;
+    }
+
+    function mapTfToExpirySec(tfKey = '') {
+      const k = String(tfKey || '').toLowerCase();
+      if (k === '1m') return 60;
+      if (k === '3m') return 180;
+      if (k === '5m') return 300;
+      if (k === '15m') return 900;
+      return null;
+    }
+
+    function mapTfToExpiryLabel(tfKey = '') {
+      const sec = mapTfToExpirySec(tfKey);
+      if (sec === 60) return '1M';
+      if (sec === 180) return '3M';
+      if (sec === 300) return '5M';
+      if (sec === 900) return '15M';
+      return null;
+    }
+
+    function isCandidateEntryWindowValid(candidate) {
+      if (!candidate) return false;
+      if (Number.isFinite(candidate.validUntilMs) && Date.now() > candidate.validUntilMs) return false;
+      const meta = candidate.signal?.entryMeta || {};
+      const win = Number(meta.entryWindowSec || 0);
+      const tfKey = String(candidate.decision?.tfKey || '').toLowerCase();
+      if (win > 0 && (tfKey === '1m' || tfKey === '3m')) {
+        const nowIn = getTimeInCandleSec(candidate.decision?.windowMs || ((tfKey === '1m') ? 60_000 : 180_000));
+        if (Number.isFinite(nowIn) && nowIn > win) return false;
+      }
+      return true;
+    }
+
+    async function runExecutionQueueWorker() {
+      if (!S.running || S.execWorkerBusy) return;
+      const q = Array.isArray(S.executionQueue) ? S.executionQueue : [];
+      S.queueMetrics.queueLen = q.length;
+      if (!q.length) return;
+      const candidate = q.shift();
+      S.queueMetrics.queueLen = q.length;
+      if (!candidate || !candidate.signal) return;
+      if (!isCandidateEntryWindowValid(candidate)) {
+        logConsoleLine(`[EXEC] EXPIRED(EXEC_DELAY) tf=${candidate?.tf || candidate?.decision?.tfKey || 'n/a'} createdAt=${Number(candidate?.createdAtMs||0)} validUntil=${Number(candidate?.validUntilMs||0)} now=${Date.now()}`);
+        return;
+      }
+      if (String(candidate?.gates?.verdict || '') !== 'PASS') return;
+      if (Number(candidate?.score?.points || 0) < Number(candidate?.score?.threshold || 0)) return;
+      S.execWorkerBusy = true;
+      const started = Date.now();
+      try {
+        const tfLabel = String(candidate?.tf || candidate?.decision?.tfKey || "").toLowerCase();
+        const mappedExpiry = mapTfToExpiryLabel(tfLabel);
+        const mappedSec = mapTfToExpirySec(tfLabel);
+        if (mappedExpiry) candidate.signal.expiry = mappedExpiry;
+        if (Number.isFinite(mappedSec)) candidate.signal.expirySec = mappedSec;
+        await executeTradeOrder(candidate.signal);
+      } finally {
+        const dt = Date.now() - started;
+        const n = (S.queueMetrics._execN || 0) + 1;
+        S.queueMetrics._execN = n;
+        S.queueMetrics.avgExecMs = ((S.queueMetrics.avgExecMs || 0) * (n - 1) + dt) / n;
+        S.metrics.avgExecMs = S.queueMetrics.avgExecMs;
+        S.execWorkerBusy = false;
+      }
+    }
+
     async function executeTradeOrder(signal) {
       if (S.executing) return false;
       if (S.tradeMutex?.active) return false;
@@ -5009,6 +5153,7 @@ function getMinHistoryWindowForReadinessMs() {
       S.tradeMutex = { active: true, id: mutexId, startedAt: Date.now() };
 
       let resolvedExpiry = normalizeExpiry(signal.expiry) || S.expirySetting;
+      const inferredTf = String(signal?.expiry || '').toLowerCase();
       const assetScope = getExpiryScopeFromAsset(signal.asset);
       const useDynamicExpiry = shouldUseDynamicExpiry(signal, assetScope);
       const entryContext = buildEntryContext(signal, resolvedExpiry);
@@ -5019,6 +5164,7 @@ function getMinHistoryWindowForReadinessMs() {
 
       try {
         S.engineState = 'PREP_UI';
+        logConsoleLine(`[EXEC] CLICK asset=${signal.asset || getCurrentAssetLabel() || '—'} tf=${String(signal?.expiry || signal?.tf || 'n/a').toLowerCase()} expirySec=${Number(signal?.expirySec || secsFromTF(resolvedExpiry) || 0)}`);
         if (!useDynamicExpiry || assetScope !== 'OTC') {
           const expiryOk = await withTimeout(() => ensurePlatformExpiry(resolvedExpiry), Number(S.uiExpiryTimeoutMs || 2200), 'настройка на expiry');
           if (!expiryOk) {
@@ -5216,8 +5362,10 @@ function getMinHistoryWindowForReadinessMs() {
       } catch (e) {}
 
 
-              S.activeTrades.push(trade);
+              attachTradeBaseline(trade, signal, entryContext);
+          S.activeTrades.push(trade);
               S.pendingTradeConfirmations.push({ trade, at: Date.now() });
+          refreshUI('trade_placed');
               dynamicApplied = true;
               {
                 const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
@@ -5279,8 +5427,10 @@ function getMinHistoryWindowForReadinessMs() {
                 stakeMultiplier,
                 stakeReasonBg
               };
-              S.activeTrades.push(trade);
+              attachTradeBaseline(trade, signal, entryContext);
+          S.activeTrades.push(trade);
               S.pendingTradeConfirmations.push({ trade, at: Date.now() });
+          refreshUI('trade_placed');
               {
                 const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
                 logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
@@ -5290,6 +5440,7 @@ function getMinHistoryWindowForReadinessMs() {
           }
         } else {
           logConsoleLine(formatStatus('trade_attempt', { asset: signal.asset, direction: signal.direction.toUpperCase(), expiry: resolvedExpiry }));
+          logConsoleLine(`[EXEC] CLICK asset=${signal.asset || getCurrentAssetLabel() || '—'} tf=${String(signal?.tfKey || signal?.entryMeta?.strategyKey || signal?.rawText || '').toString()} expirySec=${Number(secsFromTF(resolvedExpiry) || signal?.expirySec || 0)}`);
           let clicked = false;
           if ((dir === 'buy' || dir === 'call' || dir === 'up') && up) {
             for (let i = 0; i < burstCount; i++) {
@@ -5346,8 +5497,10 @@ function getMinHistoryWindowForReadinessMs() {
             stakeMultiplier,
             stakeReasonBg
           };
+          attachTradeBaseline(trade, signal, entryContext);
           S.activeTrades.push(trade);
           S.pendingTradeConfirmations.push({ trade, at: Date.now() });
+          refreshUI('trade_placed');
           {
             const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
             logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
@@ -5396,7 +5549,6 @@ function getMinHistoryWindowForReadinessMs() {
       const evs = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
       const a = Number.isFinite(afterTs) ? afterTs : 0;
       const b = Number.isFinite(beforeTs) ? beforeTs : 0;
-      // Search oldest-to-newest so we get the earliest matching event.
       for (let i = 0; i < evs.length; i += 1) {
         const e = evs[i];
         if (!e || e.used) continue;
@@ -5411,100 +5563,211 @@ function getMinHistoryWindowForReadinessMs() {
       if (ev) ev.used = true;
     }
 
-    function findBestBalanceEventForTrade(trade, afterTs, beforeTs, expectedEndTs) {
-      const evs = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
-      const amountCents = Number(trade?.totalAmountCents || trade?.amountCents || 0);
-      const payoutPct = Number.isFinite(trade?.payoutPercent) ? trade.payoutPercent : Number(S.lastPayoutPercent || 0);
-      const expectedProfit = payoutPct > 0 ? Math.round(amountCents * (payoutPct / 100)) : null;
-      const expectedGross = expectedProfit != null ? amountCents + expectedProfit : null;
-      const a = Number.isFinite(afterTs) ? afterTs : 0;
-      const b = Number.isFinite(beforeTs) ? beforeTs : 0;
-      const tRef = Number.isFinite(expectedEndTs) ? expectedEndTs : a;
-      let best = null;
-      for (const e of evs) {
-        if (!e || e.used) continue;
-        if (e.t < a) continue;
-        if (b && e.t > b) continue;
-        const d = Number(e.deltaCents || 0);
-        if (!(d > 0)) continue;
-        if (amountCents > 0 && d > Math.round(amountCents * 3.5)) continue;
-        let score = 0;
-        if (Number.isFinite(expectedProfit)) score += Math.min(Math.abs(d - expectedProfit), 10000);
-        if (Number.isFinite(expectedGross)) score = Math.min(score || 1e9, Math.abs(d - expectedGross));
-        score += Math.min(Math.abs((e.t || 0) - tRef) / 50, 1000);
-        if (!best || score < best.score) best = { e, score };
+    function getTradeToleranceCents(trade) {
+      const stakeCents = Number(trade?.stakeCents || trade?.totalAmountCents || trade?.amountCents || 0);
+      return Math.max(5, Math.round(stakeCents * 0.05));
+    }
+
+    function getTradeExpectedValues(trade) {
+      const stakeCents = Number(trade?.stakeCents || trade?.totalAmountCents || trade?.amountCents || 0);
+      const payoutPct = Number.isFinite(trade?.payoutPercentSnapshot) ? trade.payoutPercentSnapshot : Number(trade?.payoutPercent || 0);
+      const expectedProfitCents = payoutPct > 0 ? Math.floor(stakeCents * (payoutPct / 100)) : null;
+      const expectedGrossCents = Number.isFinite(expectedProfitCents) ? stakeCents + expectedProfitCents : null;
+      return { stakeCents, expectedProfitCents, expectedGrossCents };
+    }
+
+    function buildTradeSettleWindow(trade) {
+      const expectedEnd = Number(trade?.expectedEnd || 0);
+      let start = expectedEnd - 2000;
+      let end = expectedEnd + 25000;
+      let widenLevel = 0;
+      const lagSec = Number(S.lastSignalLagSec || 0);
+      const isOtc = /otc/i.test(String(trade?.asset || ''));
+      if (lagSec >= 3 || isOtc || (trade?.openConfirmedAt && Math.abs(trade.openConfirmedAt - trade.clickedAt) > 2000)) {
+        end += 10000;
+        widenLevel = 1;
       }
-      return best ? best.e : null;
+      if ((lagSec >= 5 || isOtc) && (S.activeTrades || []).length <= 1) {
+        end += 20000;
+        widenLevel = 2;
+      }
+      trade.settleWindowStart = start;
+      trade.settleWindowEnd = end;
+      trade.settleWindowUsed = { start, end, widenLevel };
+      return trade.settleWindowUsed;
+    }
+
+    function findBestBalanceEventForTrade(trade) {
+      const evs = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
+      const settleStart = Number(trade?.settleWindowStart || 0);
+      const settleEnd = Number(trade?.settleWindowEnd || 0);
+      const { expectedProfitCents, expectedGrossCents } = getTradeExpectedValues(trade);
+      const tol = getTradeToleranceCents(trade);
+      let candidate = null;
+
+      for (const e of evs) {
+        if (!e || e.used || e.type !== 'CREDIT') continue;
+        if (e.t < settleStart) continue;
+        if (settleEnd && e.t > settleEnd) continue;
+        if (Number.isFinite(trade?.linkedDebitSeq) && Number(e.seq || 0) <= Number(trade.linkedDebitSeq || 0)) continue;
+        if (!Number.isFinite(trade?.linkedDebitSeq) && Number.isFinite(trade?.debitDetectedAt) && e.t <= trade.debitDetectedAt) continue;
+        const credit = Number(e.deltaCents || 0);
+        const passGross = Number.isFinite(expectedGrossCents) && Math.abs(credit - expectedGrossCents) <= tol;
+        const passProfit = Number.isFinite(expectedProfitCents) && Math.abs(credit - expectedProfitCents) <= tol;
+        if (!passGross && !passProfit) continue;
+        candidate = e;
+        break;
+      }
+      return candidate;
     }
 
     function resolveLedgerProfitCents(trade, creditCents) {
-      const amountCents = Number(trade?.totalAmountCents || trade?.amountCents || 0);
+      const { stakeCents, expectedProfitCents, expectedGrossCents } = getTradeExpectedValues(trade);
       const credit = Number(creditCents || 0);
-      if (!Number.isFinite(amountCents) || amountCents <= 0 || !Number.isFinite(credit) || credit <= 0) {
-        return { profitCents: credit - amountCents, mode: 'gross_fallback' };
+      const tol = getTradeToleranceCents(trade);
+      if (!Number.isFinite(credit) || credit <= 0) return { profitCents: -Math.max(0, stakeCents), mode: 'invalid_credit' };
+      if (Number.isFinite(expectedGrossCents) && Math.abs(credit - expectedGrossCents) <= tol) {
+        return { profitCents: credit - stakeCents, mode: 'gross_credit' };
       }
-
-      const payoutPct = Number.isFinite(trade?.payoutPercent) ? trade.payoutPercent : Number(S.lastPayoutPercent || 0);
-      const expectedProfit = payoutPct > 0 ? Math.round(amountCents * (payoutPct / 100)) : null;
-      const expectedGross = expectedProfit != null ? amountCents + expectedProfit : null;
-
-      const grossProfit = credit - amountCents; // credit contains stake + profit
-      const profitOnly = credit;              // credit contains only net profit
-
-      if (expectedProfit != null && expectedGross != null) {
-        const distProfitOnly = Math.abs(credit - expectedProfit);
-        const distGross = Math.abs(credit - expectedGross);
-        if (distProfitOnly + 2 < distGross) return { profitCents: profitOnly, mode: 'profit_credit' };
-        if (distGross + 2 < distProfitOnly) return { profitCents: grossProfit, mode: 'gross_credit' };
+      if (Number.isFinite(expectedProfitCents) && Math.abs(credit - expectedProfitCents) <= tol) {
+        return { profitCents: credit, mode: 'profit_credit' };
       }
-
-      if (credit <= Math.round(amountCents * 1.2)) {
-        return { profitCents: profitOnly, mode: 'profit_heuristic' };
-      }
-      const fallback = { profitCents: grossProfit, mode: 'gross_heuristic' };
-      if (credit > 0 && fallback.profitCents < 0) {
-        return { profitCents: profitOnly, mode: 'profit_safety_positive_credit' };
-      }
-      return fallback;
+      return { profitCents: NaN, mode: 'credit_mismatch' };
     }
 
-    function confirmTradeByBalance(trade, clickedAt) {
-      // Верификация на отворена сделка по баланс делта с толеранс за UI/latency jitter.
-      return (async () => {
-        const stakeCents = Math.max(0, trade.stakeCents || 0);
+    function detectOutcomeByResultDelta(trade, epsilonCents = 3) {
+      if (!trade || !trade.exclusiveSession || !trade.noNoiseSession || (S.activeTrades || []).length > 1) return null;
+      const startBalance = Number.isFinite(S.botStartBalance) ? S.botStartBalance : null;
+      const resultBefore = Number.isFinite(trade.resultBeforeCents) ? trade.resultBeforeCents : null;
+      const currentBalance = readBalanceCents();
+      if (startBalance == null || resultBefore == null || !Number.isFinite(currentBalance)) return null;
+      const resultNow = currentBalance - startBalance;
+      const delta = resultNow - resultBefore;
+      if (delta > epsilonCents) return { outcome: 'ПЕЧАЛБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
+      if (delta < -epsilonCents) return { outcome: 'ЗАГУБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
+      return { outcome: 'EVEN', profitCents: 0, method: 'RESULT_DELTA' };
+    }
 
-        if (!Number.isFinite(trade.balanceBefore)) trade.balanceBefore = readBalanceCents();
-        const before = trade.balanceBefore;
+    async function readStableBalanceCents() {
+      const samples = [];
+      const delays = [0, 250, 500];
+      for (const ms of delays) {
+        if (ms > 0) await sleep(ms);
+        const v = readBalanceCents();
+        if (Number.isFinite(v)) samples.push(v);
+      }
+      if (!samples.length) return null;
+      const sorted = samples.slice().sort((a,b)=>a-b);
+      return sorted[Math.floor(sorted.length/2)];
+    }
 
-        if (!Number.isFinite(before) || !Number.isFinite(stakeCents) || stakeCents <= 0) {
-          trade.openConfirmed = false;
-          trade.openConfirmedBy = 'NO_BASELINE_OR_STAKE';
-          return false;
+    function finalizeTradeOutcome(trade, outcome, profitCents, settledAt = Date.now(), method = '', evidence = null) {
+      if (!trade || !outcome) return;
+      if (trade.outcomeChecked) return;
+      trade.outcomeChecked = true;
+      trade.state = outcome === 'UNRESOLVED' ? 'UNRESOLVED' : 'SETTLED';
+      trade.outcome = outcome;
+      trade.settledAt = settledAt;
+      trade.profitCents = profitCents;
+      trade.outcomeMethod = method || trade.outcomeMethod || 'UNKNOWN';
+      trade.evidence = evidence || null;
+
+      logConsoleLine(`[SETTLE] ${trade.outcome} via ${trade.outcomeMethod} | evidence=${JSON.stringify(trade.evidence || {})}`);
+
+      const sess = _sessionEnsure();
+      const entry = sessionRecordTrade(trade, outcome, profitCents);
+      sess.settledTrades = Array.isArray(sess.settledTrades) ? sess.settledTrades : [];
+      sess.unresolvedTrades = Array.isArray(sess.unresolvedTrades) ? sess.unresolvedTrades : [];
+      sess.stats = (sess.stats && typeof sess.stats === 'object') ? sess.stats : { wins: 0, losses: 0, pnlCents: 0, unresolved: 0 };
+      const normalizedOutcome =
+        entry.outcome === 'ПЕЧАЛБИ' ? 'WIN' :
+        entry.outcome === 'ЗАГУБИ' ? 'LOSS' :
+        entry.outcome;
+      if (normalizedOutcome === 'UNRESOLVED') {
+        sess.unresolvedTrades.push(entry);
+        sess.stats.unresolved = Number(sess.stats.unresolved || 0) + 1;
+      } else {
+        sess.settledTrades.push(entry);
+        if (normalizedOutcome === 'WIN') sess.stats.wins = Number(sess.stats.wins || 0) + 1;
+        if (normalizedOutcome === 'LOSS') sess.stats.losses = Number(sess.stats.losses || 0) + 1;
+        if (Number.isFinite(entry.profitCents)) sess.stats.pnlCents = Number(sess.stats.pnlCents || 0) + Number(entry.profitCents || 0);
+      }
+      if (entry.tradeId) sess.tradeIds[entry.tradeId] = true;
+      const key = entry.strategyKey || '—';
+      if (!sess.strategies[key]) sess.strategies[key] = { trades: 0, wins: 0, losses: 0, neutral: 0, pnlCents: 0, confSum: 0, confN: 0 };
+      const st = sess.strategies[key];
+      st.trades += 1;
+      if (normalizedOutcome === 'WIN') st.wins += 1;
+      else if (normalizedOutcome === 'LOSS') st.losses += 1;
+      else st.neutral += 1;
+      if (Number.isFinite(entry.profitCents)) st.pnlCents += entry.profitCents;
+      if (Number.isFinite(entry.confidence)) { st.confSum += entry.confidence; st.confN += 1; }
+
+      if (outcome === 'UNRESOLVED') {
+        S.unresolvedTrades = (S.unresolvedTrades || 0) + 1;
+        S.unresolvedStreak = (S.unresolvedStreak || 0) + 1;
+        if ((S.unresolvedStreak || 0) >= 3 && S.running) {
+          S.running = false;
+          stopEngineLoops();
+          logConsoleLine('[RISK] Пауза: UNRESOLVED streak >= 3');
         }
 
-        const openConfirmWindowMs = 2200;
-        const toleranceCents = Math.max(2, Math.round(stakeCents * 0.03));
-        const minDebit = Math.max(0, stakeCents - toleranceCents);
-        const deadline = Date.now() + openConfirmWindowMs;
+      } else {
+        S.unresolvedStreak = 0;
+        recordTradeOutcomeStats(trade, outcome, profitCents);
+        recordTradeHistoryEntry(trade, outcome, profitCents);
 
-        while (Date.now() <= deadline) {
-          const now = readBalanceCents();
-          const debit = Number.isFinite(now) ? (before - now) : NaN;
-          if (Number.isFinite(debit) && debit >= minDebit) {
-            trade.openConfirmed = true;
-            trade.openConfirmedBy = 'BALANCE_DELTA_TOLERANT';
-            trade.balanceAfterOpen = now;
-            trade.openAt = clickedAt || Date.now();
-            return true;
-          }
-          await sleep(130);
-        }
+        recordTradeOutcomeForRisk(outcome, profitCents);
+        applyRiskLimits();
+      }
+      try { logTradeOutcome(trade, outcome, profitCents); } catch (e) { console.warn('[IAA] logTradeOutcome failed', e); }
+      refreshUI('trade_finalized');
+    }
 
+    async function confirmTradeByBalance(trade, clickedAt) {
+      const stakeCents = Math.max(0, Number(trade?.stakeCents || 0));
+      if (!Number.isFinite(trade.balanceBeforeClickCents)) trade.balanceBeforeClickCents = readBalanceCents();
+      const before = trade.balanceBeforeClickCents;
+      if (!Number.isFinite(before) || stakeCents <= 0) {
         trade.openConfirmed = false;
-        trade.openConfirmedBy = 'BALANCE_DELTA_TIMEOUT';
+        trade.openConfirmedBy = 'NO_BASELINE_OR_STAKE';
         return false;
-      })();
+      }
+
+      const checks = [0, 300, 700, 1200];
+      const toleranceCents = Math.max(2, Math.round(stakeCents * 0.03));
+      const minDebit = Math.max(0, stakeCents - toleranceCents);
+      for (const ms of checks) {
+        if (ms > 0) await sleep(ms);
+        const now = readBalanceCents();
+        const debit = Number.isFinite(now) ? (before - now) : NaN;
+        if (Number.isFinite(debit) && debit >= minDebit) {
+          trade.openConfirmed = true;
+          trade.state = 'OPEN_CONFIRMED';
+          trade.openConfirmedAt = Date.now();
+          trade.debitDetectedAt = Date.now();
+          trade.debitAmountCents = debit;
+          trade.openConfirmedBy = 'BALANCE_DELTA_TOLERANT';
+          trade.balanceAfterOpen = now;
+          trade.openAt = clickedAt || Date.now();
+          const evs = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
+          for (let i = evs.length - 1; i >= 0; i -= 1) {
+            const ev = evs[i];
+            if (ev && ev.type === 'DEBIT' && ev.t >= Number(clickedAt || trade.clickedAt || 0) - 2000) {
+              trade.linkedDebitSeq = ev.seq;
+              break;
+            }
+          }
+          return true;
+        }
+      }
+
+      trade.openConfirmed = false;
+      trade.state = 'OPEN_UNCONFIRMED';
+      trade.openConfirmedBy = 'BALANCE_DELTA_TIMEOUT';
+      return false;
     }
+
     async function processPendingTradeConfirmations() {
       const pending = Array.isArray(S.pendingTradeConfirmations) ? S.pendingTradeConfirmations : [];
       if (!pending.length) return;
@@ -5512,125 +5775,203 @@ function getMinHistoryWindowForReadinessMs() {
       const remaining = [];
       for (const item of pending) {
         if (!item || !item.trade) continue;
-
-        // Hard timeout so we never block the engine (строг баланс check)
         if ((Date.now() - Number(item.at || 0)) > 3200) {
-          logConsoleLine('ПРОПУСК: Няма потвърждение за отворена сделка след клик');
-          // cleanup: remove any shadow trade state
-          try { S.activeTrades = (S.activeTrades||[]).filter(t => t && t.id !== item.trade.id); } catch {}
+          item.trade.state = 'OPEN_UNCONFIRMED';
           continue;
         }
-
         const ok = await confirmTradeByBalance(item.trade, item.at);
-        if (ok) {
-          logConsoleLine(formatStatus('trade_executed'));
-          continue;
-        }
-        remaining.push(item);
+        if (!ok) remaining.push(item);
       }
       S.pendingTradeConfirmations = remaining;
     }
 
-    /* ========================= FIXED: HISTORY-ONLY OUTCOME DETECTION ========================= */
-    
-    /* ========================= BALANCE-LEDGER OUTCOME DETECTION (NO СДЕЛКИ TAB) ========================= */
+    function runSettlementRegressionHarness() {
+      if (!S.debugHarnessEnabled && !C.DEBUG) return [];
+      const tests = [];
+      const logTest = (name, pass) => logConsoleLine(`[HARNESS] ${pass ? 'PASS' : 'FAIL'} ${name}`);
+      const mkTrade = (stake, payout) => ({ stakeCents: stake, payoutPercentSnapshot: payout, expectedProfitCents: Math.floor(stake * payout / 100), expectedGrossCents: stake + Math.floor(stake * payout / 100) });
+
+      {
+        const trade = mkTrade(100, 92);
+        const out = resolveLedgerProfitCents(trade, 192);
+        const pass = Number(out.profitCents) === 92;
+        tests.push({ name: 'clean WIN gross credit', pass });
+        logTest('clean WIN gross credit', pass);
+      }
+      {
+        const tradeA = mkTrade(100, 92);
+        tradeA.linkedDebitSeq = 10;
+        tradeA.settleWindowStart = 0;
+        tradeA.settleWindowEnd = Date.now() + 5000;
+        S.balanceEvents = [
+          { seq: 9, t: Date.now(), deltaCents: 192, type: 'CREDIT', used: false },
+          { seq: 11, t: Date.now() + 10, deltaCents: 192, type: 'CREDIT', used: false }
+        ];
+        const ev = findBestBalanceEventForTrade(tradeA);
+        const pass = Number(ev?.seq) === 11;
+        tests.push({ name: 'overlap seq pairing', pass });
+        logTest('overlap seq pairing', pass);
+      }
+      {
+        const trade = mkTrade(100, 92);
+        const out = resolveLedgerProfitCents(trade, 96);
+        const pass = !Number.isFinite(out.profitCents);
+        tests.push({ name: 'mismatch credit unresolved', pass });
+        logTest('mismatch credit unresolved', pass);
+      }
+      return tests;
+    }
+
+    function readUiRemainingSeconds() {
+      try {
+        const nodes = Array.from(document.querySelectorAll('span, div'));
+        for (const n of nodes) {
+          const t = (n.textContent || '').trim();
+          if (!t) continue;
+          const mmss = t.match(/^(\d{1,2}):(\d{2})$/);
+          if (mmss) return Number(mmss[1]) * 60 + Number(mmss[2]);
+          const sec = t.match(/^(\d{1,4})\s*s(ec)?$/i);
+          if (sec) return Number(sec[1]);
+        }
+      } catch {}
+      return null;
+    }
+
+    function readUiExpirySecondsAtOpen() {
+      return readUiRemainingSeconds();
+    }
+
+    function detectOutcomeFromClosedTradesHistory(trade) {
+      try {
+        const rows = Array.from(document.querySelectorAll('tr, .deal, .history-item')).slice(-40);
+        const dir = String(trade?.direction || '').toUpperCase();
+        for (let i = rows.length - 1; i >= 0; i -= 1) {
+          const txt = (rows[i]?.innerText || '').replace(/\s+/g, ' ').trim();
+          if (!txt) continue;
+          if (dir && !txt.toUpperCase().includes(dir)) continue;
+          if (/win|печалб|profit/i.test(txt)) return { outcome: 'ПЕЧАЛБИ', profitCents: Number(trade?.expectedProfitCents || 0), method: 'HISTORY_CLOSED_TRADES' };
+          if (/loss|загуб/i.test(txt)) return { outcome: 'ЗАГУБИ', profitCents: -Math.abs(Number(trade?.stakeCents || 0)), method: 'HISTORY_CLOSED_TRADES' };
+        }
+      } catch {}
+      return null;
+    }
+
     async function finalizeActiveTrades() {
       if (!S.activeTrades || !S.activeTrades.length) return;
 
       const now = Date.now();
       const remaining = [];
-
-      // Process in expectedEnd order (FIFO for settlement matching)
       const tradesSorted = [...S.activeTrades].sort((a, b) => (a.expectedEnd || 0) - (b.expectedEnd || 0));
-
-      const settlementWindowMs = 120000; // safety window after expected end
-      const earlySettleLeewayMs = 5000;
 
       for (const trade of tradesSorted) {
         if (!trade) continue;
+        trade.settleAttempts = Number(trade.settleAttempts || 0);
+        trade.lastSettleTryAt = now;
+        if (!trade.state) trade.state = 'CREATED';
+        if (trade.state === 'CREATED') trade.state = 'CLICKED';
 
         const expiryMs = trade.expiryMs || secsFromTF(trade.expiry) * 1000;
-        const expectedEnd = trade.expectedEnd || (trade.startTime + expiryMs + C.SETTLEMENT_DELAY_MS);
-        trade.expectedEnd = expectedEnd;
+        const lagSec = Number(S.lastSignalLagSec || 0);
+        const isOtcTrade = /otc/i.test(String(trade?.asset || ''));
+        const driftBufferMs = (lagSec >= 3 || isOtcTrade) ? 4000 : 1500;
+        const baseTs = Number(trade.openConfirmedAt || trade.clickedAt || trade.startTime || now);
+        const computedExpectedEnd = baseTs + expiryMs + driftBufferMs;
+        const uiExpectedEndMs = Number.isFinite(trade.uiExpirySecondsAtOpen) ? (Number(trade.uiExpiryReadAtMs || baseTs) + Number(trade.uiExpirySecondsAtOpen) * 1000) : null;
+        trade.uiExpectedEndMs = Number.isFinite(uiExpectedEndMs) ? uiExpectedEndMs : null;
+        trade.expectedEnd = Number.isFinite(uiExpectedEndMs) ? (uiExpectedEndMs + driftBufferMs) : computedExpectedEnd;
+        trade.driftSec = Number.isFinite(uiExpectedEndMs) ? ((uiExpectedEndMs - computedExpectedEnd) / 1000) : null;
+        if (!trade.openConfirmedAt && !trade.clickedAt) trade.expectedEndWarning = 'NO_OPEN_CONFIRM_OR_CLICK_TIME';
+        const settleWindow = buildTradeSettleWindow(trade);
 
-        // 1) Ensure open confirmation via balance debit (best effort)
-        if (!trade.openConfirmed && !trade.confirmedAt) {
-          confirmTradeByBalance(trade, trade.startTime);
-        }
-
-        // 2) Too early to settle
-        if (now < expectedEnd - earlySettleLeewayMs) {
+        if (now < settleWindow.start) {
           remaining.push(trade);
           continue;
         }
 
-        // 3) Try match a payout credit event within window
-        const amountCents = Number(trade.totalAmountCents || trade.amountCents || 0);
-        const settleStart = expectedEnd - earlySettleLeewayMs;
-        const settleEnd = expectedEnd + settlementWindowMs;
+        trade.state = 'SETTLING';
+        trade.settleAttempts += 1;
 
-        const ev = findBestBalanceEventForTrade(trade, settleStart, settleEnd, expectedEnd);
+        const historyOutcome = detectOutcomeFromClosedTradesHistory(trade);
+        if (historyOutcome) {
+          finalizeTradeOutcome(trade, historyOutcome.outcome, historyOutcome.profitCents, now, historyOutcome.method, { source: 'history' });
+          continue;
+        }
 
+        if (!trade.openConfirmed && !trade.confirmedAt) {
+          await confirmTradeByBalance(trade, trade.clickedAt || trade.startTime);
+        }
+
+        const ev = findBestBalanceEventForTrade(trade);
         if (ev) {
           markBalanceEventUsed(ev);
-
-          let profitCents = null;
-          let settleReason = null;
-
-          // Ако сделката е "самостоятелна" (без други активни по време на клик) – най-точно е чистата разлика bal1-bal0.
-          const canUseBalanceDelta = trade.balanceEligible && Number.isFinite(trade.balanceBefore) && tradesSorted.length <= 1;
-          if (canUseBalanceDelta) {
-            const nowBal = readBalanceCents();
-            if (Number.isFinite(nowBal)) {
-              profitCents = (nowBal - trade.balanceBefore);
-              settleReason = 'BALANCE_DELTA';
-            }
+          const resolved = resolveLedgerProfitCents(trade, ev.deltaCents);
+          const profitCents = Number(resolved?.profitCents);
+          if (Number(ev.deltaCents || 0) > 0 && profitCents < 0) {
+            finalizeTradeOutcome(trade, 'UNRESOLVED', 0, ev.t, 'LEDGER_MISMATCH_POSITIVE_CREDIT', {
+              matchedEvent: { seq: ev.seq, time: ev.t, delta: ev.deltaCents },
+              expectedProfitCents: trade.expectedProfitCents,
+              expectedGrossCents: trade.expectedGrossCents
+            });
+            continue;
           }
-
           if (!Number.isFinite(profitCents)) {
-            const credit = Number(ev.deltaCents || 0);
-            const resolved = resolveLedgerProfitCents(trade, credit);
-            profitCents = Number(resolved?.profitCents || 0);
-            if (Number(credit) > 0 && profitCents < 0) {
-              profitCents = Number(credit);
-              settleReason = 'BALANCE_LEDGER:profit_safety_positive_credit';
-            } else {
-              settleReason = `BALANCE_LEDGER:${resolved?.mode || 'unknown'}`;
-            }
+            remaining.push(trade);
+            continue;
           }
-
           const outcome = profitCents > 0 ? 'ПЕЧАЛБИ' : (profitCents < 0 ? 'ЗАГУБИ' : 'EVEN');
-          finalizeTradeOutcome(trade, outcome, profitCents, ev.t, settleReason);
-
+          const stableBalance = trade.exclusiveSession ? await readStableBalanceCents() : null;
+          const balanceDelta = Number.isFinite(stableBalance) && Number.isFinite(trade.balanceBeforeClickCents)
+            ? (stableBalance - trade.balanceBeforeClickCents)
+            : null;
+          const method = (!trade.openConfirmed && !trade.confirmedAt) ? 'LEDGER_NO_OPEN_CONFIRM' : `BALANCE_LEDGER:${resolved?.mode || 'unknown'}`;
+          finalizeTradeOutcome(trade, outcome, profitCents, ev.t, method, {
+            matchedEvent: { seq: ev.seq, time: ev.t, delta: ev.deltaCents },
+            baseline: trade.balanceBeforeClickCents,
+            expectedGrossCents: trade.expectedGrossCents,
+            expectedProfitCents: trade.expectedProfitCents,
+            finalBalanceSnapshot: stableBalance,
+            balanceDelta,
+            computedProfitCents: profitCents,
+            mismatch: !((Number.isFinite(trade.expectedGrossCents) && Math.abs(Number(ev.deltaCents || 0) - trade.expectedGrossCents) <= getTradeToleranceCents(trade)) || (Number.isFinite(trade.expectedProfitCents) && Math.abs(Number(ev.deltaCents || 0) - trade.expectedProfitCents) <= getTradeToleranceCents(trade)))
+          });
           continue;
         }
 
         const deltaOutcome = detectOutcomeByResultDelta(trade);
-        if (deltaOutcome && now >= expectedEnd) {
-          finalizeTradeOutcome(trade, deltaOutcome.outcome, deltaOutcome.profitCents, now, deltaOutcome.method);
+        if (deltaOutcome && now >= trade.expectedEnd) {
+          finalizeTradeOutcome(trade, deltaOutcome.outcome, deltaOutcome.profitCents, now, deltaOutcome.method, {
+            baseline: trade.balanceBeforeClickCents,
+            computedProfitCents: deltaOutcome.profitCents
+          });
           continue;
         }
 
-        // 4) If window exceeded and no credit → ЗАГУБИ
-        if (now > settleEnd) {
-          const timeoutDelta = detectOutcomeByResultDelta(trade, 1);
-          if (timeoutDelta && Number.isFinite(timeoutDelta.profitCents) && Math.abs(timeoutDelta.profitCents) >= 1) {
-            finalizeTradeOutcome(trade, timeoutDelta.outcome, timeoutDelta.profitCents, now, 'TIMEOUT_DELTA_FALLBACK');
+        if (Number.isFinite(trade.clickedAt) && now - trade.clickedAt > (expiryMs + 10000) && now <= settleWindow.end) {
+          trade.settleWindowEnd += 10000;
+          trade.driftWarning = 'DYNAMIC_DRIFT_WIDEN';
+        }
+
+        if (now > settleWindow.end) {
+          const rechecks = Number(trade.recheckAttempts || 0);
+          if (rechecks < 3) {
+            trade.recheckAttempts = rechecks + 1;
+            trade.settleWindowEnd += 7000;
+            remaining.push(trade);
             continue;
           }
-          logConsoleLine('⚠️ Неуспешно потвърждение на резултат (timeout) → маркирам като EVEN, за да избегна фалшива загуба.');
-          finalizeTradeOutcome(trade, 'EVEN', 0, now, 'TIMEOUT_UNRESOLVED');
-
+          finalizeTradeOutcome(trade, 'UNRESOLVED', 0, now, 'SETTLEMENT_TIMEOUT', {
+            baseline: trade.balanceBeforeClickCents,
+            expectedGrossCents: trade.expectedGrossCents,
+            expectedProfitCents: trade.expectedProfitCents
+          });
           continue;
         }
 
-        // still waiting
         remaining.push(trade);
       }
 
-      // Keep only unsettled trades
       S.activeTrades = remaining;
-      renderPendingTrades();
+      refreshUI('legacy_direct_render_replaced');
     }
 
     /* ========================= FIXED: MARTINGALE WITH PROPER BALANCE TRACKING ========================= */
@@ -7221,6 +7562,70 @@ if (!weights.length) return 0;
       return strictByConfluence ? 8 : 7;
     }
 
+    function evaluateMandatoryGates(ctx = {}) {
+      const {
+        decision,
+        regime,
+        payoutOk,
+        entryWindowOk,
+        biasDirection,
+        analysisUpdatedSec,
+        tfKey,
+        timeInCandle,
+        entryWindowLimit
+      } = ctx;
+      const regimeState = String(regime?.state || '').toLowerCase();
+      const feedState = String(S.feedState || '').toUpperCase();
+      const staleFeed = ['NO_FEED', 'STALE'].includes(feedState);
+      const reasons = {
+        RegimeGate: !(S.sniperNoTradeInChop && regimeState === 'chop') ? 'PASS' : 'CHOP',
+        VolatilitySpikeGate: !(decision?.spikeFlag || decision?.volatilitySpike) ? 'PASS' : 'SPIKE',
+        EntryTimingGate: !!entryWindowOk ? 'PASS' : `OUTSIDE_WINDOW:${Math.round(Number(timeInCandle || 0))}>${Math.round(Number(entryWindowLimit || 0))}`,
+        BiasConflictGate: !(biasDirection && decision?.direction && biasDirection !== decision.direction) ? 'PASS' : `${biasDirection}->${decision?.direction}`,
+        StalenessGate: !(Number.isFinite(analysisUpdatedSec) && analysisUpdatedSec > 15) ? 'PASS' : `STALE_${Math.round(analysisUpdatedSec)}s`,
+        PayoutFloorGate: !!payoutOk ? 'PASS' : 'LOW_PAYOUT',
+        FeedTickRateGate: !staleFeed ? 'PASS' : feedState
+      };
+      const failed = Object.keys(reasons).filter((k) => reasons[k] !== 'PASS');
+      const timingBucket = Number.isFinite(timeInCandle) ? Math.floor(Number(timeInCandle) / 5) : -1;
+      const gateHash = [
+        `tf=${String(tfKey || decision?.tfKey || '').toLowerCase()}`,
+        `reg=${regimeState || 'na'}`,
+        `spk=${decision?.spikeFlag || decision?.volatilitySpike ? 1 : 0}`,
+        `tim=${timingBucket}`,
+        `bias=${biasDirection || 'na'}`,
+        `pay=${payoutOk ? 1 : 0}`,
+        `feed=${staleFeed ? 0 : 1}`
+      ].join('|');
+      return {
+        verdict: failed.length ? 'FAIL' : 'PASS',
+        failed,
+        reasons,
+        gateHash
+      };
+    }
+
+    function computeSignalStability(assetLabel, decision, mandatoryGates, scoreCard) {
+      const key = `${assetLabel}|${decision?.tfKey || ''}|${decision?.strategyKey || ''}|${decision?.direction || ''}`;
+      S.stabilityCache = S.stabilityCache || {};
+      const prev = S.stabilityCache[key] || { passesCount: 0, gateHash: '', direction: '', lastAt: 0 };
+      const scorePass = !!scoreCard && Number(scoreCard.points || 0) >= Number(scoreCard.threshold || 0);
+      const passNow = String(mandatoryGates?.verdict || '') === 'PASS' && scorePass;
+      const now = Date.now();
+      let passesCount = passNow ? (prev.passesCount + 1) : 0;
+      if (prev.direction && prev.direction !== decision?.direction) passesCount = passNow ? 1 : 0;
+      if (prev.gateHash && prev.gateHash !== mandatoryGates?.gateHash) passesCount = passNow ? 1 : 0;
+      if (prev.lastAt && (now - prev.lastAt > 1200)) passesCount = passNow ? 1 : 0;
+      const stablePass = passNow && passesCount >= 2;
+      S.stabilityCache[key] = {
+        passesCount,
+        gateHash: mandatoryGates?.gateHash || '',
+        direction: decision?.direction || '',
+        lastAt: now
+      };
+      return { key, passesCount, stablePass };
+    }
+
     function evaluateScoreDecision(ctx = {}) {
       const {
         decision,
@@ -7422,13 +7827,12 @@ if (!weights.length) return 0;
         S.tradeQualityScore = 0;
         S.sniperTfStatus = feedStatuses;
         setStatusOverlay(formatStatus('sniper_no_feed'), '', false);
-        renderSniperMatrix();
-        renderPendingTrades();
+        refreshUI('no_feed');
         return;
       }
 
       S.feedState = 'READY';
-      const canTrade = S.autoTrade && !S.executing;
+      const canTrade = S.autoTrade;
 
       const timeframes = getSniperTimeframes();
       if (!timeframes.length) {
@@ -7442,8 +7846,7 @@ if (!weights.length) return 0;
         S.analysisDirection = null;
         S.tradeQualityScore = 0;
         setStatusOverlay('Снайпер: няма активни таймфрейми', '', false);
-        renderSniperMatrix();
-        renderPendingTrades();
+        refreshUI('no_timeframes');
         return;
       }
 
@@ -7636,11 +8039,44 @@ if (!weights.length) return 0;
 
         if (S.killerEnabled && killerAlignmentOk && perfectTimeOk) { try { sessionRecordKiller(tf, killerSnapshotTf, 'PASS', ''); } catch (e) {} }
 
+        if (String(decision.tfKey || '') === '1m' && getDynamicMode() === 'hybrid') {
+          tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
+          if (shouldLogScoreEvent(tf, 'hard', '1m disabled in hybrid')) logConsoleLine('[GATES] 1m е временно изключен в Hybrid');
+          continue;
+        }
         const entryWindowOk = !S.entryWindowTfEnabled || entryWindowLimit <= 0 || timeInCandle <= entryWindowLimit;
         const spreadMetric = Number.isFinite(S.lastGlobalSpread) ? S.lastGlobalSpread : 0;
         const spreadOk = !S.filterSpreadEnabled || !Number.isFinite(S.filterSpreadThreshold) || spreadMetric >= S.filterSpreadThreshold;
         const patternSupport = !S.candlestickPatternEnabled || decision.strategyKey === 'candlestick_pattern';
+        const analysisUpdatedSec = Number.isFinite(S.lastPriceAt) && S.lastPriceAt > 0 ? ((Date.now() - S.lastPriceAt) / 1000) : null;
+        const mandatoryGates = evaluateMandatoryGates({
+          decision,
+          regime,
+          payoutOk,
+          entryWindowOk: entryWindowOk && perfectTimeOk,
+          biasDirection,
+          analysisUpdatedSec,
+          tfKey: tf,
+          timeInCandle,
+          entryWindowLimit
+        });
+        decision.mandatoryGates = mandatoryGates;
+        if (mandatoryGates.verdict !== 'PASS') {
+          const reason = `GATES_FAIL: ${mandatoryGates.failed.join(', ')}`;
+          S.lastScoreSnapshot = {
+            result: 'SKIP(GATES)',
+            points: 0,
+            maxPoints: 9,
+            threshold: getScoreThresholdPoints(),
+            strategyKey: decision.strategyKey,
+            reason
+          };
+          if (shouldLogScoreEvent(tf, 'hard', reason)) logConsoleLine(reason);
+          tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
+          continue;
+        }
         S.engineState = 'SCORE';
+        const tfPolicy = (String(decision.tfKey || '').toLowerCase() === '5m') ? 'SOFT_5M' : 'BASELINE';
         const scoreCard = evaluateScoreDecision({
           decision,
           regime,
@@ -7654,6 +8090,7 @@ if (!weights.length) return 0;
           counterCandleHardStop: !!decision.counterCandleHardStop
         });
         decision.scoreCard = scoreCard;
+        if (tfPolicy === 'SOFT_5M') scoreCard.threshold = Math.max(6, Number(scoreCard.threshold || 7) - 1);
 
         if (scoreCard.hardFailReason) {
           const reason = scoreCard.hardFailReason;
@@ -7684,6 +8121,26 @@ if (!weights.length) return 0;
           continue;
         }
 
+        const stability = computeSignalStability(getCurrentAssetLabel() || '—', decision, decision.mandatoryGates, scoreCard);
+        decision.stablePass = !!stability.stablePass;
+        decision.passesCount = Number(stability.passesCount || 0);
+        if (!decision.stablePass) {
+          const reason = `Stability FAIL: ${decision.passesCount}/2`;
+          S.lastScoreSnapshot = {
+            result: 'SKIP(STABILITY)',
+            points: scoreCard.points,
+            maxPoints: scoreCard.maxPoints,
+            threshold: scoreCard.threshold,
+            strategyKey: decision.strategyKey,
+            reason
+          };
+          if (shouldLogScoreEvent(tf, 'score', reason)) logConsoleLine(`[STABILITY] ${reason}`);
+          tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
+          continue;
+        }
+
+
+        logConsoleLine(`[DECISION] tf=${String(decision.tfKey || tf).toLowerCase()} dir=${decision.direction || 'N/A'} conf=${Number(decision.confidence || 0).toFixed(2)} momentum=${Number(decision.momentum || 0).toFixed(4)} bias=${biasDirection || 'NONE'} flipGuard=OK`);
         S.lastScoreSnapshot = {
           result: 'READY',
           points: scoreCard.points,
@@ -7749,8 +8206,7 @@ if (!weights.length) return 0;
       } else {
         S.killerSnapshot = { signal: 'WAIT', longPct: 50, shortPct: 50, confluence: 0, minConfluence: Math.max(6, Math.min(7, Math.round(S.killerMinConfluence || 6))), adx: null };
       }
-      renderSniperMatrix();
-      renderPendingTrades();
+      refreshUI('scan_update');
       renderKillerHud();
       if (!best) {
         S.analysisConfidence = bestCandidate ? bestCandidate.confidence : 0;
@@ -7767,13 +8223,14 @@ if (!weights.length) return 0;
         } else {
           setStatusOverlay('Снайпер: няма чист вход', '', false);
         }
-        renderPendingTrades();
+        refreshUI('scan_wait');
         return;
       }
 
       if (S.lastStrategyDirection && best.direction && S.lastStrategyDirection !== best.direction) {
         const sinceFlip = now - (S.lastStrategyDirectionAt || 0);
         if (sinceFlip < Math.max(500, S.strategyFlipCooldownMs || 2500)) {
+          logConsoleLine(`[FLIP_BLOCKED] prev=${S.lastStrategyDirection} new=${best.direction} reason=cooldown`);
           best.direction = S.lastStrategyDirection;
           best.confidence = Math.max(0, (best.confidence || 0) - 0.08);
         }
@@ -7798,7 +8255,7 @@ if (!weights.length) return 0;
 
       if (!canTrade) {
         setStatusOverlay('Снайпер: изчакване', '', false);
-        renderPendingTrades();
+        refreshUI('scan_wait');
         return;
       }
 
@@ -7850,9 +8307,7 @@ const readySignals = Object.keys(tfStatus)
       for (let i = 0; i < signalsToExecute.length; i += 1) {
         const decision = signalsToExecute[i];
 
-        // Fixed pre-trade recheck delay (anti-fake-signal)
-        const preDelayMs = Math.max(600, Number.isFinite(S.preTradeRecheckDelayMs) ? S.preTradeRecheckDelayMs : 1200);
-        await new Promise(r => setTimeout(r, preDelayMs));
+        // Non-blocking scan: no sleep in SCAN loop. Recompute immediately.
         // Recompute decision using the currently enabled strategy (not a fixed strategy),
         // and use the same threshold scaling as the main scan (0..1).
         const assetScopePre = getExpiryScopeFromAsset(getCurrentAssetLabel());
@@ -7875,11 +8330,7 @@ const readySignals = Object.keys(tfStatus)
           continue;
         }
 
-        if (i > 0) {
-          const delayMs = Math.max(800, Number.isFinite(S.multiSignalDelayMs) ? S.multiSignalDelayMs : 1500);
-          await new Promise(r => setTimeout(r, delayMs));
-        }
-
+        // Non-blocking SCAN: sequencing delay handled by EXEC queue worker/TTL guards.
 
         const assetLabel = getCurrentAssetLabel() || '—';
         const assetSearch = assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim();
@@ -7948,14 +8399,25 @@ const signal = {
             strategyKey: decision.strategyKey,
             scoreCard: decision.scoreCard || null,
             regime: decision.regime,
+            regimeStrength: decision.regimeStrength,
             biasDir: decision.biasDir,
+            biasStrength: decision.biasStrength,
             confirmation: decision.confirmation,
             timeInCandle: decision.timeInCandle,
             entryWindowSec: decision.entryWindowSec,
             rangePct: decision.rangePct,
             trendDir: decision.trendDir,
             trendAligned: decision.trendAligned,
-            volumeOk: decision.volumeOk
+            volumeOk: decision.volumeOk,
+            payoutPercent: decision.payoutPercent,
+            volatility: {
+              atr: decision.atr || null,
+              rangePct: decision.rangePct,
+              spikeFlag: !!(decision.spikeFlag || decision.volatilitySpike)
+            },
+            mandatoryGates: decision.mandatoryGates || null,
+            stablePass: !!decision.stablePass,
+            passesCount: Number(decision.passesCount || 0)
           },
           expiry: decision.tfKey.toUpperCase(),
           minute: getCurrentMinute(),
@@ -7979,7 +8441,6 @@ const signal = {
         }
         S.sniperInFlightKey = inFlightKey;
         S.sniperInFlightUntil = Date.now() + 1500;
-        logConsoleLine(`[SCAN V5] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
         if (decision.aiVision?.pattern) logConsoleLine(`[AI VISION] Patterns: ${decision.aiVision.pattern}`);
         
         // -------- Confirm Delay (delay_ms) + stability check (NO cooldown) --------
@@ -8011,7 +8472,7 @@ const signal = {
 
         const confirmDelayMs = Math.max(0, Math.min(2000, Number.isFinite(S.confirmDelayMs) ? S.confirmDelayMs : 600));
         if (confirmDelayMs > 0) {
-          await new Promise(r => setTimeout(r, confirmDelayMs));
+          // Non-blocking scan: emulate delay via re-validation without waiting.
 
           // Re-check entry window after delay (we do NOT modify your entry-window settings).
           if (S.entryWindowTfEnabled) {
@@ -8075,39 +8536,61 @@ const signal = {
           }
         }
         // ------------------------------------------------------------------------
-const ok = await executeTradeOrder(signal);
+        const entryWindowSec = Number(signal?.entryMeta?.entryWindowSec || 0);
+        const candleStart = Number(decision?.candleStart || now);
+        const validUntil = entryWindowSec > 0 ? (candleStart + entryWindowSec * 1000) : (Date.now() + 2000);
+        const candidate = {
+          id: `cand_${Date.now().toString(36)}_${Math.random().toString(16).slice(2,8)}`,
+          createdAtMs: Date.now(),
+          asset: signal?.asset || getCurrentAssetLabel() || '',
+          tf: decision?.tfKey || '',
+          direction: decision?.direction || '',
+          strategyKey: decision?.strategyKey || '',
+          candleStartMs: candleStart,
+          entryWindowSec,
+          validUntilMs: validUntil,
+          gates: { verdict: decision?.mandatoryGates?.verdict || 'FAIL', failed: decision?.mandatoryGates?.failed || [], reasons: decision?.mandatoryGates?.reasons || {}, gateHash: decision?.mandatoryGates?.gateHash || '' },
+          score: { points: Number(decision?.scoreCard?.points || 0), threshold: Number(decision?.scoreCard?.threshold || 0), breakdown: decision?.scoreCard?.breakdown || [] },
+          stability: { stablePass: !!decision?.stablePass, passesCount: Number(decision?.passesCount || 0) },
+          snapshot: { confidence: Number(decision?.confidence || 0), dom: Number(S.killerSnapshot?.longPct || 0), regimeSummary: String(decision?.regime?.state || ''), payout: Number(S.lastPayoutPercent || 0), timeInCandleSec: Number(signal?.entryMeta?.timeInCandle || 0), analysisUpdatedSec: Number((Date.now()-Number(S.analysisUpdatedAt||Date.now()))/1000) },
+          signal,
+          decision,
+          points: Number(decision?.scoreCard?.points || 0)
+        };
+        if (Date.now() > validUntil) {
+          logConsoleLine(`[SCAN V5] EXPIRED(SCAN) tf=${decision?.tfKey || candidate?.tf || 'n/a'} t=${Math.round(Number(signal?.entryMeta?.timeInCandle || 0))}s window=${Math.round(Number(entryWindowSec || 0))}s`);
+          S.sniperInFlightUntil = 0;
+          S.baseAmount = prevBase;
+          S.assetSelectedForSignal = false;
+          S.assetSelectionAttempted = false;
+          continue;
+        }
+        const queued = enqueueExecutionCandidate(candidate);
         S.sniperInFlightUntil = 0;
         S.baseAmount = prevBase;
         S.assetSelectedForSignal = false;
-        S.assetSelectionAttempted = false; 
-        if (ok) {
+        S.assetSelectionAttempted = false;
+        if (queued) {
+          logConsoleLine(`[SCAN V5] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
           setStatusOverlay(formatStatus('sniper_ready'), '', false);
         }
-}
+      }
     }
 
     /* ========================= FIXED TICK LOOP WITH CONTINUOUS COUNTDOWN ========================= */
     async function tick() {
       if (!S.running) {
-        clearInterval(S.loop);
-        S.loop = null;
+        clearInterval(S.scanLoop);
+        S.scanLoop = null;
         stopKeepAlive();
         stopPriceMonitoring();
         return;
       }
 
-      // Re-entry guard: never allow overlapping ticks.
-      if (S.__tickBusy) {
-        const nowBusy = Date.now();
-        const stuckFor = nowBusy - (S.__tickBusyAt || 0);
-        if (stuckFor > 4000 && nowBusy - (S.lastTickBusyWarnAt || 0) > 4000) {
-          S.lastTickBusyWarnAt = nowBusy;
-          logConsoleLine(`[ENGINE] Изчакване: предишният tick още работи (${Math.round(stuckFor)}ms)`);
-        }
-        return;
-      }
-      S.__tickBusy = true;
-      S.__tickBusyAt = Date.now();
+      // SCAN loop lock only (does not block EXEC/SETTLE loops).
+      if (S.scanBusy) return;
+      S.scanBusy = true;
+      const __scanStarted = Date.now();
       try {
 
 
@@ -8155,11 +8638,6 @@ const ok = await executeTradeOrder(signal);
         setStatusOverlay(formatStatus('warming_up', { seconds: Math.ceil((S.analysisReadyAt - Date.now()) / 1000) }), '', false);
       }
 
-      await processPendingTradeConfirmations();
-      if (hasActiveTrade()) {
-        await finalizeActiveTrades();
-      }
-
       await maybeSwitchIdleAsset();
 
       const priceStaleMs = 15000;
@@ -8172,7 +8650,7 @@ const ok = await executeTradeOrder(signal);
 
       const warm = clamp01((nowMs() - S.botStartTime) / 5000);
       renderWarmup(warm);
-      if (warm < 1) { renderPendingTrades(); updateProfitDisplay(); return; }
+      if (warm < 1) { refreshUI('warmup'); return; }
 
       if (isSniperMode()) {
         await runSniperTick();
@@ -8216,113 +8694,59 @@ const ok = await executeTradeOrder(signal);
         }
       }
 
-      if (null && false && false && !hasActiveTrade()) {
-        const sig = null;
-        const delayMs = calculateDelay(sig);
-        if (!S.assetSelectedForSignal && S.assetSelectionAttempted) {
-          const verification = verifyAssetSelection(sig.asset);
-          if (verification.verified) {
-            S.assetSelectedForSignal = true;
-            S.assetSelectionFlipped = false;
-          }
-        }
 
-        // Update UI states based on countdown timing - FIXED: Continue countdown in all states
-        if (delayMs > -C.LATE_TOL_MS) {
-          const secondsLeft = Math.max(0, Math.floor(delayMs / 1000));
+      // legacy direct-exec branch removed; SCAN remains analyze/enqueue only.
 
-          if (secondsLeft <= 10 && S.uiState !== 'PATTERN_IDENTIFIED') {
-            setUIState('PATTERN_IDENTIFIED', {
-              countdownValue: formatCountdown(delayMs),
-              direction: sig.direction
-            });
-            S.patternIdentifiedTime = Date.now();
-          } else if (secondsLeft > 10 && S.uiState === 'IDENTIFYING_PATTERN') {
-            // Update countdown in identifying state - CONTINUOUS COUNTDOWN
-            updateCountdownDisplay(formatCountdown(delayMs));
-          } else if (S.uiState === 'PATTERN_IDENTIFIED') {
-            // Continue countdown in pattern identified state - FIXED
-            updateCountdownDisplay(formatCountdown(delayMs), true);
-          }
-        }
 
-        if (S.forceImmediate) {
-          let executed = false;
-
-          for (let attempt = 1; attempt <= C.MAX_EXECUTION_ATTEMPTS; attempt++) {
-            const ok = await executeTradeOrder(sig);
-            if (ok) {
-              executed = true;
-              break;
-            } else if (attempt < C.MAX_EXECUTION_ATTEMPTS) {
-              await delay(50);
-            }
-          }
-
-          if (executed) {
-            S.forceImmediate = false;
-          } else {
-            resetExecutionState();
-            endCycle();
-          }
-          renderPendingTrades();
-          updateProfitDisplay();
-          return;
-        }
-
-        if (delayMs <= C.EARLY_FIRE_MS && !S.assetSelectedForSignal && !S.assetSelecting) {
-          await selectAssetWithVerification(sig);
-        }
-
-        if (S.assetSelectedForSignal && delayMs <= C.EARLY_FIRE_MS && delayMs >= -C.LATE_TOL_MS) {
-          let executed = false;
-
-          for (let attempt = 1; attempt <= C.MAX_EXECUTION_ATTEMPTS; attempt++) {
-            const ok = await executeTradeOrder(sig);
-            if (ok) {
-              executed = true;
-              break;
-            } else if (attempt < C.MAX_EXECUTION_ATTEMPTS) {
-              await delay(10);
-            }
-          }
-
-          if (executed) {
-            S.assetSelectedForSignal = false;
-            S.assetSelectionAttempted = false;
-          } else {
-            resetExecutionState();
-            endCycle();
-          }
-          renderPendingTrades();
-          updateProfitDisplay();
-          return;
-        }
-
-        if (!S.assetSelectionAttempted && !S.assetSelectedForSignal && !S.assetSelecting && delayMs > C.EARLY_FIRE_MS) {
-          setUIState('SWITCHING_ASSET');
-          await selectAssetWithVerification(sig);
-          if (S.assetSelectedForSignal) {
-            setUIState('IDENTIFYING_PATTERN', {
-              countdownValue: formatCountdown(delayMs)
-            });
-          }
-        }
-
-        if (delayMs < -C.LATE_TOL_MS) {
-          resetExecutionState();
-          endCycle();
-        }
-      }
-
-      renderPendingTrades();
-      updateProfitDisplay();
+      refreshUI('tick');
     
       } finally {
-        S.__tickBusy = false;
-        S.__tickBusyAt = 0;
+        const dt = Date.now() - __scanStarted;
+        const n = (S.queueMetrics._scanN || 0) + 1;
+        S.queueMetrics._scanN = n;
+        S.queueMetrics.scanCycleMs = ((S.queueMetrics.scanCycleMs || 0) * (n - 1) + dt) / n;
+        S.metrics.scanCycleMs = S.queueMetrics.scanCycleMs;
+        S.scanBusy = false;
       }
 }
+
+    async function settleLoopTick() {
+      if (!S.running || S.settleBusy) return;
+      S.settleBusy = true;
+      const started = Date.now();
+      try {
+        await processPendingTradeConfirmations();
+        if (hasActiveTrade()) await finalizeActiveTrades();
+      } finally {
+        const dt = Date.now() - started;
+        const n = (S.queueMetrics._settleN || 0) + 1;
+        S.queueMetrics._settleN = n;
+        S.queueMetrics.avgSettleMs = ((S.queueMetrics.avgSettleMs || 0) * (n - 1) + dt) / n;
+        S.metrics.avgSettleMs = S.queueMetrics.avgSettleMs;
+        S.settleBusy = false;
+      }
+    }
+
+    function startEngineLoops() {
+      clearInterval(S.scanLoop);
+      clearInterval(S.execLoop);
+      clearInterval(S.settleLoop);
+      S.scanLoop = setInterval(tick, 250);
+      S.execLoop = setInterval(() => { runExecutionQueueWorker(); }, 90);
+      S.settleLoop = setInterval(() => { settleLoopTick(); }, 750);
+    }
+
+    function stopEngineLoops() {
+      clearInterval(S.scanLoop); S.scanLoop = null;
+      clearInterval(S.execLoop); S.execLoop = null;
+      clearInterval(S.settleLoop); S.settleLoop = null;
+      S.executionQueue = [];
+      S.execWorkerBusy = false;
+      S.scanBusy = false;
+      S.settleBusy = false;
+      if (S.queueMetrics) S.queueMetrics.queueLen = 0;
+      if (S.metrics) S.metrics.queueLen = 0;
+    }
 
     /* ========================= ENHANCED ASSET SELECTION WITH OTC/REAL FALLBACK ========================= */
     async function selectAssetWithVerification(signal) {
@@ -8833,6 +9257,7 @@ const ok = await executeTradeOrder(signal);
         </div>
         <div id="iaa-warm" class="warmup red">ENGINE 0% ЗАГРЯВА</div>
         <div id="iaa-feed-cloud">Цена: — • История: 0</div>
+        <div id="iaa-last-trade-card" style="font-size:11px;color:#cbd5e1;margin-top:4px;">Bot PnL: — | Platform: —</div>
 
         <div class="iaa-controls">
           <button id="iaa-mouse-toggle" class="iaa-control-btn" title="Mouse Mapping">🖱</button>
@@ -8846,6 +9271,7 @@ const ok = await executeTradeOrder(signal);
             <span>Диагностика</span>
             <div class="iaa-debug-actions">
               <button id="iaa-debug-copy" title="Копирай диагностика">КОПИРАЙ</button>
+              <button id="iaa-recheck-settlement" title="Повторна проверка за последна unresolved сделка">Recheck settlement</button>
               <button id="iaa-loss-copy" title="Копирай анализ загуби">КОПИРАЙ ЗАГУБИ</button>
               <button id="iaa-debug-close" title="Затвори">×</button>
             </div>
@@ -9164,7 +9590,7 @@ const ok = await executeTradeOrder(signal);
                     <span class="iaa-field-label">Диапазон (сек)</span>
                     <span class="iaa-mini-label">мин</span>
                     <input type="number" id="iaa-dynamic-min-sec" min="3" max="3600" step="1" value="15">
-                    <span class="iaa-mini-label">макс</span>
+                    <span class="iaa-mini-label">/</span>
                     <input type="number" id="iaa-dynamic-max-sec" min="3" max="3600" step="1" value="300">
                   </div>
                   <div class="iaa-field-row" title="Стъпка за вход в симулацията назад.">
@@ -9402,6 +9828,7 @@ const ok = await executeTradeOrder(signal);
       const debugClose = $id('iaa-debug-close');
       const killerClose = $id('iaa-killer-close');
       const debugCopy = $id('iaa-debug-copy');
+      const recheckSettlementBtn = $id('iaa-recheck-settlement');
       const lossCopy = $id('iaa-loss-copy');
       const debugTabStatus = $id('iaa-debug-tab-status');
       const debugTabLoss = $id('iaa-debug-tab-loss');
@@ -9517,6 +9944,18 @@ setTimeout(() => {
           hidePopups();
         }, true);
       }
+      if (recheckSettlementBtn) {
+        recheckSettlementBtn.addEventListener('click', async () => {
+          try {
+            const res = await manualRecheckSettlement();
+            if (!res?.ok) { logConsoleLine('[SETTLE] Няма UNRESOLVED за recheck'); return; }
+            logConsoleLine('MANUAL_RECHECK:OK');
+            refreshUI('manual_recheck');
+            logConsoleLine('[SETTLE] Manual recheck изпълнен');
+          } catch (e) { logConsoleLine('[SETTLE] Manual recheck error'); }
+        });
+      }
+
       if (debugCopy) {
         debugCopy.addEventListener('click', async () => {
           const ok = await copyDebugInfo();
@@ -9576,6 +10015,25 @@ setTimeout(() => {
         });
       }
       rebindPanelPopupButtons();
+    }
+
+    
+    async function manualRecheckSettlement(tradeId = null) {
+      const unresolvedActive = (S.activeTrades || []).slice().reverse().find(t => t && (t.state === 'UNRESOLVED' || t.outcome === 'UNRESOLVED'));
+      let unresolved = unresolvedActive;
+      const sess = _sessionEnsure();
+      const unresolvedSess = (sess.unresolvedTrades || []).slice().reverse()[0] || null;
+      const fallbackId = unresolvedSess?.tradeId || unresolvedSess?.id || null;
+      const targetId = tradeId || fallbackId;
+      if (!unresolved && targetId) unresolved = (S.trades || []).find(t => t && (t.id === targetId || t.tradeId === targetId));
+      if (!unresolved) unresolved = (S.trades || []).slice().reverse().find(t => t && t.outcome === 'UNRESOLVED');
+      if (!unresolved) return { ok: false, reason: 'NOT_FOUND' };
+      unresolved.outcomeChecked = false;
+      unresolved.recheckAttempts = Number(unresolved.recheckAttempts || 0);
+      S.activeTrades = S.activeTrades || [];
+      if (!S.activeTrades.find(t => t.id === unresolved.id)) S.activeTrades.push(unresolved);
+      await finalizeActiveTrades();
+      return { ok: true, tradeId: unresolved.id };
     }
 
     function setStatusOverlay(text, countdown = '', logToConsole = true) {
@@ -9649,7 +10107,7 @@ setTimeout(() => {
       const blocks = '▁▂▃▄▅▆▇█';
       return arr.map(v => blocks[Math.max(0, Math.min(7, Math.round((v / 100) * 7))) ]).join('');
     }
-    function renderPendingTrades(){
+    function renderPendingTrades (){
       const execEl = $id('iaa-exec');
       if (null && execEl) execEl.textContent = fmtHHMMSSLocal(new Date(null.targetTsMs));
       else if (execEl) execEl.textContent = '—';
@@ -9669,7 +10127,18 @@ setTimeout(() => {
 
       const etaEl = $id('iaa-next-trade');
       if (etaEl) etaEl.textContent = getNextEtaLabel();
-      renderSniperMatrix();
+      const lastTradeCard = $id('iaa-last-trade-card');
+      if (lastTradeCard) {
+        const all = Array.isArray(S.trades) ? S.trades : [];
+        const last = all.length ? all[all.length - 1] : null;
+        if (last) {
+          const botPnl = Number.isFinite(last.profitCents) ? last.profitCents : 0;
+          const platformBadge = last.platformOutcomeBadge || '—';
+          lastTradeCard.innerHTML = `Bot PnL: <b>${formatOutcomeAmount(botPnl)}</b> <span style="opacity:.75; margin-left:8px;">Platform: <b>${platformBadge}</b></span>`;
+        } else {
+          lastTradeCard.textContent = 'Bot PnL: — | Platform: —';
+        }
+      }
 
       const feedEl = $id('iaa-feed-cloud');
       if (feedEl) {
@@ -10192,6 +10661,7 @@ setTimeout(() => {
 
       await storage.set(RANGE_OSC_PENALTY_ENABLED_KEY, !!S.rangeOscPenaltyEnabled);
       await storage.set(RANGE_OSC_PENALTY_PCT_KEY, Number(S.rangeOscPenaltyPct || 0));
+      refreshUI('settingsChange');
     }
     function captureSettingsSnapshot(){}
 
@@ -10791,7 +11261,7 @@ const closeSettingsPanel = () => {
             dotEl.style.boxShadow = S.running ? '0 0 8px rgba(34,197,94,.85)' : '0 0 8px rgba(239,68,68,.85)';
           }
           if (S.running) { 
-            S.loop = setInterval(tick, 1000/C.FPS); 
+            startEngineLoops(); 
             S.botStartTime = nowMs();
             S.botStartAt = Date.now();
             S.lastSignalLagSec = null;
@@ -10820,7 +11290,7 @@ const closeSettingsPanel = () => {
             S.strategyStats = {};
             S.strategyTradeCount = 0;
             S.lossReports = [];
-            renderTradeStats();
+            refreshUI('start/stop');
             
             const startBal = readBalanceCents();
             if (startBal !== null) {
@@ -10837,8 +11307,7 @@ const closeSettingsPanel = () => {
               startKeepAlive();
             }
           } else {
-            clearInterval(S.loop);
-            S.loop = null;
+            stopEngineLoops();
             stopKeepAlive();
             stopPriceMonitoring();
             S.assetSelecting = false;
@@ -10854,11 +11323,10 @@ const closeSettingsPanel = () => {
             stopCountdown();
             setUIState('IDLE');
             renderWarmup(0);
-            renderSniperMatrix();
-            renderPendingTrades();
+            refreshUI('legacy_direct_render_replaced');
             try { sessionStop(); } catch (e) {}
             logConsoleLine(formatStatus('bot_stopped'));
-            renderTradeStats();
+            refreshUI('start/stop');
           }
         });
       }
@@ -11516,7 +11984,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperEnabledTimeframes['1m'] = FEATURE_TF_1M.checked;
           S.sniperEnabledTimeframes['1m'] = FEATURE_TF_1M.checked;
           persistSettings();
-          renderSniperMatrix();
+          refreshUI('legacy_direct_render_replaced');
         });
       }
       if (FEATURE_TF_3M) {
@@ -11524,7 +11992,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperEnabledTimeframes['3m'] = FEATURE_TF_3M.checked;
           S.sniperEnabledTimeframes['3m'] = FEATURE_TF_3M.checked;
           persistSettings();
-          renderSniperMatrix();
+          refreshUI('legacy_direct_render_replaced');
         });
       }
       if (FEATURE_TF_5M) {
@@ -11532,7 +12000,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperEnabledTimeframes['5m'] = FEATURE_TF_5M.checked;
           S.sniperEnabledTimeframes['5m'] = FEATURE_TF_5M.checked;
           persistSettings();
-          renderSniperMatrix();
+          refreshUI('legacy_direct_render_replaced');
         });
       }
       if (FEATURE_TF_15M) {
@@ -11540,7 +12008,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperEnabledTimeframes['15m'] = FEATURE_TF_15M.checked;
           S.sniperEnabledTimeframes['15m'] = FEATURE_TF_15M.checked;
           persistSettings();
-          renderSniperMatrix();
+          refreshUI('legacy_direct_render_replaced');
         });
       }
       if (STRATEGY_EMA_RSI_PULLBACK) {
