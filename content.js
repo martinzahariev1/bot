@@ -2,6 +2,8 @@
   'use strict';
 
   const IAA_PAGE_BRIDGE_MODE = false;
+  const BUILD_ID = '20260225-1200-expiryfix';
+  console.log(`[BUILD] ${BUILD_ID}`);
 
   const PO_PRICE_EVENT = 'IAA_PO_PRICE';
   const PRICE_HISTORY_MAX_POINTS = 12000;
@@ -1106,6 +1108,9 @@
       lastAssetLabelNormalized: null,
       sniperFastWarmupUntil: 0,
       activeTrades: [], tradeLockUntil:0, tradeCount:0,
+      lastTradeAttemptCycleId: null,
+      scanCycleId: 0,
+      reservedTradeSlotAt: 0,
       lastTradeSignalKey: '',
       lastTradeSignalAt: 0,
       autoTrade:true,
@@ -1984,7 +1989,7 @@
       const cWhy = verdict === 'PASS' ? '#22c55e' : '#f59e0b';
       const cDom = (Number.isFinite(dom) && Number.isFinite(thr) && dom >= thr) ? '#22c55e' : '#f59e0b';
       const cConf = (Number.isFinite(conf) && Number.isFinite(min) && conf >= min) ? '#22c55e' : '#f59e0b';
-      logConsoleLine(`🔫 ${tf}|<span style="color:${cWhy};font-weight:800;">${whyShort}</span>|<span style="color:${cConf};font-weight:800;">CONF ${confTxt}</span>|<span style="color:${cDom};font-weight:800;">DOM ${domPct}%(thr ${thrPct}%)</span>|<span style="color:#a5b4fc;font-weight:700;">${adxTxt}</span>|<span style="color:#e5e7eb;">${ptTxt}</span>${pointsTxt ? `|<span style="color:#93c5fd;">${pointsTxt}</span>` : ''}`);
+      logSpamControlled('scan', `killer:${tf}:${verdict}`, `🔫 ${tf}|<span style="color:${cWhy};font-weight:800;">${whyShort}</span>|<span style="color:${cConf};font-weight:800;">CONF ${confTxt}</span>|<span style="color:${cDom};font-weight:800;">DOM ${domPct}%(thr ${thrPct}%)</span>|<span style="color:#a5b4fc;font-weight:700;">${adxTxt}</span>|<span style="color:#e5e7eb;">${ptTxt}</span>${pointsTxt ? `|<span style="color:#93c5fd;">${pointsTxt}</span>` : ''}`);
     }
 
     function exportSessionHtml() {
@@ -2496,6 +2501,30 @@ window.__REPORT_FNAME__ = "${fname}";
       const prev = Number(cache[key] || 0);
       if (prev && (now - prev) < Math.max(500, Number(cooldownMs) || 1000)) return false;
       cache[key] = now;
+      return true;
+    }
+
+    function getSpamCooldownMs(category) {
+      const verbosity = getLogVerbosity();
+      if (category === 'gates') return verbosity === 'minimal' ? 30000 : 5000;
+      if (category === 'status_wait') return verbosity === 'minimal' ? 30000 : 1000;
+      return verbosity === 'minimal' ? 10000 : 2000;
+    }
+
+    function logSpamControlled(category, key, message, options = {}) {
+      const stateKey = `spam:${category}:${key}`;
+      const cooldownMs = getSpamCooldownMs(category);
+      if (options.stateValue !== undefined) {
+        const cache = S.logSpamStateCache || (S.logSpamStateCache = Object.create(null));
+        const prevValue = cache[stateKey];
+        cache[stateKey] = options.stateValue;
+        if (prevValue !== undefined && prevValue !== options.stateValue) {
+          logConsoleLine(message);
+          return true;
+        }
+      }
+      if (!canEmitRateLimitedLog(stateKey, cooldownMs)) return false;
+      logConsoleLine(message);
       return true;
     }
 
@@ -3351,25 +3380,22 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
         counts[label] = (counts[label] || 0) + 1;
       }
       const total = Object.values(counts).reduce((a, b) => a + b, 0);
-      if (!total) return { summary: '—', last: 'Последно: —' };
-      const top = Object.entries(counts)
-        .map(([k, v]) => ({ k, v, pct: Math.round((v / total) * 100) }))
-        .sort((a, b) => b.v - a.v)
-        .slice(0, 3)
-        .map((x) => `${x.k} ${x.pct}%`)
-        .join(' • ');
+      if (!total) return { summary: 'PT 0% • Bias 0% • Вход TF 0%', last: 'Последно: —' };
+      const pct = (k) => Math.round(((counts[k] || 0) / total) * 100);
+      const top = `PT ${pct('PT')}% • Bias ${pct('Bias')}% • Вход TF ${pct('Вход TF')}%`;
       const lastEv = events[events.length - 1] || null;
       const last = lastEv ? `Последно: ${mapLabel(lastEv.gate)}${lastEv.reason ? ` (${lastEv.reason})` : ''}` : 'Последно: —';
       return { summary: top, last };
     }
 
     function updateDebugPanelBlockers() {
+      const now = Date.now();
+      if ((now - Number(S.lastBlockersUpdateAt || 0)) < 1000) return;
+      S.lastBlockersUpdateAt = now;
       const topEl = $id('dbg-top-blockers');
-      const lastEl = $id('dbg-last-blocker');
-      if (!topEl && !lastEl) return;
+      if (!topEl) return;
       const data = computeTopBlockers(300000);
-      if (topEl) topEl.textContent = data.summary;
-      if (lastEl) lastEl.textContent = data.last;
+      topEl.textContent = `${data.summary} | ${data.last}`;
       S.lastGateBlockerSummary = data.summary;
       S.lastGateBlockerReason = data.last;
     }
@@ -3439,7 +3465,7 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       if (!content) return;
       const lines = getDebugInfoLines();
       const scannerLine = '<div class="iaa-debug-line"><span class="iaa-debug-key" style="color:#ef4444;font-weight:700;">[SCAN V5]</span><span class="iaa-debug-value" style="color:#ef4444;font-weight:700;">RUNNING</span></div>';
-      content.innerHTML = scannerLine + '<div class="iaa-debug-line iaa-debug-blockers"><span class="iaa-debug-key dbg-red">ЗАЩО НЕ ВЛИЗА:</span><span class="iaa-debug-value dbg-red" id="dbg-top-blockers">—</span></div><div class="iaa-debug-line"><span class="iaa-debug-key dbg-red">&nbsp;</span><span class="iaa-debug-value dbg-red dbg-small" id="dbg-last-blocker">Последно: —</span></div>' + lines.map((line) => {
+      content.innerHTML = scannerLine + '<div class="iaa-debug-line iaa-debug-blockers"><span class="iaa-debug-key dbg-red">ЗАЩО НЕ ВЛИЗА:</span><span class="iaa-debug-value dbg-red" id="dbg-top-blockers">PT 0% • Bias 0% • Вход TF 0% | Последно: —</span></div>' + lines.map((line) => {
         const severityClass = line.severity ? ` iaa-debug-value--${line.severity}` : '';
         return `<div class="iaa-debug-line"><span class="iaa-debug-key">${line.key}:</span><span class="iaa-debug-value${severityClass}">${line.value}</span></div>`;
       }).join('');
@@ -4033,6 +4059,21 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       const now = Date.now();
       S.tradeTimestamps = (S.tradeTimestamps || []).filter(ts => now - ts < 60000);
       return S.tradeTimestamps.length < limit;
+    }
+
+    function tryConsumeTradeRateSlot() {
+      const limit = Number.isFinite(S.maxTradesPerMinute) ? Math.max(0, Math.round(S.maxTradesPerMinute)) : 0;
+      if (!limit) return { ok: true, token: null };
+      const now = Date.now();
+      S.tradeTimestamps = (S.tradeTimestamps || []).filter(ts => now - ts < 60000);
+      if (S.tradeTimestamps.length >= limit) return { ok: false, reason: 'MAX_RATE' };
+      S.tradeTimestamps.push(now);
+      return { ok: true, token: now };
+    }
+
+    function rollbackTradeRateSlot(token) {
+      if (!Number.isFinite(token)) return;
+      S.tradeTimestamps = (S.tradeTimestamps || []).filter((ts) => Number(ts) !== Number(token));
     }
 
     async function maybeSwitchIdleAsset() {
@@ -4937,8 +4978,14 @@ function getMinHistoryWindowForReadinessMs() {
     async function performKeepAlive() {
       if (S.keepAliveActive) return;
       if (false || false || hasActiveTrade() || false) return;
-      const settingsOpen = (() => { const p = $id('iaa-settings-panel'); return !!(p && p.style.display === 'block'); })();
-      if (settingsOpen) {
+      const overlayOpen = (() => {
+        const isOpen = (id) => {
+          const p = $id(id);
+          return !!(p && p.style.display === 'block');
+        };
+        return isOpen('iaa-settings-panel') || isOpen('iaa-debug-panel') || isOpen('iaa-mouse-panel') || isOpen('iaa-calibration-panel');
+      })();
+      if (overlayOpen) {
         document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 8, clientY: 8 }));
         return;
       }
@@ -5148,6 +5195,11 @@ function getMinHistoryWindowForReadinessMs() {
 
     function enqueueExecutionCandidate(candidate) {
       S.executionQueue = Array.isArray(S.executionQueue) ? S.executionQueue : [];
+      const cycleId = Number(candidate?.scanCycleId || candidate?.signal?.scanCycleId || 0);
+      if (cycleId) {
+        const alreadyQueued = S.executionQueue.some((q) => Number(q?.scanCycleId || q?.signal?.scanCycleId || 0) === cycleId);
+        if (alreadyQueued) return false;
+      }
       const maxLen = Math.max(1, Number(S.maxExecutionQueueLen || 3));
       const threshold = Number(candidate?.score?.threshold || candidate?.decision?.scoreCard?.threshold || 0);
       const points = Number(candidate?.score?.points || candidate?.points || 0);
@@ -5212,21 +5264,36 @@ function getMinHistoryWindowForReadinessMs() {
       return !!(await setDynamicExpiryTime(sec));
     }
 
-    async function execPreflightAndSetExpiry(targetExpirySec) {
+    function resolveTargetExpirySecForSignal(signal, fallbackExpiry) {
+      const tfKey = String(signal?.tfKey || signal?.expiry || fallbackExpiry || '').toLowerCase();
+      const mapped = mapTfToExpirySec(tfKey);
+      if (Number.isFinite(mapped)) return mapped;
+      const byExpiry = secsFromTF(signal?.expiry || fallbackExpiry || '1M');
+      return Number.isFinite(byExpiry) ? Math.round(byExpiry) : 60;
+    }
+
+    async function enforceConfirmedExpiryBeforeTrade(signal, targetExpirySec) {
       const target = Math.round(Number(targetExpirySec) || 0);
-      if (!Number.isFinite(target)) return { ok: false, reason: 'NO_EXPIRY_UI' };
-      if (target > 300) return { ok: false, reason: `MAX_EXPIRY_EXCEEDED target=${target}` };
-      let cur = readCurrentExpirySecFromUI();
-      if (!Number.isFinite(cur)) return { ok: false, reason: 'NO_EXPIRY_UI' };
-      if (cur !== target) {
-        const setOk = await setExpiryInUI(target);
-        if (!setOk) return { ok: false, reason: `EXPIRY_MISMATCH cur=${cur} target=${target}` };
-        await delay(120);
-        cur = readCurrentExpirySecFromUI();
+      if (!Number.isFinite(target) || target <= 0) return { ok: false, reason: 'NO_EXPIRY_UI' };
+      if (getDynamicMode() === 'off' && target > 300) return { ok: false, reason: 'EXPIRY_TOO_LONG' };
+      const expiryKey = target === 60 ? '1M' : (target === 180 ? '3M' : (target === 300 ? '5M' : null));
+      if (!expiryKey) return { ok: false, reason: 'EXPIRY_TOO_LONG' };
+      const ensured = await ensurePlatformExpiry(expiryKey);
+      if (!ensured) return { ok: false, reason: 'NO_EXPIRY_UI' };
+      await delay(120);
+      const current = readCurrentExpirySecFromUI();
+      if (!Number.isFinite(current)) return { ok: false, reason: 'NO_EXPIRY_UI' };
+      if (Math.abs(current - target) > 1) {
+        return { ok: false, reason: `EXPIRY_MISMATCH want=${target} got=${current}`, current, target };
       }
-      if (!Number.isFinite(cur)) return { ok: false, reason: 'NO_EXPIRY_UI' };
-      if (cur !== target) return { ok: false, reason: `EXPIRY_MISMATCH cur=${cur} target=${target}` };
-      return { ok: true, current: cur, target };
+      return { ok: true, current, target };
+    }
+
+    function verifyExpiryMatchNow(targetSec) {
+      const current = readCurrentExpirySecFromUI();
+      if (!Number.isFinite(current)) return { ok: false, reason: 'NO_EXPIRY_UI' };
+      if (Math.abs(Number(current) - Number(targetSec)) > 1) return { ok: false, reason: `EXPIRY_MISMATCH want=${targetSec} got=${current}`, current };
+      return { ok: true, current };
     }
 
     async function runExecutionQueueWorker() {
@@ -5269,14 +5336,12 @@ function getMinHistoryWindowForReadinessMs() {
         setSkipReason('MaxOpen');
         return false;
       }
-      if (!canExecuteTradeByRate()) {
-        setSkipReason('MaxRate');
-        return false;
-      }
-
       const execKey = signalExecKey(signal);
       const nowExec = Date.now();
       if (nowExec < Number(S.tradeLockUntil || 0)) { if (canEmitRateLimitedLog('exec_skip_trade_lock', 2000)) logConsoleLine('[EXEC_SKIP] reason=TRADE_LOCK'); return false; }
+      const scanCycleId = Number(signal?.scanCycleId || S.scanCycleId || 0);
+      if (scanCycleId && Number(S.lastTradeAttemptCycleId || 0) === scanCycleId) { if (canEmitRateLimitedLog('exec_skip_trade_lock_cycle', 2000)) logConsoleLine('[EXEC_SKIP] reason=TRADE_LOCK'); return false; }
+      let rateSlot = null;
       const tfForKey = String(signal?.tfKey || signal?.expiry || 'na').toLowerCase();
       const candleStartForKey = Number(signal?.entryMeta?.candleStartMs || signal?.candleStartMs || 0);
       const dedupeKey = `${String(signal?.asset || getCurrentAssetLabel() || '—')}|${String(signal?.direction || '').toUpperCase()}|${tfForKey}|${candleStartForKey || 'na'}`;
@@ -5341,6 +5406,7 @@ function getMinHistoryWindowForReadinessMs() {
         return false;
       }
       S.tradeLockUntil = Date.now() + 2500;
+      S.lastTradeAttemptCycleId = scanCycleId || Date.now();
       S.executing = true;
       S.executionAttempts = 1;
       S.executionStartTime = Date.now();
@@ -5348,9 +5414,25 @@ function getMinHistoryWindowForReadinessMs() {
       S.tradeMutex = { active: true, id: mutexId, startedAt: Date.now() };
 
       let resolvedExpiry = normalizeExpiry(signal.expiry) || S.expirySetting;
-      const targetExpirySec = Math.round(Number(signal?.expirySec || secsFromTF(resolvedExpiry) || 0));
-      const preflight = await execPreflightAndSetExpiry(targetExpirySec);
-      if (!preflight.ok) { if (canEmitRateLimitedLog(`exec_abort_${String(preflight.reason||'X').slice(0,40)}`, 2500)) logConsoleLine(`[EXEC_ABORT] reason=${preflight.reason}`); return false; }
+      const targetExpirySec = resolveTargetExpirySecForSignal(signal, resolvedExpiry);
+      const preflight = await enforceConfirmedExpiryBeforeTrade(signal, targetExpirySec);
+      if (!preflight.ok) {
+        const why = String(preflight.reason || 'EXPIRY_FAIL');
+        if (why.startsWith('EXPIRY_MISMATCH')) {
+          logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${targetExpirySec} got=${Number(preflight.current || readCurrentExpirySecFromUI() || 'NaN')}`);
+          recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: why });
+        } else if (why === 'EXPIRY_TOO_LONG') {
+          logConsoleLine('[SKIP] EXPIRY_TOO_LONG');
+          recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: 'EXPIRY_TOO_LONG' });
+        }
+        if (canEmitRateLimitedLog(`exec_abort_${why.slice(0,40)}`, 2500)) logConsoleLine(`[EXEC_ABORT] reason=${why}`);
+        return false;
+      }
+      rateSlot = tryConsumeTradeRateSlot();
+      if (!rateSlot.ok) {
+        setSkipReason('MaxRate');
+        return false;
+      }
       const inferredTf = String(signal?.expiry || '').toLowerCase();
       const assetScope = getExpiryScopeFromAsset(signal.asset);
       const useDynamicExpiry = shouldUseDynamicExpiry(signal, assetScope);
@@ -5511,6 +5593,12 @@ function getMinHistoryWindowForReadinessMs() {
               }));
               const clickTarget = (dir === 'buy' || dir === 'call' || dir === 'up') ? up : dn;
               if (!clickTarget) return false;
+              const verifyDyn = verifyExpiryMatchNow(finalSeconds);
+              if (!verifyDyn.ok) {
+                logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${finalSeconds} got=${Number(verifyDyn.current || 'NaN')}`);
+                recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: String(verifyDyn.reason || 'EXPIRY_MISMATCH') });
+                return false;
+              }
               simulateClick(clickTarget);
 
               const expiryMs = finalSeconds * 1000;
@@ -5583,6 +5671,13 @@ function getMinHistoryWindowForReadinessMs() {
                 setSkipReason('Expiry');
                 return false;
               }
+              const targetPlanSec = secsFromTF(expiry);
+              const verifyPlan = verifyExpiryMatchNow(targetPlanSec);
+              if (!verifyPlan.ok) {
+                logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${targetPlanSec} got=${Number(verifyPlan.current || 'NaN')}`);
+                recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: String(verifyPlan.reason || 'EXPIRY_MISMATCH') });
+                return false;
+              }
               logConsoleLine(formatStatus('trade_attempt', {
                 asset: signal.asset,
                 direction: signal.direction.toUpperCase(),
@@ -5590,6 +5685,12 @@ function getMinHistoryWindowForReadinessMs() {
               }));
               const clickTarget = (dir === 'buy' || dir === 'call' || dir === 'up') ? up : dn;
               if (!clickTarget) return false;
+              const verifyPlanBeforeClick = verifyExpiryMatchNow(secsFromTF(expiry));
+              if (!verifyPlanBeforeClick.ok) {
+                logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${secsFromTF(expiry)} got=${Number(verifyPlanBeforeClick.current || 'NaN')}`);
+                recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: String(verifyPlanBeforeClick.reason || 'EXPIRY_MISMATCH') });
+                return false;
+              }
               simulateClick(clickTarget);
 
               const expiryMs = secsFromTF(expiry) * 1000;
@@ -5639,6 +5740,12 @@ function getMinHistoryWindowForReadinessMs() {
         } else {
           logConsoleLine(formatStatus('trade_attempt', { asset: signal.asset, direction: signal.direction.toUpperCase(), expiry: resolvedExpiry }));
           logConsoleLine(`[EXEC] CLICK asset=${signal.asset || getCurrentAssetLabel() || '—'} tf=${String(signal?.tfKey || signal?.entryMeta?.strategyKey || signal?.rawText || '').toString()} expirySec=${Number(secsFromTF(resolvedExpiry) || signal?.expirySec || 0)}`);
+          const verifyStatic = verifyExpiryMatchNow(secsFromTF(resolvedExpiry));
+          if (!verifyStatic.ok) {
+            logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${secsFromTF(resolvedExpiry)} got=${Number(verifyStatic.current || 'NaN')}`);
+            recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: String(verifyStatic.reason || 'EXPIRY_MISMATCH') });
+            return false;
+          }
           let clicked = false;
           if ((dir === 'buy' || dir === 'call' || dir === 'up') && up) {
             simulateClick(up);
@@ -5704,8 +5811,6 @@ function getMinHistoryWindowForReadinessMs() {
         }
         S.lastTradeTime = Date.now();
         S.tradeCount++;
-        S.tradeTimestamps = S.tradeTimestamps || [];
-        S.tradeTimestamps.push(Date.now());
         S.lastExecutedKey = execKey;
         S.lastTradeSignalKey = dedupeKey;
         S.lastTradeSignalAt = Date.now();
@@ -5717,12 +5822,14 @@ function getMinHistoryWindowForReadinessMs() {
         S.engineState = 'CONFIRM';
         return true;
       } catch (error) {
+        rollbackTradeRateSlot(rateSlot?.token);
         if (String(error?.message || '').startsWith('timeout:')) {
           logConsoleLine(`[EXEC] Твърд стоп: UI timeout (${String(error.message).replace('timeout:', '')})`);
           setSkipReason('UI timeout');
         }
         return false;
       } finally {
+        if (!S.engineState || S.engineState !== 'CONFIRM') rollbackTradeRateSlot(rateSlot?.token);
         S.engineState = 'IDLE';
         S.executing = false;
         if (S.tradeMutex?.id === mutexId) {
@@ -8596,9 +8703,9 @@ if (!weights.length) return 0;
           if (shouldLogGateFailSummary(tf, `${topGate}|${topReasonKey}`)) {
             if (getLogVerbosity() === 'minimal') {
               const blockers = computeTopBlockers(300000);
-              logConsoleLine(`СТАТУС: WAIT | топ блокери: ${blockers.summary} | ${blockers.last}`);
+              logSpamControlled('status_wait', `wait:blockers:${tf}`, `СТАТУС: WAIT | топ блокери: ${blockers.summary} | ${blockers.last}`, { stateValue: `${blockers.summary}|${blockers.last}` });
             } else {
-              logConsoleLine(reason);
+              logSpamControlled('gates', `gates:${tf}`, reason);
             }
           }
           tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
@@ -8669,7 +8776,7 @@ if (!weights.length) return 0;
         }
 
 
-        logConsoleLine(`[DECISION] tf=${String(decision.tfKey || tf).toLowerCase()} dir=${decision.direction || 'N/A'} conf=${Number(decision.confidence || 0).toFixed(2)} momentum=${Number(decision.momentum || 0).toFixed(4)} bias=${biasDirection || 'NONE'} flipGuard=OK`);
+        logSpamControlled('decision', `decision:${String(decision.tfKey || tf).toLowerCase()}`, `[DECISION] tf=${String(decision.tfKey || tf).toLowerCase()} dir=${decision.direction || 'N/A'} conf=${Number(decision.confidence || 0).toFixed(2)} momentum=${Number(decision.momentum || 0).toFixed(4)} bias=${biasDirection || 'NONE'} flipGuard=OK`);
         S.lastScoreSnapshot = {
           result: 'READY',
           points: scoreCard.points,
@@ -8756,7 +8863,7 @@ if (!weights.length) return 0;
           const t = Date.now();
           if (!Number.isFinite(S.lastMinimalHeartbeatAt) || (t - Number(S.lastMinimalHeartbeatAt)) > 30000) {
             S.lastMinimalHeartbeatAt = t;
-            logConsoleLine(`СТАТУС: WAIT | TF=1m/3m/5m | причина=тайминг/PT/гейтове`);
+            logSpamControlled('status_wait', 'wait:tf', `СТАТУС: WAIT | TF=1m/3m/5m | причина=тайминг/PT/гейтове`, { stateValue: 'TF_WAIT' });
           }
         }
         refreshUI('scan_wait');
@@ -8847,7 +8954,7 @@ const readySignals = Object.keys(tfStatus)
         const cands = prioritized.map((x) => String(x?.tfKey || '').toLowerCase()).join(',');
         const chosen = String(prioritized[0]?.tfKey || '').toLowerCase();
         const reason = (chosen === '1m' || chosen === '3m') ? 'prefer_primary' : 'fallback_higher_tf';
-        logConsoleLine(`[TF_PICK] chosen=${chosen} reason=${reason} candidates=${cands}`);
+        logSpamControlled('decision', 'tf_pick', `[TF_PICK] chosen=${chosen} reason=${reason} candidates=${cands}`, { stateValue: `${chosen}|${reason}` });
       }
 
       const maxConcurrentSniperTrades = Math.max(1, Math.round(S.maxOpenTrades || timeframes.length));
@@ -8881,7 +8988,7 @@ const readySignals = Object.keys(tfStatus)
             if (Math.abs(preConf - oldConf) >= 0.08) preReasonParts.push(`увереност ${Math.round(oldConf*100)}%→${Math.round(preConf*100)}%`);
           }
           const preReason = preReasonParts.length ? preReasonParts.join(', ') : 'промяна след повторна проверка';
-          logConsoleLine(`[SCAN V5] ПРОПУСК: ${decision.tfKey} повторна проверка (${preReason})`);
+          logSpamControlled('scan', 'scan:precheck', `[SCAN V5] ПРОПУСК: ${decision.tfKey} повторна проверка (${preReason})`);
           continue;
         }
 
@@ -8995,7 +9102,7 @@ const signal = {
 
         const inFlightKey = `${signal.asset}|${decision.tfKey}|${signal.direction}|${decision.candleStart}|${signal.expiry}`;
         if (S.sniperInFlightKey === inFlightKey && Date.now() < (S.sniperInFlightUntil || 0)) {
-          logConsoleLine('[SCAN V5] ПРОПУСК: In-flight (двоен вход)');
+          logSpamControlled('scan', 'scan:inflight', '[SCAN V5] ПРОПУСК: In-flight (двоен вход)');
           continue;
         }
         S.sniperInFlightKey = inFlightKey;
@@ -9007,7 +9114,7 @@ const signal = {
         // 1) Quick stability: streak (default 2 ticks)
         const minStreak = Math.max(1, Number.isFinite(S.confirmStreakMin) ? S.confirmStreakMin : 2);
         if ((decision._dirStreak || 0) < minStreak) {
-          logConsoleLine(`[SCAN V5] ПРОПУСК: Нестабилна посока (streak=${decision._dirStreak || 0}/${minStreak})`);
+          logSpamControlled('scan', 'scan:unstable_dir', `[SCAN V5] ПРОПУСК: Нестабилна посока (streak=${decision._dirStreak || 0}/${minStreak})`);
           S.sniperInFlightUntil = 0;
           S.baseAmount = prevBase;
           S.assetSelectedForSignal = false;
@@ -9021,7 +9128,7 @@ const signal = {
         const __need = (__recent.length >= 3) ? 2 : Math.min(2, __recent.length); // 1→1, 2→2, 3→2
         const __match = __recent.filter(x => x && x.dir === decision.direction).length;
         if (__need > 0 && __match < __need) {
-          logConsoleLine(`[SCAN V5] ПРОПУСК: Flip шум (vote=${__match}/${__recent.length}, need=${__need}, dir=${decision.direction})`);
+          logSpamControlled('scan', 'scan:flip_noise', `[SCAN V5] ПРОПУСК: Flip шум (vote=${__match}/${__recent.length}, need=${__need}, dir=${decision.direction})`);
           S.sniperInFlightUntil = 0;
           S.baseAmount = prevBase;
           S.assetSelectedForSignal = false;
@@ -9041,7 +9148,7 @@ const signal = {
             if (!timing2.entryWindowOk) {
               const t2Label = Number.isFinite(t2) ? Math.round(t2) : 'NaN';
               const l2Label = Number.isFinite(limit2) ? Math.round(limit2) : 'NaN';
-              logConsoleLine(`[SCAN V5] ПРОПУСК: Извън Entry Window след delay (${decision.tfKey} t=${t2Label}s > ${l2Label}s${timing2.hasNaNTime ? ' NAN_TIME' : ''})`);
+              logSpamControlled('scan', 'scan:entry_window_delay', `[SCAN V5] ПРОПУСК: Извън Entry Window след delay (${decision.tfKey} t=${t2Label}s > ${l2Label}s${timing2.hasNaNTime ? ' NAN_TIME' : ''})`);
               S.sniperInFlightUntil = 0;
               S.baseAmount = prevBase;
               S.assetSelectedForSignal = false;
@@ -9060,10 +9167,10 @@ const signal = {
           if (!decision2 || !decision2.direction) {
             // Ползваме предишния сигнал като fallback (без "догонване" при липсващ сигнал).
             decision2 = { ...decision };
-            logConsoleLine(`[SCAN V5] INFO: Няма сигнал след delay (${decision.tfKey}) → fallback към предишния сигнал`);
+            logSpamControlled('scan', 'scan:no_signal_delay', `[SCAN V5] INFO: Няма сигнал след delay (${decision.tfKey}) → fallback към предишния сигнал`);
           }
           if (decision2.direction !== decision.direction) {
-            logConsoleLine(`[SCAN V5] ПРОПУСК: Flip след delay (${decision.tfKey} ${decision.direction}→${decision2.direction})`);
+            logSpamControlled('scan', 'scan:flip_after_delay', `[SCAN V5] ПРОПУСК: Flip след delay (${decision.tfKey} ${decision.direction}→${decision2.direction})`);
             S.sniperInFlightUntil = 0;
             S.baseAmount = prevBase;
             S.assetSelectedForSignal = false;
@@ -9076,7 +9183,7 @@ const signal = {
           const __conf2 = (decision2.confidence || 0);
           const __drop = __baseConf - __conf2;
           if (__drop > 0.20) {
-            logConsoleLine(`[SCAN V5] ПРОПУСК: Рязък спад в увереността след delay (${decision.tfKey} ${Math.round(__baseConf*100)}%→${Math.round(__conf2*100)}%)`);
+            logSpamControlled('scan', 'scan:conf_drop_sharp', `[SCAN V5] ПРОПУСК: Рязък спад в увереността след delay (${decision.tfKey} ${Math.round(__baseConf*100)}%→${Math.round(__conf2*100)}%)`);
             S.sniperInFlightUntil = 0;
             S.baseAmount = prevBase;
             S.assetSelectedForSignal = false;
@@ -9086,7 +9193,7 @@ const signal = {
 
           const thr = getSniperThresholdForScope();
           if ((decision2.confidence || 0) < thr) {
-            logConsoleLine(`[SCAN V5] ПРОПУСК: Увереност падна след delay (${decision.tfKey} ${(decision2.confidence || 0).toFixed(2)} < ${thr.toFixed(2)})`);
+            logSpamControlled('scan', 'scan:conf_drop', `[SCAN V5] ПРОПУСК: Увереност падна след delay (${decision.tfKey} ${(decision2.confidence || 0).toFixed(2)} < ${thr.toFixed(2)})`);
             S.sniperInFlightUntil = 0;
             S.baseAmount = prevBase;
             S.assetSelectedForSignal = false;
@@ -9100,6 +9207,7 @@ const signal = {
         const validUntil = entryWindowSec > 0 ? (candleStart + entryWindowSec * 1000) : (Date.now() + 2000);
         const candidate = {
           id: `cand_${Date.now().toString(36)}_${Math.random().toString(16).slice(2,8)}`,
+          scanCycleId: Number(S.scanCycleId || 0),
           createdAtMs: Date.now(),
           asset: signal?.asset || getCurrentAssetLabel() || '',
           tf: decision?.tfKey || '',
@@ -9116,8 +9224,9 @@ const signal = {
           decision,
           points: Number(decision?.scoreCard?.points || 0)
         };
+        candidate.signal.scanCycleId = candidate.scanCycleId;
         if (Date.now() > validUntil) {
-          logConsoleLine(`[SCAN V5] EXPIRED(SCAN) tf=${decision?.tfKey || candidate?.tf || 'n/a'} t=${Math.round(Number(signal?.entryMeta?.timeInCandleSec ?? signal?.entryMeta?.timeInCandle ?? 0))}s window=${Math.round(Number(entryWindowSec || 0))}s`);
+          logSpamControlled('scan', 'scan:expired', `[SCAN V5] EXPIRED(SCAN) tf=${decision?.tfKey || candidate?.tf || 'n/a'} t=${Math.round(Number(signal?.entryMeta?.timeInCandleSec ?? signal?.entryMeta?.timeInCandle ?? 0))}s window=${Math.round(Number(entryWindowSec || 0))}s`);
           S.sniperInFlightUntil = 0;
           S.baseAmount = prevBase;
           S.assetSelectedForSignal = false;
@@ -9130,7 +9239,7 @@ const signal = {
         S.assetSelectedForSignal = false;
         S.assetSelectionAttempted = false;
         if (queued) {
-          logConsoleLine(`[SCAN V5] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
+          logSpamControlled('scan', 'scan:ready', `[SCAN V5] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
           setStatusOverlay(formatStatus('sniper_ready'), '', false);
         }
       }
@@ -9149,6 +9258,7 @@ const signal = {
       // SCAN loop lock only (does not block EXEC/SETTLE loops).
       if (S.scanBusy) return;
       S.scanBusy = true;
+      S.scanCycleId = Number(S.scanCycleId || 0) + 1;
       const __scanStarted = Date.now();
       try {
 
@@ -9725,8 +9835,8 @@ const signal = {
         #iaa-debug-content{ white-space:pre-wrap; word-break:break-word; margin-top:10px; }
         .iaa-debug-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
         .iaa-debug-actions{ display:flex; align-items:center; gap:6px; }
-        #iaa-debug-copy{ padding:4px 8px; border-radius:6px; border:1px solid rgba(180,120,20,.45); background:#f6c453; color:#1f2937; font-size:10px; cursor:pointer; letter-spacing:.08em; font-weight:700; }
-        #iaa-debug-copy:hover{ background:#eab308; }
+        #iaa-debug-copy{ padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.35); background:none; color:#f9fafb; font-size:10px; cursor:pointer; letter-spacing:.08em; font-weight:700; }
+        #iaa-debug-copy:hover{ color:#ffffff; border-color:rgba(255,255,255,.55); }
         #iaa-loss-copy{ padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#1f2937; color:#e5e7eb; font-size:10px; cursor:pointer; letter-spacing:.08em; }
         #iaa-loss-copy:hover{ background:#334155; }
         .iaa-debug-line{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:2px 0; }
@@ -9742,8 +9852,8 @@ const signal = {
         .iaa-tfgrp{ display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
         .iaa-tfsec{ width:58px; padding:2px 6px; }
         .iaa-tfgrp-5m{ grid-column:2 / 3; }
-        #iaa-recheck-settlement{ color:#fbbf24; font-size:10px; font-weight:700; }
-        #iaa-recheck-settlement:hover{ color:#f59e0b; }
+        #iaa-recheck-settlement{ color:#f9fafb; font-size:10px; font-weight:700; background:none; }
+        #iaa-recheck-settlement:hover{ color:#ffffff; }
         .dbg-red{ color:#ff5a5a; font-weight:700; }
         .dbg-small{ font-size:11px; font-weight:600; }
         #iaa-loss-content{ margin-top:10px; display:flex; flex-direction:column; gap:8px; }
