@@ -2,8 +2,6 @@
   'use strict';
 
   const IAA_PAGE_BRIDGE_MODE = false;
-  const BUILD_ID = '20260225-1200-expiryfix';
-  console.log(`[BUILD] ${BUILD_ID}`);
 
   const PO_PRICE_EVENT = 'IAA_PO_PRICE';
   const PRICE_HISTORY_MAX_POINTS = 12000;
@@ -29,6 +27,7 @@
     bridgeReady: false
   });
   const WL_URL = "https://raw.githubusercontent.com/Karimmw/Codes/refs/heads/main/iaa_whitelist.txt";
+  const BUILD_ID = '20260227-1115-backup-upgrade-killer11';
 
   // persisted settings keys
   const BASE_AMOUNT_KEY = 'IAA_BASE_AMOUNT_CENTS';
@@ -88,6 +87,16 @@
   const KILLER_SIGNAL_COOLDOWN_SEC_KEY = 'IAA_KILLER_SIGNAL_COOLDOWN_SEC';
   const KILLER_USE_STRATEGY_VOTES_KEY = 'IAA_KILLER_USE_STRATEGY_VOTES';
   const KILLER_STRATEGY_AGREEMENT_KEY = 'IAA_KILLER_STRATEGY_AGREEMENT';
+  const BIAS_ENABLED_KEY = 'IAA_BIAS_ENABLED';
+  const BIAS_MODE_KEY = 'IAA_BIAS_MODE';
+  const BIAS_STRONG_THRESHOLD_KEY = 'IAA_BIAS_STRONG_THRESHOLD';
+  const STABILITY_ENABLED_KEY = 'IAA_STABILITY_ENABLED';
+  const STABILITY_MAX_GAP_MS_KEY = 'IAA_STABILITY_MAX_GAP_MS';
+  const TOLERANCE_MODE_KEY = 'IAA_TOLERANCE_MODE';
+  const TOLERANCE_CONFIDENCE_KEY = 'IAA_TOLERANCE_CONFIDENCE';
+  const KILLER_THRESHOLD_MODE_KEY = 'IAA_KILLER_THRESHOLD_MODE';
+  const SUPPORTING_FILTERS_ENABLED_KEY = 'IAA_SUPPORTING_FILTERS_ENABLED';
+  const CHOP_V2_ENABLED_KEY = 'IAA_CHOP_V2_ENABLED';
   const KILLER_DYNAMIC_COLLAPSED_KEY = 'IAA_KILLER_DYNAMIC_COLLAPSED';
   const DYNAMIC_CORE_COLLAPSED_KEY = 'IAA_DYNAMIC_CORE_COLLAPSED';
   const DYNAMIC_STAKE_COLLAPSED_KEY = 'IAA_DYNAMIC_STAKE_COLLAPSED';
@@ -98,13 +107,10 @@
   const SNIPER_THRESHOLD_REAL_KEY = 'IAA_SNIPER_THRESHOLD_REAL';
   const SNIPER_MIN_PAYOUT_KEY = 'IAA_SNIPER_MIN_PAYOUT';
   const SNIPER_ENTRY_ПЕЧАЛБИDOW_SEC_KEY = 'IAA_SNIPER_ENTRY_ПЕЧАЛБИDOW_SEC';
-  const ENTRY_WIN_TF_ENABLED_KEY = 'IAA_ENTRY_WIN_TF_ENABLED';
-  const ENTRY_WIN_1M_SEC_KEY = 'IAA_ENTRY_WIN_1M_SEC';
-  const ENTRY_WIN_3M_SEC_KEY = 'IAA_ENTRY_WIN_3M_SEC';
-  const ENTRY_WIN_5M_SEC_KEY = 'IAA_ENTRY_WIN_5M_SEC';
-  const EARLY_ENTRY_1M_ENABLED_KEY = 'IAA_EARLY_ENTRY_1M_ENABLED';
-  const EARLY_ENTRY_3M_ENABLED_KEY = 'IAA_EARLY_ENTRY_3M_ENABLED';
-  const EARLY_ENTRY_5M_ENABLED_KEY = 'IAA_EARLY_ENTRY_5M_ENABLED';
+  const ENTRYПЕЧАЛБИ_TF_ENABLED_KEY = 'IAA_ENTRYПЕЧАЛБИ_TF_ENABLED';
+  const ENTRYПЕЧАЛБИ_1M_SEC_KEY = 'IAA_ENTRYПЕЧАЛБИ_1M_SEC';
+  const ENTRYПЕЧАЛБИ_3M_SEC_KEY = 'IAA_ENTRYПЕЧАЛБИ_3M_SEC';
+  const ENTRYПЕЧАЛБИ_5M_SEC_KEY = 'IAA_ENTRYПЕЧАЛБИ_5M_SEC';
   const SNIPER_WARMUP_MIN_KEY = 'IAA_SNIPER_WARMUP_MIN';
   const SNIPER_VWAP_DEV_KEY = 'IAA_SNIPER_VWAP_DEV';
   const SNIPER_VWAP_LOOKBACK_KEY = 'IAA_SNIPER_VWAP_LOOKBACK';
@@ -122,7 +128,6 @@
   const FILTERMODE_AUTO_WINDOW_KEY = 'IAA_FILTERMODE_AUTO_WINDOW_MIN';
   const FILTERMODE_AUTO_FLIPS_KEY = 'IAA_FILTERMODE_AUTO_FLIPS';
   const FILTERMODE_AUTO_DROPS_KEY = 'IAA_FILTERMODE_AUTO_DROPS';
-  const LOG_VERBOSITY_KEY = 'IAA_LOG_VERBOSITY';
 
   // Backwards/forwards-compat keys (some parts of the UI/logic refer to older names)
   // Keep ONE source of truth to avoid "... is not defined" crashes.
@@ -193,7 +198,6 @@
   const BIAS_TF_1M_KEY = 'IAA_BIAS_TF_1M';
   const BIAS_TF_3M_KEY = 'IAA_BIAS_TF_3M';
   const BIAS_TF_5M_KEY = 'IAA_BIAS_TF_5M';
-  const BIAS_TF_30M_KEY = 'IAA_BIAS_TF_30M';
   const CONFLICT_STRENGTH_KEY = 'IAA_CONFLICT_STRENGTH';
   const SNIPER_5S_DEFAULTS = {
     baseAmountCents: 100,
@@ -1091,28 +1095,12 @@
     /* ------------------------------ STATE ------------------------------ */
     const S = {
       running:false, loop:null,
-      scanLoop: null,
-      execLoop: null,
-      settleLoop: null,
-      executionQueue: [],
-      execWorkerBusy: false,
-      scanBusy: false,
-      settleBusy: false,
-      maxExecutionQueueLen: 3,
-      queueMetrics: { queueLen: 0, avgExecMs: 0, avgSettleMs: 0, scanCycleMs: 0, _execN: 0, _settleN: 0, _scanN: 0 },
-      metrics: { queueLen: 0, avgExecMs: 0, avgSettleMs: 0, scanCycleMs: 0 },
-      stabilityCache: {},
       lastPrice:null, priceHistory:[],
       lastPriceAt: 0,
       lastAssetLabel: null,
       lastAssetLabelNormalized: null,
       sniperFastWarmupUntil: 0,
       activeTrades: [], tradeLockUntil:0, tradeCount:0,
-      lastTradeAttemptCycleId: null,
-      scanCycleId: 0,
-      reservedTradeSlotAt: 0,
-      lastTradeSignalKey: '',
-      lastTradeSignalAt: 0,
       autoTrade:true,
       mode: 'sniper',
 
@@ -1127,7 +1115,6 @@
       balanceBeforeTrade: null,
       // balance event ledger
       lastBalanceCents: null,
-      balanceEventSeq: 0,
       balanceEvents: [],
       balanceEventsMax: 500,
       // selection guards
@@ -1194,8 +1181,6 @@
       // trade log
       trades: [],
       tradeStats: { total: 0, wins: 0, losses: 0, evens: 0 },
-      unresolvedTrades: 0,
-      unresolvedStreak: 0,
       tradeStatsByExpiry: {},
       tradeStatsMulti: { total: 0, wins: 0, losses: 0, evens: 0, profitCents: 0, winCents: 0, lossCents: 0 },
       tradeStatsSummary: { total: 0, wins: 0, losses: 0, evens: 0, profitCents: 0, winCents: 0, lossCents: 0 },
@@ -1245,7 +1230,7 @@
       killerDynamicCollapsed: true,
       killerEnabled: false,
       killerHudEnabled: false,
-      killerMinConfluence: 6,
+      killerMinConfluence: 8,
       killerDominanceThreshold: 68,
       killerPerfectTimeEnabled: true,
       killerAdxDynamicEnabled: true,
@@ -1256,6 +1241,18 @@
       killerEdgeState: {},
       killerHudPos: { x: null, y: null },
       killerSnapshot: null,
+      biasEnabled: true,
+      biasMode: 'points',
+      biasStrongThreshold: 0.45,
+      stabilityEnabled: true,
+      stabilityMaxGapMs: 3500,
+      toleranceMode: 'either',
+      toleranceConfidence: 0.75,
+      killerThresholdMode: '8of11',
+      supportingFiltersEnabled: true,
+      chopV2Enabled: true,
+      biasPanelOpen: false,
+      stabilityPanelOpen: false,
       maxTradeAmountCents: 15000,
       maxTradeAmountMultiplier: 1.5,
       analysisWindowSec: 300,
@@ -1321,7 +1318,6 @@
       lastSelfTradeHintAt: 0,
       lastDiagnosticsAt: 0,
       lastDiagnosticsMinuteKey: null,
-      logVerbosity: 'normal',
       logSpamCache: Object.create(null),
       /* ---------- Sniper mode ---------- */
       sniperBaseAmount: SNIPER_5S_DEFAULTS.baseAmountCents,
@@ -1331,27 +1327,9 @@
       sniperMinPayout: SNIPER_5S_DEFAULTS.minPayout,
       sniperEntryWindowSec: SNIPER_5S_DEFAULTS.entryWindowSec,
       entryWindowTfEnabled: true,
-      entryWindowSec1m: 20,
-      entryWindowSec3m: 45,
+      entryWindowSec1m: 15,
+      entryWindowSec3m: 35,
       entryWindowSec5m: 150,
-      earlyEntry1mEnabled: true,
-      earlyEntry3mEnabled: true,
-      earlyEntry5mEnabled: true,
-      entryWindowSec15m: 120,
-      tfFirstSeenCandleStart: {},
-      tfSync: {},
-      lastMinimalHeartbeatAt: 0,
-      entryTimingLogCache: {},
-      gateBlockEvents: [],
-      lastGateBlockerSummary: '—',
-      lastGateBlockerReason: '—',
-      tfDirectionMemory: {},
-      tfDirLockMs1m: 8000,
-      tfDirLockMs3m: 12000,
-      tfDirLockMsDefault: 10000,
-      domHysteresisDelta: 10,
-      biasHysteresis: { dir: null, lastDomPct: 0 },
-      hybridAllow1m: true,
       sniperWarmupMin: SNIPER_5S_DEFAULTS.warmupMin,
       sniperVwapDeviation: SNIPER_5S_DEFAULTS.vwapDeviation,
       sniperVwapLookbackMin: SNIPER_5S_DEFAULTS.vwapLookbackMin,
@@ -1408,6 +1386,7 @@
       sniperNewFiltersCollapsed: true,
       sniperSettingsTab: 'basic',
       debugTab: 'status',
+      debugEnabled: false,
       // trade pacing
       nextTradeAllowedAt: 0,
 
@@ -1423,6 +1402,7 @@
       lastSkipReason: '',
       lastSkipAt: 0,
       skipReasonCounts: {},
+      skipStats: { pass: 0, wait: 0, confluence: 0, dominance: 0, perfectTime: 0, chop: 0, payout: 0, tolerance: 0, strategy: 0, other: 0 },
       lastStatusAt: 0,
 
       /* ---------- ENHANCED: Countdown and UI states ---------- */
@@ -1545,7 +1525,7 @@
       auto_off: 'Авто‑търговия: изключена.',
       skip_reason: 'ПРОПУСК: {reason}',
       diagnostics: 'ℹA|{dir} {conf}%|праг {thr}%|{strategy}|{skip}',
-      diagnostics_score: 'ℹS|🔎|{points}|{strategy}|{reason}',
+      diagnostics_score: '{result}|{points}|{strategy}|{reason}',
       trade_attempt: 'Опит за сделка: {asset} {direction} {expiry}',
       trade_buttons_missing: 'Пропуск: липсват бутони',
       trade_amount_missing: 'Пропуск: липсва поле за сума',
@@ -1665,7 +1645,7 @@
       S.sniperLastTradeByTf = {};
       S.sniperNextTradeByTf = {};
       S.sniperTfStatus = {};
-      refreshUI('legacy_direct_render_replaced');
+      renderSniperMatrix();
       persistSettings();
       renderSettingsPanel();
       if (S.running) {
@@ -1801,9 +1781,6 @@
           logs: [],
           issues: Object.create(null),
           trades: [],
-          settledTrades: [],
-          unresolvedTrades: [],
-          stats: { wins: 0, losses: 0, pnlCents: 0, unresolved: 0 },
           tradeIds: Object.create(null),
           lossReports: [],
           strategies: Object.create(null),
@@ -1828,9 +1805,6 @@
       sess.logs = [];
       sess.issues = Object.create(null);
       sess.trades = [];
-      sess.settledTrades = [];
-      sess.unresolvedTrades = [];
-      sess["stats"] = { wins: 0, losses: 0, pnlCents: 0, unresolved: 0 };
       sess.tradeIds = Object.create(null);
       sess.strategies = Object.create(null);
       sess.killer = { enabledAtStart: !!S.killerEnabled, pass: 0, wait: 0, reasons: Object.create(null), lastByTf: Object.create(null) };
@@ -1879,8 +1853,16 @@
     }
 
     function sessionRecordTrade(trade, outcome, profitCents) {
+      const sess = _sessionEnsure();
       const now = Date.now();
+      if (!sess.active) {
+        sess.active = true;
+        if (!sess.startedAt) sess.startedAt = now;
+        if (!Number.isFinite(sess.startBalanceCents)) sess.startBalanceCents = readBalanceCents();
+      }
+
       const tradeId = trade?.id || trade?.tradeId || null;
+      if (tradeId && sess.tradeIds?.[tradeId]) return;
       const rawConfidence = Number.isFinite(trade?.confidence)
         ? trade.confidence
         : (Number.isFinite(trade?.expectedConfidence)
@@ -1891,7 +1873,6 @@
         : null;
 
       const entry = {
-        id: tradeId,
         tradeId,
         t: now,
         time: new Date(now).toLocaleTimeString(),
@@ -1908,7 +1889,6 @@
         threshold: Number.isFinite(trade?.entryContext?.scoreCard?.threshold) ? trade.entryContext.scoreCard.threshold : null,
         breakdown: Array.isArray(trade?.entryContext?.scoreCard?.breakdown) ? trade.entryContext.scoreCard.breakdown.slice(0, 10) : [],
         payoutPercent: Number.isFinite(trade?.payoutPercent) ? trade.payoutPercent : null,
-        payoutSnapshot: Number.isFinite(trade?.payoutPercentSnapshot) ? trade.payoutPercentSnapshot : null,
         expirySeconds: Number.isFinite(trade?.expiryMs) ? Math.round(trade.expiryMs / 1000) : null,
         dynamicMode: trade?.dynamicMode || null,
         dynamicSimWinrate: Number.isFinite(trade?.dynamicSimWinrate) ? trade.dynamicSimWinrate : null,
@@ -1917,24 +1897,25 @@
         stakeMultiplier: Number.isFinite(trade?.stakeMultiplier) ? trade.stakeMultiplier : null,
         scoreBreakdown: Array.isArray(trade?.entryContext?.scoreCard?.breakdown) ? trade.entryContext.scoreCard.breakdown.slice(0, 10) : [],
         hardStopsHit: Array.isArray(trade?.hardStopsHit) ? trade.hardStopsHit.slice(0, 10) : [],
-        timeIntoCandleSec: Number.isFinite(trade?.entryContext?.entryMeta?.timeInCandle) ? trade.entryContext.entryMeta.timeInCandle : null,
-        entryWindowSec: Number.isFinite(trade?.entryContext?.entryMeta?.entryWindowSec) ? trade.entryContext.entryMeta.entryWindowSec : null,
-        biasStrength: Number.isFinite(trade?.entryContext?.entryMeta?.biasStrength) ? trade.entryContext.entryMeta.biasStrength : null,
-        regimeStrength: Number.isFinite(trade?.entryContext?.entryMeta?.regimeStrength) ? trade.entryContext.entryMeta.regimeStrength : null,
-        spikeFlag: !!trade?.entryContext?.entryMeta?.volatility?.spikeFlag,
-        stablePass: !!trade?.entryContext?.entryMeta?.stablePass,
-        passesCount: Number(trade?.entryContext?.entryMeta?.passesCount || 0),
-        settleReason: trade?.outcomeMethod || null,
-        evidenceDelta: Number.isFinite(trade?.evidence?.matchedEvent?.delta) ? trade.evidence.matchedEvent.delta : (Number.isFinite(trade?.evidence?.balanceDelta) ? trade.evidence.balanceDelta : null),
-        driftSec: Number.isFinite(trade?.driftSec) ? trade.driftSec : null,
-        mismatch: !!trade?.evidence?.mismatch,
-        platformOutcomeBadge: trade?.platformOutcomeBadge || null,
         outcome,
         outcomeMethod: trade?.outcomeMethod || null,
-        evidenceSummary: String(trade?.evidence?.summary || (Number.isFinite(trade?.evidence?.matchedEvent?.delta) ? `Δ=${trade.evidence.matchedEvent.delta}` : (Number.isFinite(trade?.evidence?.balanceDelta) ? `Δ=${trade.evidence.balanceDelta}` : '—'))),
         profitCents: Number.isFinite(profitCents) ? profitCents : null
       };
-      return entry;
+
+      sess.trades.push(entry);
+      if (tradeId) sess.tradeIds[tradeId] = true;
+
+      const key = entry.strategyKey || '—';
+      if (!sess.strategies[key]) {
+        sess.strategies[key] = { trades: 0, wins: 0, losses: 0, neutral: 0, pnlCents: 0, confSum: 0, confN: 0 };
+      }
+      const st = sess.strategies[key];
+      st.trades += 1;
+      if (outcome === 'ПЕЧАЛБИ') st.wins += 1;
+      else if (outcome === 'ЗАГУБИ') st.losses += 1;
+      else st.neutral += 1;
+      if (Number.isFinite(entry.profitCents)) st.pnlCents += entry.profitCents;
+      if (Number.isFinite(entry.confidence)) { st.confSum += entry.confidence; st.confN += 1; }
     }
 
     function sessionRecordKiller(tf, snapshot, verdict, reason) {
@@ -1970,31 +1951,36 @@
         else if (verdict === 'WAIT') sess.killer.wait += 1;
         if (reason) sess.killer.reasons[reason] = (sess.killer.reasons[reason] || 0) + 1;
       }
+      incrementKillerSkipStat(reason, verdict);
 
       // Console line (extra, not replacing anything)
       if (!shouldLogKillerConsole()) return;
-      if (!shouldLogKillerLine(tf, verdict, reason || '')) return;
       const domPct = Number.isFinite(dom) ? Math.round(dom) : '—';
       const thrPct = Number.isFinite(thr) ? Math.round(thr) : '—';
-      const maxPts = Number.isFinite(snapshot?.maxPoints) ? snapshot.maxPoints : 8;
-      const confTxt = (Number.isFinite(conf) && Number.isFinite(min)) ? `${conf}/${maxPts} (мин ${min})` : '—';
-      const ptOk = computePerfectTimeOk({ verdict, reason });
-      const ptTxt = S.killerPerfectTimeEnabled ? (ptOk ? 'PT ✓' : 'PT ✗') : 'PT —';
+      const maxPts = Number.isFinite(snapshot?.maxPoints) ? snapshot.maxPoints : 11;
+      const basePts = Number.isFinite(snapshot?.confluence) ? Number(snapshot.confluence) : 0;
+      const bonusPts = Number.isFinite(snapshot?.supportingBonus) ? Number(snapshot.supportingBonus) : 0;
+      const effPts = Number.isFinite(snapshot?.effectivePoints) ? Number(snapshot.effectivePoints) : Math.max(0, Math.min(11, basePts + bonusPts));
+      const confTxt = `CONF ${basePts.toFixed(1)}/${maxPts} + BONUS ${bonusPts.toFixed(1)} → ${effPts.toFixed(1)}/${maxPts} (мин ${Number.isFinite(min) ? min : '—'})`;
+      const ptTxt = S.killerPerfectTimeEnabled ? 'PT ✓' : 'PT —';
       const adxTxt = Number.isFinite(adx) ? `ADX ${Math.round(adx)}` : 'ADX —';
-      const why = verdict === 'PASS' ? 'READY' : `WAIT: ${reason || '—'}`;
       const whyShort = verdict === 'PASS' ? 'READY' : `WAIT:${reason || '—'}`;
       const pointsTxt = Array.isArray(snapshot?.checks)
-        ? snapshot.checks.map((c) => `${c.key}${Number(c.points || 0) > 0 ? ` +${Number(c.points || 0)}` : ''}`).join(' • ')
+        ? snapshot.checks.map((c) => `${c.key}${Number(c.points || 0) !== 0 ? ` ${Number(c.points || 0) > 0 ? '+' : ''}${Number(c.points || 0)}` : ''}`).join(' • ')
         : '';
       const cWhy = verdict === 'PASS' ? '#22c55e' : '#f59e0b';
       const cDom = (Number.isFinite(dom) && Number.isFinite(thr) && dom >= thr) ? '#22c55e' : '#f59e0b';
-      const cConf = (Number.isFinite(conf) && Number.isFinite(min) && conf >= min) ? '#22c55e' : '#f59e0b';
-      logSpamControlled('scan', `killer:${tf}:${verdict}`, `🔫 ${tf}|<span style="color:${cWhy};font-weight:800;">${whyShort}</span>|<span style="color:${cConf};font-weight:800;">CONF ${confTxt}</span>|<span style="color:${cDom};font-weight:800;">DOM ${domPct}%(thr ${thrPct}%)</span>|<span style="color:#a5b4fc;font-weight:700;">${adxTxt}</span>|<span style="color:#e5e7eb;">${ptTxt}</span>${pointsTxt ? `|<span style="color:#93c5fd;">${pointsTxt}</span>` : ''}`);
+      const cConf = (Number.isFinite(effPts) && Number.isFinite(min) && effPts >= min) ? '#22c55e' : '#f59e0b';
+      const stateValue = `${whyShort}|${Number(effPts).toFixed(1)}|${reason || ''}`;
+      if (!logSpamControlled(`killer:${tf}`, stateValue, verdict === 'PASS' ? 2000 : 15000)) return;
+      logConsoleLine(`🔫 ${tf}|<span style="color:${cWhy};font-weight:800;">${whyShort}</span>|<span style="color:${cConf};font-weight:800;">${confTxt}</span>|<span style="color:${cDom};font-weight:800;">DOM ${domPct}%(thr ${thrPct}%)</span>|<span style="color:#a5b4fc;font-weight:700;">${adxTxt}</span>|<span style="color:#e5e7eb;">${ptTxt}</span>${pointsTxt ? `|<span style="color:#93c5fd;">${pointsTxt}</span>` : ''}`);
     }
 
     function exportSessionHtml() {
       const sess = _sessionEnsure();
       
+      // Fallback: if session trade list is empty but legacy list exists, copy it.
+      try { if ((!sess.trades || !sess.trades.length) && Array.isArray(S.trades) && S.trades.length) sess.trades = S.trades.slice(); } catch(e){}
 const nowBal = readBalanceCents();
       const startBal = Number.isFinite(sess.startBalanceCents) ? sess.startBalanceCents : null;
       const stopBal = Number.isFinite(sess.stopBalanceCents) ? sess.stopBalanceCents : nowBal;
@@ -2102,15 +2088,11 @@ window.__REPORT_FNAME__ = "${fname}";
       const asset = S.lastAssetLabel || '';
       const tf = (S.activeTimeframe || '').toString().toUpperCase();
 
-      const settled = sess.settledTrades || [];
-      const unresolved = sess.unresolvedTrades || [];
-      const trades = [...settled, ...unresolved];
-      const wins = settled.filter(t => (t.outcome === 'ПЕЧАЛБИ' || t.outcome === 'WIN')).length;
-      const losses = settled.filter(t => (t.outcome === 'ЗАГУБИ' || t.outcome === 'LOSS')).length;
-      const neu = settled.filter(t=>t.outcome==='EVEN').length;
-      const unresolvedCount = unresolved.length;
-      const wrBase = Math.max(1, wins + losses);
-      const winrate = ((wins/wrBase)*100);
+      const trades = sess.trades || [];
+      const wins = trades.filter(t=>t.outcome==='ПЕЧАЛБИ').length;
+      const losses = trades.filter(t=>t.outcome==='ЗАГУБИ').length;
+      const neu = trades.length - wins - losses;
+      const winrate = trades.length ? (wins/trades.length*100) : 0;
 
       const avgConf = (() => {
         const xs = trades.map(t=>t.confidence).filter(x=>Number.isFinite(x));
@@ -2290,8 +2272,8 @@ window.__REPORT_FNAME__ = "${fname}";
         <div class="pill"><span class="neu">НЕУТРАЛНИ</span><b class="neu">${neu}</b></div>
         <div class="pill"><span>WR</span><b>${winrate.toFixed(1)}%</b></div>
         <div class="pill"><span>AVG CONF</span><b>${Number.isFinite(avgConf)?avgConf.toFixed(0)+'%':'—'}</b></div>
-        <div class="pill"><span>WR 7/9</span><b>${wr7.wr!=null?wr7.wr.toFixed(1)+'%':'—'} (${wr7.totalN})</b></div>
-        <div class="pill"><span>WR 8/9</span><b>${wr8.wr!=null?wr8.wr.toFixed(1)+'%':'—'} (${wr8.totalN})</b></div>
+        <div class="pill"><span>WR 7/11</span><b>${wr7.wr!=null?wr7.wr.toFixed(1)+'%':'—'} (${wr7.totalN})</b></div>
+        <div class="pill"><span>WR 8/11</span><b>${wr8.wr!=null?wr8.wr.toFixed(1)+'%':'—'} (${wr8.totalN})</b></div>
       </div>
       <div class="muted" style="margin-top:10px;">
         Начало: ${started ? started.toLocaleTimeString() : '—'} | Край: ${stopped ? stopped.toLocaleTimeString() : '—'} | Продължителност: ${started ? Math.max(0, Math.round(((stopped||now)-started)/60000)) : 0} мин
@@ -2350,9 +2332,9 @@ window.__REPORT_FNAME__ = "${fname}";
     </table>
   </div>
 
-  <h2>АНАЛИЗ ПО ПРАГ (7/9 vs 8/9)</h2>
+  <h2>АНАЛИЗ ПО ПРАГ (7/11 vs 8/11 vs 9/11)</h2>
   <div class="card"><table><thead><tr><th>Праг</th><th>Trades</th><th>WR</th><th>PnL</th><th>AvgPoints</th><th>AvgExpirySec</th></tr></thead><tbody>
-  ${thresholdRows.map(r=>`<tr><td>${r.thr}/9</td><td>${r.trades}</td><td>${r.wr.toFixed(1)}%</td><td>${_fmtMoney(r.pnl)}</td><td>${r.avgPts.toFixed(2)}</td><td>${r.avgExp.toFixed(1)}</td></tr>`).join('')}
+  ${thresholdRows.map(r=>`<tr><td>${r.thr}/11</td><td>${r.trades}</td><td>${r.wr.toFixed(1)}%</td><td>${_fmtMoney(r.pnl)}</td><td>${r.avgPts.toFixed(2)}</td><td>${r.avgExp.toFixed(1)}</td></tr>`).join('')}
   </tbody></table></div>
 
 
@@ -2381,8 +2363,8 @@ window.__REPORT_FNAME__ = "${fname}";
   </tbody></table></div>
 
   <h2>ПОСЛЕДНИ 30 СДЕЛКИ</h2>
-  <div class="card"><table><thead><tr><th>Time</th><th>Strategy</th><th>Regime</th><th>Points/Thr</th><th>Dir</th><th>ExpSec</th><th>DynMode</th><th>Stake</th><th>Method</th><th>Evidence</th><th>SettleReason</th><th>DriftSec</th><th>Stability</th><th>Outcome</th><th>PnL</th></tr></thead><tbody>
-  ${trades.slice(-30).reverse().map(t=>`<tr><td>${t.time||'—'}</td><td>${t.strategyKey||'—'}</td><td>${t.regime||'—'}</td><td>${t.points||'—'}/${t.threshold||'—'}${Number(t.threshold)===8?` <span style="color:#f59e0b;font-weight:700;">STRICT</span>`:''}</td><td>${t.direction||'—'}</td><td>${t.expirySeconds||'—'}</td><td>${t.dynamicMode||'fixed'}</td><td>${Number.isFinite(t.stakeCents)?_fmtMoney(t.stakeCents):'—'}</td><td>${t.outcomeMethod||'—'}</td><td>${t.evidenceSummary || (Number.isFinite(t.evidenceDelta)?_fmtMoney(t.evidenceDelta):'—')} ${t.mismatch?'<span style=\"color:#ef4444;font-weight:700;\">MISMATCH</span>':''}</td><td>${t.settleReason||'—'}</td><td>${Number.isFinite(t.driftSec)?t.driftSec.toFixed(1):'—'}</td><td>${t.stablePass?`${t.passesCount||2}/2`:'false'}</td><td>${t.outcome==='UNRESOLVED'?`<span class="muted">UNRESOLVED</span>`:t.outcome||'—'}</td><td>${_fmtMoney(t.profitCents)}</td></tr>`).join('')}
+  <div class="card"><table><thead><tr><th>Time</th><th>Strategy</th><th>Regime</th><th>Points/Thr</th><th>Dir</th><th>ExpSec</th><th>DynMode</th><th>Stake</th><th>Outcome</th><th>PnL</th></tr></thead><tbody>
+  ${trades.slice(-30).reverse().map(t=>`<tr><td>${t.time||'—'}</td><td>${t.strategyKey||'—'}</td><td>${t.regime||'—'}</td><td>${t.points||'—'}/${t.threshold||'—'}${Number(t.threshold)===8?` <span style="color:#f59e0b;font-weight:700;">STRICT</span>`:''}</td><td>${t.direction||'—'}</td><td>${t.expirySeconds||'—'}</td><td>${t.dynamicMode||'fixed'}</td><td>${Number.isFinite(t.stakeCents)?_fmtMoney(t.stakeCents):'—'}</td><td>${t.outcome||'—'}</td><td>${_fmtMoney(t.profitCents)}</td></tr>`).join('')}
   </tbody></table></div>
 
   <h2>СТРАТЕГИИ (Partner mode)</h2>
@@ -2486,124 +2468,37 @@ window.__REPORT_FNAME__ = "${fname}";
 </body>
 </html>`;
     }
-
-
-
-
-    function getLogVerbosity() {
-      const v = String(S.logVerbosity || 'normal').toLowerCase();
-      return ['minimal', 'normal', 'detailed'].includes(v) ? v : 'normal';
-    }
-
-    function canEmitRateLimitedLog(key, cooldownMs) {
-      const now = Date.now();
-      const cache = S.logSpamCache || (S.logSpamCache = Object.create(null));
-      const prev = Number(cache[key] || 0);
-      if (prev && (now - prev) < Math.max(500, Number(cooldownMs) || 1000)) return false;
-      cache[key] = now;
-      return true;
-    }
-
-    function getSpamCooldownMs(category) {
-      const verbosity = getLogVerbosity();
-      if (category === 'gates') return verbosity === 'minimal' ? 30000 : 5000;
-      if (category === 'status_wait') return verbosity === 'minimal' ? 30000 : 1000;
-      return verbosity === 'minimal' ? 10000 : 2000;
-    }
-
-    function logSpamControlled(category, key, message, options = {}) {
-      const stateKey = `spam:${category}:${key}`;
-      const cooldownMs = getSpamCooldownMs(category);
-      if (options.stateValue !== undefined) {
-        const cache = S.logSpamStateCache || (S.logSpamStateCache = Object.create(null));
-        const prevValue = cache[stateKey];
-        cache[stateKey] = options.stateValue;
-        if (prevValue !== undefined && prevValue !== options.stateValue) {
-          logConsoleLine(message);
-          return true;
-        }
-      }
-      if (!canEmitRateLimitedLog(stateKey, cooldownMs)) return false;
-      logConsoleLine(message);
-      return true;
-    }
-
-    const entryTimingFailLogState = new Map();
-
-    function normalizeEntryTimingReasonKey(reason = '') {
-      const raw = String(reason || '').toUpperCase();
-      if (!raw) return 'UNKNOWN';
-      if (raw.includes('OUTSIDE_WINDOW') || raw.includes('КЪСЕН ВХОД')) return 'OUTSIDE_WINDOW';
-      if (raw.includes('SYNC_WAIT_NEXT_CANDLE') || raw.includes('СИНХР.')) return 'SYNC_WAIT_NEXT_CANDLE';
-      if (raw.includes('DISABLED_FOR_TF') || raw.includes('ИЗКЛЮЧЕН ЗА TF')) return 'DISABLED_FOR_TF';
-      if (raw.includes('NAN_TIME') || raw.includes('NAN')) return 'NAN_TIME';
-      if (raw.includes('LATE_BUT_ALLOWED_STRONG') || raw.includes('ДОПУСНАТ')) return 'LATE_BUT_ALLOWED_STRONG';
-      return raw.replace(/\d+/g, '').slice(0, 40).trim() || 'UNKNOWN';
-    }
-
-    function shouldLogEntryTimingFail(tf, reason = '') {
-      const verbosity = getLogVerbosity();
-      const cooldownMs = verbosity === 'minimal' ? 30000 : (verbosity === 'normal' ? 5000 : 1500);
-      const reasonKey = normalizeEntryTimingReasonKey(reason);
-      const key = `${String(tf || 'na').toLowerCase()}|${reasonKey}`;
-      const now = Date.now();
-      const prev = Number(entryTimingFailLogState.get(key) || 0);
-      if (prev && (now - prev) < cooldownMs) return false;
-      entryTimingFailLogState.set(key, now);
-      return true;
-    }
-
-    const gateFailSummaryLogState = new Map();
-    const syncLogState = new Map();
-
-    function shouldLogGateFailSummary(tf, topReasonKey = 'UNKNOWN') {
-      const verbosity = getLogVerbosity();
-      const cooldownMs = verbosity === 'minimal' ? 30000 : (verbosity === 'normal' ? 5000 : 1500);
-      const key = `${String(tf || 'na').toLowerCase()}|${String(topReasonKey || 'UNKNOWN').toUpperCase()}`;
-      const now = Date.now();
-      const prev = Number(gateFailSummaryLogState.get(key) || 0);
-      if (prev && (now - prev) < cooldownMs) return false;
-      gateFailSummaryLogState.set(key, now);
-      return true;
-    }
-
-    function shouldLogSyncEvent(tf, kind = 'OK') {
-      const verbosity = getLogVerbosity();
-      const cooldownMs = verbosity === 'minimal' ? 30000 : (verbosity === 'normal' ? 10000 : 2000);
-      const key = `${String(tf || 'na').toLowerCase()}|${String(kind || 'OK').toUpperCase()}`;
-      const now = Date.now();
-      const prev = Number(syncLogState.get(key) || 0);
-      if (prev && (now - prev) < cooldownMs) return false;
-      syncLogState.set(key, now);
-      return true;
-    }
-
-    function shouldLogKillerLine(tf, verdict, reason = '') {
-      const verbosity = getLogVerbosity();
-      const tfKey = String(tf || 'na').toLowerCase();
-      const verdictKey = String(verdict || 'WAIT').toUpperCase();
-      const reasonKey = normalizeEntryTimingReasonKey(reason || verdictKey);
-      const stateKey = `${tfKey}|${verdictKey}|${reasonKey}`;
-      const cache = S.killerTfLogState || (S.killerTfLogState = Object.create(null));
-      const now = Date.now();
-      const prev = cache[tfKey] || { t: 0, key: '' };
-      const changed = prev.key !== stateKey;
-      const cooldownMs = verbosity === 'minimal' ? 30000 : (verbosity === 'normal' ? 5000 : 1500);
-      if (!changed && (now - Number(prev.t || 0)) < cooldownMs) return false;
-      cache[tfKey] = { t: now, key: stateKey };
-      return true;
-    }
-
     function shouldLogScoreEvent(tf, kind, reason) {
-      const verbosity = getLogVerbosity();
-      if (verbosity === 'minimal') return false;
-      if (verbosity === 'detailed') return true;
-      const key = `score:${tf || 'na'}:${kind || 'score'}:${String(reason || '').slice(0, 80)}`;
-      return canEmitRateLimitedLog(key, 12000);
+      if (S.killerEnabled) return false;
+      return true;
     }
 
     function shouldLogKillerConsole() {
-      return getLogVerbosity() !== 'minimal';
+      return true;
+    }
+
+    function logSpamControlled(key, stateValue, cooldownMs = 2000) {
+      const cache = S.logSpamCache || (S.logSpamCache = Object.create(null));
+      const now = Date.now();
+      const prev = cache[key] || { stateValue: null, at: 0 };
+      const changed = prev.stateValue !== stateValue;
+      const allow = changed || (now - Number(prev.at || 0) >= Math.max(500, Number(cooldownMs) || 2000));
+      if (allow) cache[key] = { stateValue, at: now };
+      return allow;
+    }
+
+    function bindOnce(el, eventName, handler, options) {
+      if (!el || !eventName || typeof handler !== 'function') return false;
+      const k = `__iaaBound_${eventName}`;
+      if (el[k]) return false;
+      el[k] = true;
+      el.addEventListener(eventName, handler, options);
+      return true;
+    }
+
+    function bindSettingsListenersOnce() {
+      if (S.__settingsListenersBound) return;
+      S.__settingsListenersBound = true;
     }
 
     function logDiagnostics() {
@@ -2624,8 +2519,11 @@ window.__REPORT_FNAME__ = "${fname}";
       const thr = isSniperMode()
         ? (typeof S.sniperThreshold === 'number' ? Math.round(S.sniperThreshold * 100) : '-')
         : (typeof S.analysisConfidenceThreshold === 'number' ? Math.round(S.analysisConfidenceThreshold * 100) : '-');
+      if (isSniperMode() && S.killerEnabled) {
+        // killer-only runtime: suppress score diagnostics lines
+        return;
+      }
       if (isSniperMode() && S.lastScoreSnapshot) {
-        if (getLogVerbosity() === 'minimal' && !String(S.lastScoreSnapshot?.result || '').includes('READY') && !String(S.lastScoreSnapshot?.result || '').includes('HARD')) return;
         const snap = S.lastScoreSnapshot;
         const strategyLabel = snap.strategyKey ? getStrategyDisplayLabel(snap.strategyKey) : '—';
         const pointsLabel = Number.isFinite(snap.points) && Number.isFinite(snap.maxPoints)
@@ -2641,25 +2539,7 @@ window.__REPORT_FNAME__ = "${fname}";
         return;
       }
       if (isSniperMode()) {
-        const snap = S.lastScoreSnapshot || {
-          result: 'ANALYZE',
-          points: null,
-          maxPoints: 9,
-          threshold: getScoreThresholdPoints(),
-          strategyKey: S.currentStrategyKey || null,
-          reason: S.lastSkipReason ? translateSkipReason(S.lastSkipReason) : 'Изчакване за score'
-        };
-        const strategyLabel = snap.strategyKey ? getStrategyDisplayLabel(snap.strategyKey) : '—';
-        const pointsLabel = Number.isFinite(snap.points) && Number.isFinite(snap.maxPoints)
-          ? `${snap.points}/${snap.maxPoints} (праг ${snap.threshold}/${snap.maxPoints})`
-          : `—/${snap.maxPoints || 9} (праг ${snap.threshold || 7}/${snap.maxPoints || 9})`;
-        const reason = snap.reason || (S.lastSkipReason ? translateSkipReason(S.lastSkipReason) : '-');
-        logConsoleLine(formatStatus('diagnostics_score', {
-          result: snap.result || 'ANALYZE',
-          points: pointsLabel,
-          strategy: strategyLabel,
-          reason
-        }));
+        // killer-only/no-score-runtime: no periodic score diagnostics
         return;
       }
       const strategyKey = S.lastStrategyKey;
@@ -2805,9 +2685,6 @@ window.__REPORT_FNAME__ = "${fname}";
       if (/\b1M\b/.test(upper) || /\b1:00\b/.test(upper) || /\b01:00\b/.test(upper)) return '1M';
       if (/\b3M\b/.test(upper) || /\b3:00\b/.test(upper) || /\b03:00\b/.test(upper)) return '3M';
       if (/\b5M\b/.test(upper) || /\b5:00\b/.test(upper) || /\b05:00\b/.test(upper)) return '5M';
-      if (/\b30M\b/.test(upper) || /\b30:00\b/.test(upper)) return '30M';
-      if (/\b1H\b/.test(upper) || /\b1:00:00\b/.test(upper)) return '1H';
-      if (/\b4H\b/.test(upper) || /\b4:00:00\b/.test(upper)) return '4H';
       return null;
     }
 
@@ -3000,8 +2877,7 @@ window.__REPORT_FNAME__ = "${fname}";
         rangePct: meta.rangePct ?? meta.candleRangePct ?? null,
         trendDir: meta.trendDir ?? null,
         trendAligned: meta.trendAligned ?? null,
-        volumeOk: meta.volumeOk ?? null,
-        entryMeta: meta || null
+        volumeOk: meta.volumeOk ?? null
       };
     }
 
@@ -3096,13 +2972,46 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
   } else if (out === 'EVEN') {
     // Neutral trade should never print stake or 100x amounts; it is 0 PnL by definition.
     logConsoleLine(`➖ НЕУТРАЛНА СДЕЛКА ($0.00) [${tfLabel}]`);
-  } else if (String(out).toUpperCase() === 'UNRESOLVED') {
-    logConsoleLine(`⚪ НЕПОТВЪРДЕН РЕЗУЛТАТ (UNRESOLVED) [${tfLabel}]`);
   } else {
     // Fallback
     logConsoleLine(`ℹ РЕЗУЛТАТ: ${out} (${money(pc)}) [${tfLabel}]`);
   }
 }
+
+    function detectOutcomeByResultDelta(trade, epsilonCents = 3) {
+      if (!trade) return null;
+      const startBalance = Number.isFinite(S.botStartBalance) ? S.botStartBalance : null;
+      const resultBefore = Number.isFinite(trade.resultBeforeCents) ? trade.resultBeforeCents : null;
+      const currentBalance = readBalanceCents();
+      if (startBalance == null || resultBefore == null || !Number.isFinite(currentBalance)) return null;
+      const resultNow = currentBalance - startBalance;
+      const delta = resultNow - resultBefore;
+      if (delta > epsilonCents) return { outcome: 'ПЕЧАЛБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
+      if (delta < -epsilonCents) return { outcome: 'ЗАГУБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
+      return { outcome: 'EVEN', profitCents: 0, method: 'RESULT_DELTA' };
+    }
+
+    function finalizeTradeOutcome(trade, outcome, profitCents, settledAt = Date.now(), method = '') {
+      if (!trade || !outcome) return;
+      if (trade.outcomeChecked) return;
+      trade.outcomeChecked = true;
+      trade.outcome = outcome;
+      trade.settledAt = settledAt;
+      trade.profitCents = profitCents;
+      trade.outcomeMethod = method || trade.outcomeMethod || 'UNKNOWN';
+
+      recordTradeOutcomeStats(trade, outcome, profitCents);
+      recordTradeHistoryEntry(trade, outcome, profitCents);
+
+      // --- Session HTML report trade record (normalized) ---
+      try {
+        sessionRecordTrade(trade, outcome, profitCents);
+      } catch (e) { /* never block outcome finalize */ }
+
+      recordTradeOutcomeForRisk(outcome, profitCents);
+      applyRiskLimits();
+      try { logTradeOutcome(trade, outcome, profitCents); } catch (e) { console.warn('[IAA] logTradeOutcome failed', e); }
+    }
 
     function renderLagStatus() {
       const lagEl = $id('iaa-live-lag');
@@ -3112,16 +3021,6 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
         return;
       }
       lagEl.textContent = `${S.lastSignalLagSec}s`;
-    }
-
-    function refreshUI(reason = '', payload = null) {
-      renderSniperMatrix();
-      renderPendingTrades();
-      updateProfitDisplay();
-      renderTradeStats();
-      if (S.debugOpen) renderDebugInfo();
-      if (reason) S.lastUiRefreshReason = reason;
-      S.lastUiRefreshPayload = payload || null;
     }
 
     function renderTradeStats() {
@@ -3345,61 +3244,6 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       return formatStatus('ready');
     }
 
-    function recordGateBlockers(tfKey, failedGates = [], reasons = {}) {
-      if (!Array.isArray(failedGates) || !failedGates.length) return;
-      const now = Date.now();
-      S.gateBlockEvents = Array.isArray(S.gateBlockEvents) ? S.gateBlockEvents : [];
-      for (const gate of failedGates) {
-        S.gateBlockEvents.push({
-          t: now,
-          tf: String(tfKey || '').toLowerCase(),
-          gate: String(gate || ''),
-          reason: String(reasons?.[gate] || '')
-        });
-      }
-      if (S.gateBlockEvents.length > 2000) {
-        S.gateBlockEvents.splice(0, S.gateBlockEvents.length - 2000);
-      }
-    }
-
-    function computeTopBlockers(windowMs = 300000) {
-      const now = Date.now();
-      const events = (Array.isArray(S.gateBlockEvents) ? S.gateBlockEvents : []).filter((e) => (now - Number(e.t || 0)) <= windowMs);
-      const mapLabel = (gate) => {
-        if (gate === 'EntryTimingGate') return 'Вход TF';
-        if (gate === 'PerfectTimeGate') return 'PT';
-        if (gate === 'BiasConflictGate') return 'Bias';
-        if (gate === 'StabilityGate') return 'Stability';
-        if (gate === 'ConfluenceGate') return 'CONF';
-        if (gate === 'DominanceGate') return 'DOM';
-        return gate || '—';
-      };
-      const counts = Object.create(null);
-      for (const e of events) {
-        const label = mapLabel(String(e.gate || ''));
-        counts[label] = (counts[label] || 0) + 1;
-      }
-      const total = Object.values(counts).reduce((a, b) => a + b, 0);
-      if (!total) return { summary: 'PT 0% • Bias 0% • Вход TF 0%', last: 'Последно: —' };
-      const pct = (k) => Math.round(((counts[k] || 0) / total) * 100);
-      const top = `PT ${pct('PT')}% • Bias ${pct('Bias')}% • Вход TF ${pct('Вход TF')}%`;
-      const lastEv = events[events.length - 1] || null;
-      const last = lastEv ? `Последно: ${mapLabel(lastEv.gate)}${lastEv.reason ? ` (${lastEv.reason})` : ''}` : 'Последно: —';
-      return { summary: top, last };
-    }
-
-    function updateDebugPanelBlockers() {
-      const now = Date.now();
-      if ((now - Number(S.lastBlockersUpdateAt || 0)) < 1000) return;
-      S.lastBlockersUpdateAt = now;
-      const topEl = $id('dbg-top-blockers');
-      if (!topEl) return;
-      const data = computeTopBlockers(300000);
-      topEl.textContent = `${data.summary} | ${data.last}`;
-      S.lastGateBlockerSummary = data.summary;
-      S.lastGateBlockerReason = data.last;
-    }
-
     function getDebugInfoLines() {
       const driftValue = typeof S.clockDriftSec === 'number' ? S.clockDriftSec : null;
       const driftLabel = driftValue != null ? `${driftValue}s` : '—';
@@ -3445,11 +3289,7 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
         { key: 'обновен', value: analysisUpdatedLabel, severity: analysisUpdatedSeverity },
         { key: 'следваща', value: getNextEtaLabel(), severity: '' },
         { key: 'последен пропуск', value: S.lastSkipReason || '—', severity: lastSkipSeverity },
-        { key: 'пропуски (топ)', value: getTopSkipReasonsLabel(), severity: '' },
-        { key: 'queueLen', value: String(S.metrics?.queueLen ?? S.queueMetrics?.queueLen ?? 0), severity: '' },
-        { key: 'avgExecMs', value: `${Math.round(S.metrics?.avgExecMs || S.queueMetrics?.avgExecMs || 0)}ms`, severity: '' },
-        { key: 'avgSettleMs', value: `${Math.round(S.metrics?.avgSettleMs || S.queueMetrics?.avgSettleMs || 0)}ms`, severity: '' },
-        { key: 'scanCycleMs', value: `${Math.round(S.metrics?.scanCycleMs || S.queueMetrics?.scanCycleMs || 0)}ms`, severity: '' }
+        { key: 'пропуски (топ)', value: getTopSkipReasonsLabel(), severity: '' }
       ];
       return lines;
     }
@@ -3465,11 +3305,11 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       if (!content) return;
       const lines = getDebugInfoLines();
       const scannerLine = '<div class="iaa-debug-line"><span class="iaa-debug-key" style="color:#ef4444;font-weight:700;">[SCAN V5]</span><span class="iaa-debug-value" style="color:#ef4444;font-weight:700;">RUNNING</span></div>';
-      content.innerHTML = scannerLine + '<div class="iaa-debug-line iaa-debug-blockers"><span class="iaa-debug-key dbg-red">ЗАЩО НЕ ВЛИЗА:</span><span class="iaa-debug-value dbg-red" id="dbg-top-blockers">PT 0% • Bias 0% • Вход TF 0% | Последно: —</span></div>' + lines.map((line) => {
+      const whyNotLine = buildSkipStatsDebugHtml();
+      content.innerHTML = scannerLine + whyNotLine + lines.map((line) => {
         const severityClass = line.severity ? ` iaa-debug-value--${line.severity}` : '';
         return `<div class="iaa-debug-line"><span class="iaa-debug-key">${line.key}:</span><span class="iaa-debug-value${severityClass}">${line.value}</span></div>`;
       }).join('');
-      updateDebugPanelBlockers();
       updateDebugStateSnapshot();
     }
 
@@ -3516,8 +3356,9 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       applyById('iaa-sniper-chop', { min: 1, max: 100, highIsStrict: true });
       applyById('iaa-candle-pattern-min-conf', { min: 1, max: 100, highIsStrict: true });
       applyById('iaa-candle-pattern-weight', { min: 1, max: 100, highIsStrict: false });
-      applyById('iaa-entrywin-1m', { min: 0, max: 60, highIsStrict: false });
-      applyById('iaa-entrywin-3m', { min: 0, max: 180, highIsStrict: false });
+      applyById('iaa-entrywin-1m', { min: 0, max: 999, highIsStrict: false });
+      applyById('iaa-entrywin-3m', { min: 0, max: 999, highIsStrict: false });
+      applyById('iaa-entrywin-5m', { min: 0, max: 999, highIsStrict: false });
       applyById('iaa-killer-dominance-threshold', { min: 50, max: 90, highIsStrict: true });
     }
 
@@ -3775,7 +3616,7 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       S.clockDriftSec = Math.round(driftSec * 10) / 10;
     }
 
-    function renderSniperMatrix () {
+    function renderSniperMatrix() {
       const tfs = ['1m', '3m', '5m', '15m'];
       tfs.forEach(tf => {
         const textEl = $id(`iaa-tf-${tf}`);
@@ -4002,13 +3843,11 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       if(/^(M1|1M|60S)$/.test(e)) return '1M';
       if(/^(M3|3M|180S)$/.test(e)) return '3M';
       if(/^(M5|5M|300S)$/.test(e)) return '5M';
-      if(/^(M15|15M|900S)$/.test(e)) return '15M';
-      return '1M';
+      return null;
     }
 
     function getSignalLateToleranceMs(expiry) {
       const norm = normalizeExpiry(expiry);
-      if (norm === '15M') return 180000;
       if (norm === '5M') return 120000;
       if (norm === '3M') return 90000;
       return 60000;
@@ -4016,7 +3855,6 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
 
     function getSignalMaxFutureMs(expiry) {
       const norm = normalizeExpiry(expiry);
-      if (norm === '15M') return 12 * 60 * 60 * 1000;
       if (norm === '5M') return 6 * 60 * 60 * 1000;
       if (norm === '3M') return 4 * 60 * 60 * 1000;
       return 2 * 60 * 60 * 1000;
@@ -4024,7 +3862,6 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
 
     function secsFromTF(tf){
       const norm = normalizeExpiry(tf);
-      if (norm === '15M') return 900;
       if (norm === '5M') return 300;
       if (norm === '3M') return 180;
       return 60;
@@ -4061,21 +3898,6 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       return S.tradeTimestamps.length < limit;
     }
 
-    function tryConsumeTradeRateSlot() {
-      const limit = Number.isFinite(S.maxTradesPerMinute) ? Math.max(0, Math.round(S.maxTradesPerMinute)) : 0;
-      if (!limit) return { ok: true, token: null };
-      const now = Date.now();
-      S.tradeTimestamps = (S.tradeTimestamps || []).filter(ts => now - ts < 60000);
-      if (S.tradeTimestamps.length >= limit) return { ok: false, reason: 'MAX_RATE' };
-      S.tradeTimestamps.push(now);
-      return { ok: true, token: now };
-    }
-
-    function rollbackTradeRateSlot(token) {
-      if (!Number.isFinite(token)) return;
-      S.tradeTimestamps = (S.tradeTimestamps || []).filter((ts) => Number(ts) !== Number(token));
-    }
-
     async function maybeSwitchIdleAsset() {
       if (true) return;
       if (!S.idleSwitchEnabled || S.assetSelecting || hasActiveTrade()) return;
@@ -4109,7 +3931,7 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       const seconds = now.getUTCSeconds();
       const minutes = now.getUTCMinutes();
       const norm = normalizeExpiry(expiry);
-      const interval = norm === '15M' ? 15 : (norm === '5M' ? 5 : (norm === '3M' ? 3 : 1));
+      const interval = norm === '5M' ? 5 : (norm === '3M' ? 3 : 1);
       const secondsInto = (minutes % interval) * 60 + seconds;
       return interval * 60 - secondsInto;
     }
@@ -4703,6 +4525,42 @@ function getMinHistoryWindowForReadinessMs() {
       return entries.map(([k, v]) => `${translateSkipReason(k)}:${v}`).join(' | ');
     }
 
+
+    function incrementKillerSkipStat(reason, verdict = 'WAIT') {
+      S.skipStats = S.skipStats || { pass: 0, wait: 0, confluence: 0, dominance: 0, perfectTime: 0, chop: 0, payout: 0, tolerance: 0, strategy: 0, other: 0 };
+      if (verdict === 'PASS') { S.skipStats.pass = (S.skipStats.pass || 0) + 1; return; }
+      S.skipStats.wait = (S.skipStats.wait || 0) + 1;
+      const r = String(reason || '').toLowerCase();
+      if (r.includes('confluence')) S.skipStats.confluence = (S.skipStats.confluence || 0) + 1;
+      else if (r.includes('dominance')) S.skipStats.dominance = (S.skipStats.dominance || 0) + 1;
+      else if (r.includes('perfect')) S.skipStats.perfectTime = (S.skipStats.perfectTime || 0) + 1;
+      else if (r.includes('chop')) S.skipStats.chop = (S.skipStats.chop || 0) + 1;
+      else if (r.includes('payout')) S.skipStats.payout = (S.skipStats.payout || 0) + 1;
+      else if (r.includes('tolerance')) S.skipStats.tolerance = (S.skipStats.tolerance || 0) + 1;
+      else if (r.includes('strategy')) S.skipStats.strategy = (S.skipStats.strategy || 0) + 1;
+      else S.skipStats.other = (S.skipStats.other || 0) + 1;
+    }
+
+    function buildSkipStatsDebugHtml() {
+      const st = S.skipStats || {};
+      const wait = Number(st.wait || 0);
+      const pass = Number(st.pass || 0);
+      const rows = [
+        ['Confluence', Number(st.confluence || 0)],
+        ['Dominance', Number(st.dominance || 0)],
+        ['PerfectTime', Number(st.perfectTime || 0)],
+        ['Chop', Number(st.chop || 0)],
+        ['Payout', Number(st.payout || 0)],
+        ['Tolerance', Number(st.tolerance || 0)],
+        ['Strategy', Number(st.strategy || 0)],
+        ['Other', Number(st.other || 0)]
+      ].filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 6);
+      const details = rows.length
+        ? rows.map(([k, n]) => `${k} × ${n} (${wait > 0 ? Math.round((n / wait) * 100) : 0}%)`).join('<br>')
+        : '—';
+      return `<div class="iaa-debug-line"><span class="iaa-debug-key" style="color:#ef4444;font-weight:700;">ЗАЩО НЕ ВЛИЗА</span><span class="iaa-debug-value" style="color:#ef4444;font-weight:700;">ASS: ${pass} | WAIT: ${wait}</span></div><div class="iaa-debug-line"><span class="iaa-debug-key" style="color:#ef4444;font-weight:700;">Причини</span><span class="iaa-debug-value" style="color:#ef4444;font-weight:700;">${details}</span></div>`;
+    }
+
     function setSkipReason(reason) {
       const now = Date.now();
       if (S.lastSkipReason === reason && now - S.lastSkipAt < 3000) return;
@@ -4847,41 +4705,6 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     /* ------------------------- BALANCE OBSERVER --------------------------- */
-    function classifyBalanceEventType(delta) {
-      if (delta > 0) return 'CREDIT';
-      if (delta < 0) return 'DEBIT';
-      return 'ZERO';
-    }
-
-    function appendBalanceEvent(curBalance, deltaCents) {
-      if (!Number.isFinite(deltaCents) || deltaCents === 0) return null;
-      S.balanceEvents = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
-      const ev = {
-        t: Date.now(),
-        seq: ++S.balanceEventSeq,
-        balanceCents: curBalance,
-        deltaCents,
-        type: classifyBalanceEventType(deltaCents),
-        used: false
-      };
-      S.balanceEvents.push(ev);
-      const activeTrades = Array.isArray(S.activeTrades) ? S.activeTrades : [];
-      for (const t of activeTrades) {
-        if (!t || t.outcomeChecked) continue;
-        const inWindow = Number.isFinite(t.settleWindowStart) && Number.isFinite(t.settleWindowEnd) && ev.t >= t.settleWindowStart && ev.t <= t.settleWindowEnd;
-        const tol = Math.max(5, Math.round(Math.abs(Number(t.stakeCents || 0)) * 0.05));
-        const absDelta = Math.abs(Number(ev.deltaCents || 0));
-        const expected = Math.abs(Number(t.expectedGrossCents || t.expectedProfitCents || 0));
-        if (!inWindow && absDelta > Math.max(5, tol) && expected > 0) {
-          t.exclusiveSession = false;
-          t.noNoiseSession = false;
-        }
-      }
-      const maxEv = Math.max(2000, Number(S.maxBalanceEvents || 0) || Number(S.balanceEventsMax || 500));
-      if (S.balanceEvents.length > maxEv) S.balanceEvents.splice(0, S.balanceEvents.length - maxEv);
-      return ev;
-    }
-
     function ensureBalancePoller() {
       if (S.balancePoller) return;
       // Polling is the most robust way to capture balance debits/credits without depending on a specific DOM node.
@@ -4895,7 +4718,12 @@ function getMinHistoryWindowForReadinessMs() {
         S.lastBalanceCents = cur;
         S.balance = cur;
 
-        appendBalanceEvent(cur, delta);
+        if (delta !== 0) {
+          S.balanceEvents = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
+          S.balanceEvents.push({ t: Date.now(), balanceCents: cur, deltaCents: delta, used: false });
+          const maxEv = Math.max(2000, Number(S.maxBalanceEvents || 0) || 0);
+          if (S.balanceEvents.length > maxEv) S.balanceEvents.splice(0, S.balanceEvents.length - maxEv);
+        }
       }, 250);
     }
 
@@ -4919,7 +4747,12 @@ function getMinHistoryWindowForReadinessMs() {
           S.lastBalanceCents = cur;
           S.balance = cur;
 
-          appendBalanceEvent(cur, delta);
+          if (delta !== 0) {
+            S.balanceEvents = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
+            S.balanceEvents.push({ t: Date.now(), balanceCents: cur, deltaCents: delta, used: false });
+            const maxEv = Math.max(50, Number.isFinite(S.balanceEventsMax) ? S.balanceEventsMax : 500);
+            if (S.balanceEvents.length > maxEv) S.balanceEvents.splice(0, S.balanceEvents.length - maxEv);
+          }
 
           updateBalanceSummary();
         }
@@ -4975,20 +4808,17 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     /* ========================= KEEP ALIVE SYSTEM ========================= */
+    function isSettingsPanelVisible() {
+      const panel = $id('iaa-settings-panel');
+      if (S.settingsPanelOpen) return true;
+      if (!panel) return false;
+      return panel.style.display === 'block' || !!panel.closest('#iaa-panel')?.querySelector?.('#iaa-settings-panel[style*="display: block"]');
+    }
+
     async function performKeepAlive() {
       if (S.keepAliveActive) return;
       if (false || false || hasActiveTrade() || false) return;
-      const overlayOpen = (() => {
-        const isOpen = (id) => {
-          const p = $id(id);
-          return !!(p && p.style.display === 'block');
-        };
-        return isOpen('iaa-settings-panel') || isOpen('iaa-debug-panel') || isOpen('iaa-mouse-panel') || isOpen('iaa-calibration-panel');
-      })();
-      if (overlayOpen) {
-        document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 8, clientY: 8 }));
-        return;
-      }
+      if (isSettingsPanelVisible()) return;
 
       S.keepAliveActive = true;
       try {
@@ -5156,179 +4986,6 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     /* ========================= ENHANCED TRADE EXECUTION WITH EXACT TIMING ========================= */
-    function markOtherTradesNonExclusive() {
-      const active = Array.isArray(S.activeTrades) ? S.activeTrades : [];
-      for (const t of active) {
-        if (!t || t.outcomeChecked) continue;
-        t.exclusiveSession = false;
-      }
-    }
-
-    function attachTradeBaseline(trade, signal, entryContext) {
-      const now = Date.now();
-      const payoutSnapshot = Number.isFinite(trade.payoutPercent) ? trade.payoutPercent : Number(S.lastPayoutPercent || 0);
-      trade.id = trade.id || ('T' + now.toString(36) + '_' + Math.random().toString(16).slice(2));
-      trade.state = 'CLICKED';
-      trade.clickedAt = now;
-      trade.balanceBeforeClickCents = Number.isFinite(trade.balanceBefore) ? trade.balanceBefore : readBalanceCents();
-      trade.payoutPercentSnapshot = payoutSnapshot;
-      trade.expectedProfitCents = Math.floor(Number(trade.stakeCents || 0) * (payoutSnapshot / 100));
-      trade.expectedGrossCents = Number(trade.stakeCents || 0) + Math.max(0, Number(trade.expectedProfitCents || 0));
-      trade.asset = trade.asset || signal?.asset || getCurrentAssetLabel();
-      trade.tf = trade.tf || trade.expiry || signal?.expiry || '';
-      trade.direction = trade.direction || signal?.direction || '';
-      trade.expirySec = Number.isFinite(trade.expiryMs) ? Math.round(trade.expiryMs / 1000) : null;
-      trade.tradeKey = `${trade.asset}|${trade.tf}|${trade.direction}|${trade.clickedAt}`;
-      trade.uiExpirySecondsAtOpen = readUiRemainingSeconds();
-      trade.uiExpiryReadAtMs = Date.now();
-      if (Number.isFinite(trade.uiExpirySecondsAtOpen)) trade.uiExpectedEndMs = trade.uiExpiryReadAtMs + trade.uiExpirySecondsAtOpen * 1000 + 1000;
-      trade.settleAttempts = 0;
-      trade.lastSettleTryAt = 0;
-      trade.recheckAttempts = 0;
-      trade.exclusiveSession = true;
-      trade.noNoiseSession = true;
-      trade.entryContext = entryContext || trade.entryContext || null;
-      trade.settleWindowStart = null;
-      trade.settleWindowEnd = null;
-      markOtherTradesNonExclusive();
-    }
-
-    function enqueueExecutionCandidate(candidate) {
-      S.executionQueue = Array.isArray(S.executionQueue) ? S.executionQueue : [];
-      const cycleId = Number(candidate?.scanCycleId || candidate?.signal?.scanCycleId || 0);
-      if (cycleId) {
-        const alreadyQueued = S.executionQueue.some((q) => Number(q?.scanCycleId || q?.signal?.scanCycleId || 0) === cycleId);
-        if (alreadyQueued) return false;
-      }
-      const maxLen = Math.max(1, Number(S.maxExecutionQueueLen || 3));
-      const threshold = Number(candidate?.score?.threshold || candidate?.decision?.scoreCard?.threshold || 0);
-      const points = Number(candidate?.score?.points || candidate?.points || 0);
-      const isStrict = points >= (threshold + 1);
-      if (S.executionQueue.length > 3 && !isStrict) {
-        logConsoleLine('BACKPRESSURE_DROP');
-        return false;
-      }
-      if (S.executionQueue.length > 3 && isStrict) logConsoleLine('BACKPRESSURE_STRICT_ENQUEUE');
-      if (S.executionQueue.length >= maxLen && !isStrict) {
-        logConsoleLine(`[EXEC QUEUE] DROP: queue backpressure (${S.executionQueue.length}/${maxLen})`);
-        return false;
-      }
-      S.executionQueue.push(candidate);
-      S.queueMetrics.queueLen = S.executionQueue.length;
-      S.metrics.queueLen = S.queueMetrics.queueLen;
-      return true;
-    }
-
-    function mapTfToExpirySec(tfKey = '') {
-      const k = String(tfKey || '').toLowerCase();
-      if (k === '1m') return 60;
-      if (k === '3m') return 180;
-      if (k === '5m') return 300;
-      if (k === '15m') return 900;
-      return null;
-    }
-
-    function mapTfToExpiryLabel(tfKey = '') {
-      const sec = mapTfToExpirySec(tfKey);
-      if (sec === 60) return '1M';
-      if (sec === 180) return '3M';
-      if (sec === 300) return '5M';
-      if (sec === 900) return '15M';
-      return null;
-    }
-
-    function isCandidateEntryWindowValid(candidate) {
-      if (!candidate) return false;
-      const now = Date.now();
-      if (Number.isFinite(candidate.validUntilMs) && now > candidate.validUntilMs) return false;
-      const tfKey = String(candidate?.tf || candidate?.decision?.tfKey || '').toLowerCase();
-      const windowMs = Number(candidate?.decision?.windowMs || SNIPER_TF_MS[tfKey] || 0);
-      if (!windowMs) return true;
-      const timing = computeEntryTiming(tfKey, windowMs, now);
-      if (!timing.entryWindowOk) return false;
-      return true;
-    }
-
-
-    function readCurrentExpirySecFromUI() {
-      const sec = readDynamicExpirySeconds();
-      if (Number.isFinite(sec) && sec >= 0) return Math.round(sec);
-      return NaN;
-    }
-
-    async function setExpiryInUI(targetExpirySec) {
-      const sec = Math.max(0, Math.round(Number(targetExpirySec) || 0));
-      if (sec > 300) return false;
-      const opened = await iaaOpenExpiryMenu(getExpiryScopeFromAsset(getCurrentAssetLabel()));
-      if (!opened) return false;
-      return !!(await setDynamicExpiryTime(sec));
-    }
-
-    function resolveTargetExpirySecForSignal(signal, fallbackExpiry) {
-      const tfKey = String(signal?.tfKey || signal?.expiry || fallbackExpiry || '').toLowerCase();
-      const mapped = mapTfToExpirySec(tfKey);
-      if (Number.isFinite(mapped)) return mapped;
-      const byExpiry = secsFromTF(signal?.expiry || fallbackExpiry || '1M');
-      return Number.isFinite(byExpiry) ? Math.round(byExpiry) : 60;
-    }
-
-    async function enforceConfirmedExpiryBeforeTrade(signal, targetExpirySec) {
-      const target = Math.round(Number(targetExpirySec) || 0);
-      if (!Number.isFinite(target) || target <= 0) return { ok: false, reason: 'NO_EXPIRY_UI' };
-      if (getDynamicMode() === 'off' && target > 300) return { ok: false, reason: 'EXPIRY_TOO_LONG' };
-      const expiryKey = target === 60 ? '1M' : (target === 180 ? '3M' : (target === 300 ? '5M' : null));
-      if (!expiryKey) return { ok: false, reason: 'EXPIRY_TOO_LONG' };
-      const ensured = await ensurePlatformExpiry(expiryKey);
-      if (!ensured) return { ok: false, reason: 'NO_EXPIRY_UI' };
-      await delay(120);
-      const current = readCurrentExpirySecFromUI();
-      if (!Number.isFinite(current)) return { ok: false, reason: 'NO_EXPIRY_UI' };
-      if (Math.abs(current - target) > 1) {
-        return { ok: false, reason: `EXPIRY_MISMATCH want=${target} got=${current}`, current, target };
-      }
-      return { ok: true, current, target };
-    }
-
-    function verifyExpiryMatchNow(targetSec) {
-      const current = readCurrentExpirySecFromUI();
-      if (!Number.isFinite(current)) return { ok: false, reason: 'NO_EXPIRY_UI' };
-      if (Math.abs(Number(current) - Number(targetSec)) > 1) return { ok: false, reason: `EXPIRY_MISMATCH want=${targetSec} got=${current}`, current };
-      return { ok: true, current };
-    }
-
-    async function runExecutionQueueWorker() {
-      if (!S.running || S.execWorkerBusy) return;
-      const q = Array.isArray(S.executionQueue) ? S.executionQueue : [];
-      S.queueMetrics.queueLen = q.length;
-      if (!q.length) return;
-      const candidate = q.shift();
-      S.queueMetrics.queueLen = q.length;
-      if (!candidate || !candidate.signal) return;
-      if (!isCandidateEntryWindowValid(candidate)) {
-        logConsoleLine(`[EXEC] EXPIRED(EXEC_DELAY) tf=${candidate?.tf || candidate?.decision?.tfKey || 'n/a'} createdAt=${Number(candidate?.createdAtMs||0)} validUntil=${Number(candidate?.validUntilMs||0)} now=${Date.now()}`);
-        return;
-      }
-      if (String(candidate?.gates?.verdict || '') !== 'PASS') return;
-      if (Number(candidate?.score?.points || 0) < Number(candidate?.score?.threshold || 0)) return;
-      S.execWorkerBusy = true;
-      const started = Date.now();
-      try {
-        const tfLabel = String(candidate?.tf || candidate?.decision?.tfKey || "").toLowerCase();
-        const mappedExpiry = mapTfToExpiryLabel(tfLabel);
-        const mappedSec = mapTfToExpirySec(tfLabel);
-        if (mappedExpiry) candidate.signal.expiry = mappedExpiry;
-        if (Number.isFinite(mappedSec)) candidate.signal.expirySec = mappedSec;
-        await executeTradeOrder(candidate.signal);
-      } finally {
-        const dt = Date.now() - started;
-        const n = (S.queueMetrics._execN || 0) + 1;
-        S.queueMetrics._execN = n;
-        S.queueMetrics.avgExecMs = ((S.queueMetrics.avgExecMs || 0) * (n - 1) + dt) / n;
-        S.metrics.avgExecMs = S.queueMetrics.avgExecMs;
-        S.execWorkerBusy = false;
-      }
-    }
-
     async function executeTradeOrder(signal) {
       if (S.executing) return false;
       if (S.tradeMutex?.active) return false;
@@ -5336,17 +4993,13 @@ function getMinHistoryWindowForReadinessMs() {
         setSkipReason('MaxOpen');
         return false;
       }
+      if (!canExecuteTradeByRate()) {
+        setSkipReason('MaxRate');
+        return false;
+      }
+
       const execKey = signalExecKey(signal);
-      const nowExec = Date.now();
-      if (nowExec < Number(S.tradeLockUntil || 0)) { if (canEmitRateLimitedLog('exec_skip_trade_lock', 2000)) logConsoleLine('[EXEC_SKIP] reason=TRADE_LOCK'); return false; }
-      const scanCycleId = Number(signal?.scanCycleId || S.scanCycleId || 0);
-      if (scanCycleId && Number(S.lastTradeAttemptCycleId || 0) === scanCycleId) { if (canEmitRateLimitedLog('exec_skip_trade_lock_cycle', 2000)) logConsoleLine('[EXEC_SKIP] reason=TRADE_LOCK'); return false; }
-      let rateSlot = null;
-      const tfForKey = String(signal?.tfKey || signal?.expiry || 'na').toLowerCase();
-      const candleStartForKey = Number(signal?.entryMeta?.candleStartMs || signal?.candleStartMs || 0);
-      const dedupeKey = `${String(signal?.asset || getCurrentAssetLabel() || '—')}|${String(signal?.direction || '').toUpperCase()}|${tfForKey}|${candleStartForKey || 'na'}`;
-      if (String(S.lastTradeSignalKey || '') === dedupeKey && (nowExec - Number(S.lastTradeSignalAt || 0)) < 120000) { if (canEmitRateLimitedLog(`exec_dup_${tfForKey}`, 2500)) logConsoleLine(`[EXEC_SKIP] reason=DUP_SIGNAL key=${dedupeKey}`); return false; }
-      if (!isSniperMode() && S.lastExecutedKey === execKey && nowExec < Number(S.tradeLockUntil || 0)) return false;
+      if (!isSniperMode() && S.lastExecutedKey === execKey && Date.now() < S.tradeLockUntil) return false;
       if (!S.baseAmount) {
         setSkipReason('Amount');
         return false;
@@ -5405,8 +5058,6 @@ function getMinHistoryWindowForReadinessMs() {
         setSkipReason('Conflict');
         return false;
       }
-      S.tradeLockUntil = Date.now() + 2500;
-      S.lastTradeAttemptCycleId = scanCycleId || Date.now();
       S.executing = true;
       S.executionAttempts = 1;
       S.executionStartTime = Date.now();
@@ -5414,26 +5065,6 @@ function getMinHistoryWindowForReadinessMs() {
       S.tradeMutex = { active: true, id: mutexId, startedAt: Date.now() };
 
       let resolvedExpiry = normalizeExpiry(signal.expiry) || S.expirySetting;
-      const targetExpirySec = resolveTargetExpirySecForSignal(signal, resolvedExpiry);
-      const preflight = await enforceConfirmedExpiryBeforeTrade(signal, targetExpirySec);
-      if (!preflight.ok) {
-        const why = String(preflight.reason || 'EXPIRY_FAIL');
-        if (why.startsWith('EXPIRY_MISMATCH')) {
-          logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${targetExpirySec} got=${Number(preflight.current || readCurrentExpirySecFromUI() || 'NaN')}`);
-          recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: why });
-        } else if (why === 'EXPIRY_TOO_LONG') {
-          logConsoleLine('[SKIP] EXPIRY_TOO_LONG');
-          recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: 'EXPIRY_TOO_LONG' });
-        }
-        if (canEmitRateLimitedLog(`exec_abort_${why.slice(0,40)}`, 2500)) logConsoleLine(`[EXEC_ABORT] reason=${why}`);
-        return false;
-      }
-      rateSlot = tryConsumeTradeRateSlot();
-      if (!rateSlot.ok) {
-        setSkipReason('MaxRate');
-        return false;
-      }
-      const inferredTf = String(signal?.expiry || '').toLowerCase();
       const assetScope = getExpiryScopeFromAsset(signal.asset);
       const useDynamicExpiry = shouldUseDynamicExpiry(signal, assetScope);
       const entryContext = buildEntryContext(signal, resolvedExpiry);
@@ -5444,7 +5075,6 @@ function getMinHistoryWindowForReadinessMs() {
 
       try {
         S.engineState = 'PREP_UI';
-        logConsoleLine(`[EXEC] CLICK asset=${signal.asset || getCurrentAssetLabel() || '—'} tf=${String(signal?.expiry || signal?.tf || 'n/a').toLowerCase()} expirySec=${Number(signal?.expirySec || secsFromTF(resolvedExpiry) || 0)}`);
         if (!useDynamicExpiry || assetScope !== 'OTC') {
           const expiryOk = await withTimeout(() => ensurePlatformExpiry(resolvedExpiry), Number(S.uiExpiryTimeoutMs || 2200), 'настройка на expiry');
           if (!expiryOk) {
@@ -5494,8 +5124,8 @@ function getMinHistoryWindowForReadinessMs() {
           const pts = Number(signal?.entryMeta?.scoreCard?.points || 0);
           const simWr = Number(dynamicPlanPreview?.best?.stats?.winrate || 0);
           const simSamples = Number(dynamicPlanPreview?.best?.stats?.samples || 0);
-          if (pts >= 9) { stakeMultiplier += Number(S.dynamicStakeMult9 || 0.30); stakeReasonBg = '9/9'; }
-          else if (pts >= 8) { stakeMultiplier += Number(S.dynamicStakeMult8 || 0.15); stakeReasonBg = '8/9'; }
+          if (pts >= 9) { stakeMultiplier += Number(S.dynamicStakeMult9 || 0.30); stakeReasonBg = '9/11'; }
+          else if (pts >= 8) { stakeMultiplier += Number(S.dynamicStakeMult8 || 0.15); stakeReasonBg = '8/11'; }
           if (simWr >= 0.60 && simSamples >= Math.max(1, Number(S.dynamicStakeBoostMinSamples || 60))) {
             stakeMultiplier += Number(S.dynamicStakeBoostWr || 0.05);
             stakeReasonBg += ' + SIM boost';
@@ -5528,9 +5158,9 @@ function getMinHistoryWindowForReadinessMs() {
 
         const dir = signal.direction.toLowerCase();
         let dynamicPlanUsed = dynamicPlanPreview;
-        const shouldBurst = false;
-        const baseBurst = 1;
-        const burstCount = 1;
+        const shouldBurst = S.burstEnabled && S.analysisSteadyTrend && S.analysisConfidence >= S.burstConfidenceThreshold;
+        const baseBurst = shouldBurst ? Math.max(1, Math.min(S.burstTradeCount, 5)) : 1;
+        const burstCount = Math.max(1, Number.isFinite(signal?.burstCount) ? signal.burstCount : baseBurst);
         const payoutPercent = getCurrentPayoutPercent();
 
         let dynamicApplied = false;
@@ -5564,7 +5194,7 @@ function getMinHistoryWindowForReadinessMs() {
             }
             if (!plan.seconds.length) return false;
 
-            for (const seconds of plan.seconds.slice(0, 1)) {
+            for (const seconds of plan.seconds) {
               const startSet = Date.now();
               let applied = await setDynamicExpiryTime(seconds);
               if (!applied) {
@@ -5593,12 +5223,6 @@ function getMinHistoryWindowForReadinessMs() {
               }));
               const clickTarget = (dir === 'buy' || dir === 'call' || dir === 'up') ? up : dn;
               if (!clickTarget) return false;
-              const verifyDyn = verifyExpiryMatchNow(finalSeconds);
-              if (!verifyDyn.ok) {
-                logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${finalSeconds} got=${Number(verifyDyn.current || 'NaN')}`);
-                recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: String(verifyDyn.reason || 'EXPIRY_MISMATCH') });
-                return false;
-              }
               simulateClick(clickTarget);
 
               const expiryMs = finalSeconds * 1000;
@@ -5648,10 +5272,8 @@ function getMinHistoryWindowForReadinessMs() {
       } catch (e) {}
 
 
-              attachTradeBaseline(trade, signal, entryContext);
-          S.activeTrades.push(trade);
+              S.activeTrades.push(trade);
               S.pendingTradeConfirmations.push({ trade, at: Date.now() });
-          refreshUI('trade_placed');
               dynamicApplied = true;
               {
                 const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
@@ -5665,17 +5287,10 @@ function getMinHistoryWindowForReadinessMs() {
             }
           } else {
             if (!plan.expiries.length) return false;
-            for (const expiry of plan.expiries.slice(0, 1)) {
+            for (const expiry of plan.expiries) {
               const expiryOk = await withTimeout(() => ensurePlatformExpiry(expiry), Number(S.uiExpiryTimeoutMs || 2200), 'настройка на expiry');
               if (!expiryOk) {
                 setSkipReason('Expiry');
-                return false;
-              }
-              const targetPlanSec = secsFromTF(expiry);
-              const verifyPlan = verifyExpiryMatchNow(targetPlanSec);
-              if (!verifyPlan.ok) {
-                logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${targetPlanSec} got=${Number(verifyPlan.current || 'NaN')}`);
-                recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: String(verifyPlan.reason || 'EXPIRY_MISMATCH') });
                 return false;
               }
               logConsoleLine(formatStatus('trade_attempt', {
@@ -5685,12 +5300,6 @@ function getMinHistoryWindowForReadinessMs() {
               }));
               const clickTarget = (dir === 'buy' || dir === 'call' || dir === 'up') ? up : dn;
               if (!clickTarget) return false;
-              const verifyPlanBeforeClick = verifyExpiryMatchNow(secsFromTF(expiry));
-              if (!verifyPlanBeforeClick.ok) {
-                logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${secsFromTF(expiry)} got=${Number(verifyPlanBeforeClick.current || 'NaN')}`);
-                recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: String(verifyPlanBeforeClick.reason || 'EXPIRY_MISMATCH') });
-                return false;
-              }
               simulateClick(clickTarget);
 
               const expiryMs = secsFromTF(expiry) * 1000;
@@ -5726,10 +5335,8 @@ function getMinHistoryWindowForReadinessMs() {
                 stakeMultiplier,
                 stakeReasonBg
               };
-              attachTradeBaseline(trade, signal, entryContext);
-          S.activeTrades.push(trade);
+              S.activeTrades.push(trade);
               S.pendingTradeConfirmations.push({ trade, at: Date.now() });
-          refreshUI('trade_placed');
               {
                 const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
                 logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
@@ -5739,19 +5346,22 @@ function getMinHistoryWindowForReadinessMs() {
           }
         } else {
           logConsoleLine(formatStatus('trade_attempt', { asset: signal.asset, direction: signal.direction.toUpperCase(), expiry: resolvedExpiry }));
-          logConsoleLine(`[EXEC] CLICK asset=${signal.asset || getCurrentAssetLabel() || '—'} tf=${String(signal?.tfKey || signal?.entryMeta?.strategyKey || signal?.rawText || '').toString()} expirySec=${Number(secsFromTF(resolvedExpiry) || signal?.expirySec || 0)}`);
-          const verifyStatic = verifyExpiryMatchNow(secsFromTF(resolvedExpiry));
-          if (!verifyStatic.ok) {
-            logConsoleLine(`[SKIP] EXPIRY_MISMATCH want=${secsFromTF(resolvedExpiry)} got=${Number(verifyStatic.current || 'NaN')}`);
-            recordGateBlockers(signal?.tfKey || signal?.expiry || 'na', ['EntryTimingGate'], { EntryTimingGate: String(verifyStatic.reason || 'EXPIRY_MISMATCH') });
-            return false;
-          }
           let clicked = false;
           if ((dir === 'buy' || dir === 'call' || dir === 'up') && up) {
-            simulateClick(up);
+            for (let i = 0; i < burstCount; i++) {
+              simulateClick(up);
+              if (i < burstCount - 1) {
+                await delay(120);
+              }
+            }
             clicked = true;
           } else if ((dir === 'sell' || dir === 'put' || dir === 'down') && dn) {
-            simulateClick(dn);
+            for (let i = 0; i < burstCount; i++) {
+              simulateClick(dn);
+              if (i < burstCount - 1) {
+                await delay(120);
+              }
+            }
             clicked = true;
           }
           
@@ -5792,10 +5402,8 @@ function getMinHistoryWindowForReadinessMs() {
             stakeMultiplier,
             stakeReasonBg
           };
-          attachTradeBaseline(trade, signal, entryContext);
           S.activeTrades.push(trade);
           S.pendingTradeConfirmations.push({ trade, at: Date.now() });
-          refreshUI('trade_placed');
           {
             const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
             logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
@@ -5803,7 +5411,7 @@ function getMinHistoryWindowForReadinessMs() {
         }
 
         if (!isSniperMode()) {
-          S.tradeLockUntil = Date.now() + 2500;
+          S.tradeLockUntil = Date.now() + 1000;
         }
         if (!isSniperMode()) {
           const intervalMin = getActiveTradeIntervalMin();
@@ -5811,9 +5419,9 @@ function getMinHistoryWindowForReadinessMs() {
         }
         S.lastTradeTime = Date.now();
         S.tradeCount++;
+        S.tradeTimestamps = S.tradeTimestamps || [];
+        S.tradeTimestamps.push(Date.now());
         S.lastExecutedKey = execKey;
-        S.lastTradeSignalKey = dedupeKey;
-        S.lastTradeSignalAt = Date.now();
         S.finalizedTradeId = null;
 
         // Update UI to show trade executed
@@ -5822,14 +5430,12 @@ function getMinHistoryWindowForReadinessMs() {
         S.engineState = 'CONFIRM';
         return true;
       } catch (error) {
-        rollbackTradeRateSlot(rateSlot?.token);
         if (String(error?.message || '').startsWith('timeout:')) {
           logConsoleLine(`[EXEC] Твърд стоп: UI timeout (${String(error.message).replace('timeout:', '')})`);
           setSkipReason('UI timeout');
         }
         return false;
       } finally {
-        if (!S.engineState || S.engineState !== 'CONFIRM') rollbackTradeRateSlot(rateSlot?.token);
         S.engineState = 'IDLE';
         S.executing = false;
         if (S.tradeMutex?.id === mutexId) {
@@ -5846,6 +5452,7 @@ function getMinHistoryWindowForReadinessMs() {
       const evs = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
       const a = Number.isFinite(afterTs) ? afterTs : 0;
       const b = Number.isFinite(beforeTs) ? beforeTs : 0;
+      // Search oldest-to-newest so we get the earliest matching event.
       for (let i = 0; i < evs.length; i += 1) {
         const e = evs[i];
         if (!e || e.used) continue;
@@ -5860,211 +5467,100 @@ function getMinHistoryWindowForReadinessMs() {
       if (ev) ev.used = true;
     }
 
-    function getTradeToleranceCents(trade) {
-      const stakeCents = Number(trade?.stakeCents || trade?.totalAmountCents || trade?.amountCents || 0);
-      return Math.max(5, Math.round(stakeCents * 0.05));
-    }
-
-    function getTradeExpectedValues(trade) {
-      const stakeCents = Number(trade?.stakeCents || trade?.totalAmountCents || trade?.amountCents || 0);
-      const payoutPct = Number.isFinite(trade?.payoutPercentSnapshot) ? trade.payoutPercentSnapshot : Number(trade?.payoutPercent || 0);
-      const expectedProfitCents = payoutPct > 0 ? Math.floor(stakeCents * (payoutPct / 100)) : null;
-      const expectedGrossCents = Number.isFinite(expectedProfitCents) ? stakeCents + expectedProfitCents : null;
-      return { stakeCents, expectedProfitCents, expectedGrossCents };
-    }
-
-    function buildTradeSettleWindow(trade) {
-      const expectedEnd = Number(trade?.expectedEnd || 0);
-      let start = expectedEnd - 2000;
-      let end = expectedEnd + 25000;
-      let widenLevel = 0;
-      const lagSec = Number(S.lastSignalLagSec || 0);
-      const isOtc = /otc/i.test(String(trade?.asset || ''));
-      if (lagSec >= 3 || isOtc || (trade?.openConfirmedAt && Math.abs(trade.openConfirmedAt - trade.clickedAt) > 2000)) {
-        end += 10000;
-        widenLevel = 1;
-      }
-      if ((lagSec >= 5 || isOtc) && (S.activeTrades || []).length <= 1) {
-        end += 20000;
-        widenLevel = 2;
-      }
-      trade.settleWindowStart = start;
-      trade.settleWindowEnd = end;
-      trade.settleWindowUsed = { start, end, widenLevel };
-      return trade.settleWindowUsed;
-    }
-
-    function findBestBalanceEventForTrade(trade) {
+    function findBestBalanceEventForTrade(trade, afterTs, beforeTs, expectedEndTs) {
       const evs = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
-      const settleStart = Number(trade?.settleWindowStart || 0);
-      const settleEnd = Number(trade?.settleWindowEnd || 0);
-      const { expectedProfitCents, expectedGrossCents } = getTradeExpectedValues(trade);
-      const tol = getTradeToleranceCents(trade);
-      let candidate = null;
-
+      const amountCents = Number(trade?.totalAmountCents || trade?.amountCents || 0);
+      const payoutPct = Number.isFinite(trade?.payoutPercent) ? trade.payoutPercent : Number(S.lastPayoutPercent || 0);
+      const expectedProfit = payoutPct > 0 ? Math.round(amountCents * (payoutPct / 100)) : null;
+      const expectedGross = expectedProfit != null ? amountCents + expectedProfit : null;
+      const a = Number.isFinite(afterTs) ? afterTs : 0;
+      const b = Number.isFinite(beforeTs) ? beforeTs : 0;
+      const tRef = Number.isFinite(expectedEndTs) ? expectedEndTs : a;
+      let best = null;
       for (const e of evs) {
-        if (!e || e.used || e.type !== 'CREDIT') continue;
-        if (e.t < settleStart) continue;
-        if (settleEnd && e.t > settleEnd) continue;
-        if (Number.isFinite(trade?.linkedDebitSeq) && Number(e.seq || 0) <= Number(trade.linkedDebitSeq || 0)) continue;
-        if (!Number.isFinite(trade?.linkedDebitSeq) && Number.isFinite(trade?.debitDetectedAt) && e.t <= trade.debitDetectedAt) continue;
-        const credit = Number(e.deltaCents || 0);
-        const passGross = Number.isFinite(expectedGrossCents) && Math.abs(credit - expectedGrossCents) <= tol;
-        const passProfit = Number.isFinite(expectedProfitCents) && Math.abs(credit - expectedProfitCents) <= tol;
-        if (!passGross && !passProfit) continue;
-        candidate = e;
-        break;
+        if (!e || e.used) continue;
+        if (e.t < a) continue;
+        if (b && e.t > b) continue;
+        const d = Number(e.deltaCents || 0);
+        if (!(d > 0)) continue;
+        if (amountCents > 0 && d > Math.round(amountCents * 3.5)) continue;
+        let score = 0;
+        if (Number.isFinite(expectedProfit)) score += Math.min(Math.abs(d - expectedProfit), 10000);
+        if (Number.isFinite(expectedGross)) score = Math.min(score || 1e9, Math.abs(d - expectedGross));
+        score += Math.min(Math.abs((e.t || 0) - tRef) / 50, 1000);
+        if (!best || score < best.score) best = { e, score };
       }
-      return candidate;
+      return best ? best.e : null;
     }
 
     function resolveLedgerProfitCents(trade, creditCents) {
-      const { stakeCents, expectedProfitCents, expectedGrossCents } = getTradeExpectedValues(trade);
+      const amountCents = Number(trade?.totalAmountCents || trade?.amountCents || 0);
       const credit = Number(creditCents || 0);
-      const tol = getTradeToleranceCents(trade);
-      if (!Number.isFinite(credit) || credit <= 0) return { profitCents: -Math.max(0, stakeCents), mode: 'invalid_credit' };
-      if (Number.isFinite(expectedGrossCents) && Math.abs(credit - expectedGrossCents) <= tol) {
-        return { profitCents: credit - stakeCents, mode: 'gross_credit' };
+      if (!Number.isFinite(amountCents) || amountCents <= 0 || !Number.isFinite(credit) || credit <= 0) {
+        return { profitCents: credit - amountCents, mode: 'gross_fallback' };
       }
-      if (Number.isFinite(expectedProfitCents) && Math.abs(credit - expectedProfitCents) <= tol) {
-        return { profitCents: credit, mode: 'profit_credit' };
+
+      const payoutPct = Number.isFinite(trade?.payoutPercent) ? trade.payoutPercent : Number(S.lastPayoutPercent || 0);
+      const expectedProfit = payoutPct > 0 ? Math.round(amountCents * (payoutPct / 100)) : null;
+      const expectedGross = expectedProfit != null ? amountCents + expectedProfit : null;
+
+      const grossProfit = credit - amountCents; // credit contains stake + profit
+      const profitOnly = credit;              // credit contains only net profit
+
+      if (expectedProfit != null && expectedGross != null) {
+        const distProfitOnly = Math.abs(credit - expectedProfit);
+        const distGross = Math.abs(credit - expectedGross);
+        if (distProfitOnly + 2 < distGross) return { profitCents: profitOnly, mode: 'profit_credit' };
+        if (distGross + 2 < distProfitOnly) return { profitCents: grossProfit, mode: 'gross_credit' };
       }
-      return { profitCents: NaN, mode: 'credit_mismatch' };
+
+      if (credit <= Math.round(amountCents * 1.2)) {
+        return { profitCents: profitOnly, mode: 'profit_heuristic' };
+      }
+      const fallback = { profitCents: grossProfit, mode: 'gross_heuristic' };
+      if (credit > 0 && fallback.profitCents < 0) {
+        return { profitCents: profitOnly, mode: 'profit_safety_positive_credit' };
+      }
+      return fallback;
     }
 
-    function detectOutcomeByResultDelta(trade, epsilonCents = 3) {
-      if (!trade || !trade.exclusiveSession || !trade.noNoiseSession || (S.activeTrades || []).length > 1) return null;
-      const startBalance = Number.isFinite(S.botStartBalance) ? S.botStartBalance : null;
-      const resultBefore = Number.isFinite(trade.resultBeforeCents) ? trade.resultBeforeCents : null;
-      const currentBalance = readBalanceCents();
-      if (startBalance == null || resultBefore == null || !Number.isFinite(currentBalance)) return null;
-      const resultNow = currentBalance - startBalance;
-      const delta = resultNow - resultBefore;
-      if (delta > epsilonCents) return { outcome: 'ПЕЧАЛБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
-      if (delta < -epsilonCents) return { outcome: 'ЗАГУБИ', profitCents: Math.round(delta), method: 'RESULT_DELTA' };
-      return { outcome: 'EVEN', profitCents: 0, method: 'RESULT_DELTA' };
-    }
+    function confirmTradeByBalance(trade, clickedAt) {
+      // Верификация на отворена сделка по баланс делта с толеранс за UI/latency jitter.
+      return (async () => {
+        const stakeCents = Math.max(0, trade.stakeCents || 0);
 
-    async function readStableBalanceCents() {
-      const samples = [];
-      const delays = [0, 250, 500];
-      for (const ms of delays) {
-        if (ms > 0) await sleep(ms);
-        const v = readBalanceCents();
-        if (Number.isFinite(v)) samples.push(v);
-      }
-      if (!samples.length) return null;
-      const sorted = samples.slice().sort((a,b)=>a-b);
-      return sorted[Math.floor(sorted.length/2)];
-    }
+        if (!Number.isFinite(trade.balanceBefore)) trade.balanceBefore = readBalanceCents();
+        const before = trade.balanceBefore;
 
-    function finalizeTradeOutcome(trade, outcome, profitCents, settledAt = Date.now(), method = '', evidence = null) {
-      if (!trade || !outcome) return;
-      if (trade.outcomeChecked) return;
-      trade.outcomeChecked = true;
-      trade.state = outcome === 'UNRESOLVED' ? 'UNRESOLVED' : 'SETTLED';
-      trade.outcome = outcome;
-      trade.settledAt = settledAt;
-      trade.profitCents = profitCents;
-      trade.outcomeMethod = method || trade.outcomeMethod || 'UNKNOWN';
-      trade.evidence = evidence || null;
-
-      logConsoleLine(`[SETTLE] ${trade.outcome} via ${trade.outcomeMethod} | evidence=${JSON.stringify(trade.evidence || {})}`);
-
-      const sess = _sessionEnsure();
-      const entry = sessionRecordTrade(trade, outcome, profitCents);
-      sess.settledTrades = Array.isArray(sess.settledTrades) ? sess.settledTrades : [];
-      sess.unresolvedTrades = Array.isArray(sess.unresolvedTrades) ? sess.unresolvedTrades : [];
-      sess.stats = (sess.stats && typeof sess.stats === 'object') ? sess.stats : { wins: 0, losses: 0, pnlCents: 0, unresolved: 0 };
-      const normalizedOutcome =
-        entry.outcome === 'ПЕЧАЛБИ' ? 'WIN' :
-        entry.outcome === 'ЗАГУБИ' ? 'LOSS' :
-        entry.outcome;
-      if (normalizedOutcome === 'UNRESOLVED') {
-        sess.unresolvedTrades.push(entry);
-        sess.stats.unresolved = Number(sess.stats.unresolved || 0) + 1;
-      } else {
-        sess.settledTrades.push(entry);
-        if (normalizedOutcome === 'WIN') sess.stats.wins = Number(sess.stats.wins || 0) + 1;
-        if (normalizedOutcome === 'LOSS') sess.stats.losses = Number(sess.stats.losses || 0) + 1;
-        if (Number.isFinite(entry.profitCents)) sess.stats.pnlCents = Number(sess.stats.pnlCents || 0) + Number(entry.profitCents || 0);
-      }
-      if (entry.tradeId) sess.tradeIds[entry.tradeId] = true;
-      const key = entry.strategyKey || '—';
-      if (!sess.strategies[key]) sess.strategies[key] = { trades: 0, wins: 0, losses: 0, neutral: 0, pnlCents: 0, confSum: 0, confN: 0 };
-      const st = sess.strategies[key];
-      st.trades += 1;
-      if (normalizedOutcome === 'WIN') st.wins += 1;
-      else if (normalizedOutcome === 'LOSS') st.losses += 1;
-      else st.neutral += 1;
-      if (Number.isFinite(entry.profitCents)) st.pnlCents += entry.profitCents;
-      if (Number.isFinite(entry.confidence)) { st.confSum += entry.confidence; st.confN += 1; }
-
-      if (outcome === 'UNRESOLVED') {
-        S.unresolvedTrades = (S.unresolvedTrades || 0) + 1;
-        S.unresolvedStreak = (S.unresolvedStreak || 0) + 1;
-        if ((S.unresolvedStreak || 0) >= 3 && S.running) {
-          S.running = false;
-          stopEngineLoops();
-          logConsoleLine('[RISK] Пауза: UNRESOLVED streak >= 3');
+        if (!Number.isFinite(before) || !Number.isFinite(stakeCents) || stakeCents <= 0) {
+          trade.openConfirmed = false;
+          trade.openConfirmedBy = 'NO_BASELINE_OR_STAKE';
+          return false;
         }
 
-      } else {
-        S.unresolvedStreak = 0;
-        recordTradeOutcomeStats(trade, outcome, profitCents);
-        recordTradeHistoryEntry(trade, outcome, profitCents);
+        const openConfirmWindowMs = 2200;
+        const toleranceCents = Math.max(2, Math.round(stakeCents * 0.03));
+        const minDebit = Math.max(0, stakeCents - toleranceCents);
+        const deadline = Date.now() + openConfirmWindowMs;
 
-        recordTradeOutcomeForRisk(outcome, profitCents);
-        applyRiskLimits();
-      }
-      try { logTradeOutcome(trade, outcome, profitCents); } catch (e) { console.warn('[IAA] logTradeOutcome failed', e); }
-      refreshUI('trade_finalized');
-    }
-
-    async function confirmTradeByBalance(trade, clickedAt) {
-      const stakeCents = Math.max(0, Number(trade?.stakeCents || 0));
-      if (!Number.isFinite(trade.balanceBeforeClickCents)) trade.balanceBeforeClickCents = readBalanceCents();
-      const before = trade.balanceBeforeClickCents;
-      if (!Number.isFinite(before) || stakeCents <= 0) {
-        trade.openConfirmed = false;
-        trade.openConfirmedBy = 'NO_BASELINE_OR_STAKE';
-        return false;
-      }
-
-      const checks = [0, 300, 700, 1200];
-      const toleranceCents = Math.max(2, Math.round(stakeCents * 0.03));
-      const minDebit = Math.max(0, stakeCents - toleranceCents);
-      for (const ms of checks) {
-        if (ms > 0) await sleep(ms);
-        const now = readBalanceCents();
-        const debit = Number.isFinite(now) ? (before - now) : NaN;
-        if (Number.isFinite(debit) && debit >= minDebit) {
-          trade.openConfirmed = true;
-          trade.state = 'OPEN_CONFIRMED';
-          trade.openConfirmedAt = Date.now();
-          trade.debitDetectedAt = Date.now();
-          trade.debitAmountCents = debit;
-          trade.openConfirmedBy = 'BALANCE_DELTA_TOLERANT';
-          trade.balanceAfterOpen = now;
-          trade.openAt = clickedAt || Date.now();
-          const evs = Array.isArray(S.balanceEvents) ? S.balanceEvents : [];
-          for (let i = evs.length - 1; i >= 0; i -= 1) {
-            const ev = evs[i];
-            if (ev && ev.type === 'DEBIT' && ev.t >= Number(clickedAt || trade.clickedAt || 0) - 2000) {
-              trade.linkedDebitSeq = ev.seq;
-              break;
-            }
+        while (Date.now() <= deadline) {
+          const now = readBalanceCents();
+          const debit = Number.isFinite(now) ? (before - now) : NaN;
+          if (Number.isFinite(debit) && debit >= minDebit) {
+            trade.openConfirmed = true;
+            trade.openConfirmedBy = 'BALANCE_DELTA_TOLERANT';
+            trade.balanceAfterOpen = now;
+            trade.openAt = clickedAt || Date.now();
+            return true;
           }
-          return true;
+          await sleep(130);
         }
-      }
 
-      trade.openConfirmed = false;
-      trade.state = 'OPEN_UNCONFIRMED';
-      trade.openConfirmedBy = 'BALANCE_DELTA_TIMEOUT';
-      return false;
+        trade.openConfirmed = false;
+        trade.openConfirmedBy = 'BALANCE_DELTA_TIMEOUT';
+        return false;
+      })();
     }
-
     async function processPendingTradeConfirmations() {
       const pending = Array.isArray(S.pendingTradeConfirmations) ? S.pendingTradeConfirmations : [];
       if (!pending.length) return;
@@ -6072,203 +5568,125 @@ function getMinHistoryWindowForReadinessMs() {
       const remaining = [];
       for (const item of pending) {
         if (!item || !item.trade) continue;
+
+        // Hard timeout so we never block the engine (строг баланс check)
         if ((Date.now() - Number(item.at || 0)) > 3200) {
-          item.trade.state = 'OPEN_UNCONFIRMED';
+          logConsoleLine('ПРОПУСК: Няма потвърждение за отворена сделка след клик');
+          // cleanup: remove any shadow trade state
+          try { S.activeTrades = (S.activeTrades||[]).filter(t => t && t.id !== item.trade.id); } catch {}
           continue;
         }
+
         const ok = await confirmTradeByBalance(item.trade, item.at);
-        if (!ok) remaining.push(item);
+        if (ok) {
+          logConsoleLine(formatStatus('trade_executed'));
+          continue;
+        }
+        remaining.push(item);
       }
       S.pendingTradeConfirmations = remaining;
     }
 
-    function runSettlementRegressionHarness() {
-      if (!S.debugHarnessEnabled && !C.DEBUG) return [];
-      const tests = [];
-      const logTest = (name, pass) => logConsoleLine(`[HARNESS] ${pass ? 'PASS' : 'FAIL'} ${name}`);
-      const mkTrade = (stake, payout) => ({ stakeCents: stake, payoutPercentSnapshot: payout, expectedProfitCents: Math.floor(stake * payout / 100), expectedGrossCents: stake + Math.floor(stake * payout / 100) });
-
-      {
-        const trade = mkTrade(100, 92);
-        const out = resolveLedgerProfitCents(trade, 192);
-        const pass = Number(out.profitCents) === 92;
-        tests.push({ name: 'clean WIN gross credit', pass });
-        logTest('clean WIN gross credit', pass);
-      }
-      {
-        const tradeA = mkTrade(100, 92);
-        tradeA.linkedDebitSeq = 10;
-        tradeA.settleWindowStart = 0;
-        tradeA.settleWindowEnd = Date.now() + 5000;
-        S.balanceEvents = [
-          { seq: 9, t: Date.now(), deltaCents: 192, type: 'CREDIT', used: false },
-          { seq: 11, t: Date.now() + 10, deltaCents: 192, type: 'CREDIT', used: false }
-        ];
-        const ev = findBestBalanceEventForTrade(tradeA);
-        const pass = Number(ev?.seq) === 11;
-        tests.push({ name: 'overlap seq pairing', pass });
-        logTest('overlap seq pairing', pass);
-      }
-      {
-        const trade = mkTrade(100, 92);
-        const out = resolveLedgerProfitCents(trade, 96);
-        const pass = !Number.isFinite(out.profitCents);
-        tests.push({ name: 'mismatch credit unresolved', pass });
-        logTest('mismatch credit unresolved', pass);
-      }
-      return tests;
-    }
-
-    function readUiRemainingSeconds() {
-      try {
-        const nodes = Array.from(document.querySelectorAll('span, div'));
-        for (const n of nodes) {
-          const t = (n.textContent || '').trim();
-          if (!t) continue;
-          const mmss = t.match(/^(\d{1,2}):(\d{2})$/);
-          if (mmss) return Number(mmss[1]) * 60 + Number(mmss[2]);
-          const sec = t.match(/^(\d{1,4})\s*s(ec)?$/i);
-          if (sec) return Number(sec[1]);
-        }
-      } catch {}
-      return null;
-    }
-
-    function readUiExpirySecondsAtOpen() {
-      return readUiRemainingSeconds();
-    }
-
-    function detectOutcomeFromClosedTradesHistory(trade) {
-      try {
-        const rows = Array.from(document.querySelectorAll('tr, .deal, .history-item')).slice(-40);
-        const dir = String(trade?.direction || '').toUpperCase();
-        for (let i = rows.length - 1; i >= 0; i -= 1) {
-          const txt = (rows[i]?.innerText || '').replace(/\s+/g, ' ').trim();
-          if (!txt) continue;
-          if (dir && !txt.toUpperCase().includes(dir)) continue;
-          if (/win|печалб|profit/i.test(txt)) return { outcome: 'ПЕЧАЛБИ', profitCents: Number(trade?.expectedProfitCents || 0), method: 'HISTORY_CLOSED_TRADES' };
-          if (/loss|загуб/i.test(txt)) return { outcome: 'ЗАГУБИ', profitCents: -Math.abs(Number(trade?.stakeCents || 0)), method: 'HISTORY_CLOSED_TRADES' };
-        }
-      } catch {}
-      return null;
-    }
-
+    /* ========================= FIXED: HISTORY-ONLY OUTCOME DETECTION ========================= */
+    
+    /* ========================= BALANCE-LEDGER OUTCOME DETECTION (NO СДЕЛКИ TAB) ========================= */
     async function finalizeActiveTrades() {
       if (!S.activeTrades || !S.activeTrades.length) return;
 
       const now = Date.now();
       const remaining = [];
+
+      // Process in expectedEnd order (FIFO for settlement matching)
       const tradesSorted = [...S.activeTrades].sort((a, b) => (a.expectedEnd || 0) - (b.expectedEnd || 0));
+
+      const settlementWindowMs = 120000; // safety window after expected end
+      const earlySettleLeewayMs = 5000;
 
       for (const trade of tradesSorted) {
         if (!trade) continue;
-        trade.settleAttempts = Number(trade.settleAttempts || 0);
-        trade.lastSettleTryAt = now;
-        if (!trade.state) trade.state = 'CREATED';
-        if (trade.state === 'CREATED') trade.state = 'CLICKED';
 
         const expiryMs = trade.expiryMs || secsFromTF(trade.expiry) * 1000;
-        const lagSec = Number(S.lastSignalLagSec || 0);
-        const isOtcTrade = /otc/i.test(String(trade?.asset || ''));
-        const driftBufferMs = (lagSec >= 3 || isOtcTrade) ? 4000 : 1500;
-        const baseTs = Number(trade.openConfirmedAt || trade.clickedAt || trade.startTime || now);
-        const computedExpectedEnd = baseTs + expiryMs + driftBufferMs;
-        const uiExpectedEndMs = Number.isFinite(trade.uiExpirySecondsAtOpen) ? (Number(trade.uiExpiryReadAtMs || baseTs) + Number(trade.uiExpirySecondsAtOpen) * 1000) : null;
-        trade.uiExpectedEndMs = Number.isFinite(uiExpectedEndMs) ? uiExpectedEndMs : null;
-        trade.expectedEnd = Number.isFinite(uiExpectedEndMs) ? (uiExpectedEndMs + driftBufferMs) : computedExpectedEnd;
-        trade.driftSec = Number.isFinite(uiExpectedEndMs) ? ((uiExpectedEndMs - computedExpectedEnd) / 1000) : null;
-        if (!trade.openConfirmedAt && !trade.clickedAt) trade.expectedEndWarning = 'NO_OPEN_CONFIRM_OR_CLICK_TIME';
-        const settleWindow = buildTradeSettleWindow(trade);
+        const expectedEnd = trade.expectedEnd || (trade.startTime + expiryMs + C.SETTLEMENT_DELAY_MS);
+        trade.expectedEnd = expectedEnd;
 
-        if (now < settleWindow.start) {
+        // 1) Ensure open confirmation via balance debit (best effort)
+        if (!trade.openConfirmed && !trade.confirmedAt) {
+          confirmTradeByBalance(trade, trade.startTime);
+        }
+
+        // 2) Too early to settle
+        if (now < expectedEnd - earlySettleLeewayMs) {
           remaining.push(trade);
           continue;
         }
 
-        trade.state = 'SETTLING';
-        trade.settleAttempts += 1;
+        // 3) Try match a payout credit event within window
+        const amountCents = Number(trade.totalAmountCents || trade.amountCents || 0);
+        const settleStart = expectedEnd - earlySettleLeewayMs;
+        const settleEnd = expectedEnd + settlementWindowMs;
 
-        const historyOutcome = detectOutcomeFromClosedTradesHistory(trade);
-        if (historyOutcome) {
-          finalizeTradeOutcome(trade, historyOutcome.outcome, historyOutcome.profitCents, now, historyOutcome.method, { source: 'history' });
-          continue;
-        }
+        const ev = findBestBalanceEventForTrade(trade, settleStart, settleEnd, expectedEnd);
 
-        if (!trade.openConfirmed && !trade.confirmedAt) {
-          await confirmTradeByBalance(trade, trade.clickedAt || trade.startTime);
-        }
-
-        const ev = findBestBalanceEventForTrade(trade);
         if (ev) {
           markBalanceEventUsed(ev);
-          const resolved = resolveLedgerProfitCents(trade, ev.deltaCents);
-          const profitCents = Number(resolved?.profitCents);
-          if (Number(ev.deltaCents || 0) > 0 && profitCents < 0) {
-            finalizeTradeOutcome(trade, 'UNRESOLVED', 0, ev.t, 'LEDGER_MISMATCH_POSITIVE_CREDIT', {
-              matchedEvent: { seq: ev.seq, time: ev.t, delta: ev.deltaCents },
-              expectedProfitCents: trade.expectedProfitCents,
-              expectedGrossCents: trade.expectedGrossCents
-            });
-            continue;
+
+          let profitCents = null;
+          let settleReason = null;
+
+          // Ако сделката е "самостоятелна" (без други активни по време на клик) – най-точно е чистата разлика bal1-bal0.
+          const canUseBalanceDelta = trade.balanceEligible && Number.isFinite(trade.balanceBefore) && tradesSorted.length <= 1;
+          if (canUseBalanceDelta) {
+            const nowBal = readBalanceCents();
+            if (Number.isFinite(nowBal)) {
+              profitCents = (nowBal - trade.balanceBefore);
+              settleReason = 'BALANCE_DELTA';
+            }
           }
+
           if (!Number.isFinite(profitCents)) {
-            remaining.push(trade);
-            continue;
+            const credit = Number(ev.deltaCents || 0);
+            const resolved = resolveLedgerProfitCents(trade, credit);
+            profitCents = Number(resolved?.profitCents || 0);
+            if (Number(credit) > 0 && profitCents < 0) {
+              profitCents = Number(credit);
+              settleReason = 'BALANCE_LEDGER:profit_safety_positive_credit';
+            } else {
+              settleReason = `BALANCE_LEDGER:${resolved?.mode || 'unknown'}`;
+            }
           }
+
           const outcome = profitCents > 0 ? 'ПЕЧАЛБИ' : (profitCents < 0 ? 'ЗАГУБИ' : 'EVEN');
-          const stableBalance = trade.exclusiveSession ? await readStableBalanceCents() : null;
-          const balanceDelta = Number.isFinite(stableBalance) && Number.isFinite(trade.balanceBeforeClickCents)
-            ? (stableBalance - trade.balanceBeforeClickCents)
-            : null;
-          const method = (!trade.openConfirmed && !trade.confirmedAt) ? 'LEDGER_NO_OPEN_CONFIRM' : `BALANCE_LEDGER:${resolved?.mode || 'unknown'}`;
-          finalizeTradeOutcome(trade, outcome, profitCents, ev.t, method, {
-            matchedEvent: { seq: ev.seq, time: ev.t, delta: ev.deltaCents },
-            baseline: trade.balanceBeforeClickCents,
-            expectedGrossCents: trade.expectedGrossCents,
-            expectedProfitCents: trade.expectedProfitCents,
-            finalBalanceSnapshot: stableBalance,
-            balanceDelta,
-            computedProfitCents: profitCents,
-            mismatch: !((Number.isFinite(trade.expectedGrossCents) && Math.abs(Number(ev.deltaCents || 0) - trade.expectedGrossCents) <= getTradeToleranceCents(trade)) || (Number.isFinite(trade.expectedProfitCents) && Math.abs(Number(ev.deltaCents || 0) - trade.expectedProfitCents) <= getTradeToleranceCents(trade)))
-          });
+          finalizeTradeOutcome(trade, outcome, profitCents, ev.t, settleReason);
+
           continue;
         }
 
         const deltaOutcome = detectOutcomeByResultDelta(trade);
-        if (deltaOutcome && now >= trade.expectedEnd) {
-          finalizeTradeOutcome(trade, deltaOutcome.outcome, deltaOutcome.profitCents, now, deltaOutcome.method, {
-            baseline: trade.balanceBeforeClickCents,
-            computedProfitCents: deltaOutcome.profitCents
-          });
+        if (deltaOutcome && now >= expectedEnd) {
+          finalizeTradeOutcome(trade, deltaOutcome.outcome, deltaOutcome.profitCents, now, deltaOutcome.method);
           continue;
         }
 
-        if (Number.isFinite(trade.clickedAt) && now - trade.clickedAt > (expiryMs + 10000) && now <= settleWindow.end) {
-          trade.settleWindowEnd += 10000;
-          trade.driftWarning = 'DYNAMIC_DRIFT_WIDEN';
-        }
-
-        if (now > settleWindow.end) {
-          const rechecks = Number(trade.recheckAttempts || 0);
-          if (rechecks < 3) {
-            trade.recheckAttempts = rechecks + 1;
-            trade.settleWindowEnd += 7000;
-            remaining.push(trade);
+        // 4) If window exceeded and no credit → ЗАГУБИ
+        if (now > settleEnd) {
+          const timeoutDelta = detectOutcomeByResultDelta(trade, 1);
+          if (timeoutDelta && Number.isFinite(timeoutDelta.profitCents) && Math.abs(timeoutDelta.profitCents) >= 1) {
+            finalizeTradeOutcome(trade, timeoutDelta.outcome, timeoutDelta.profitCents, now, 'TIMEOUT_DELTA_FALLBACK');
             continue;
           }
-          finalizeTradeOutcome(trade, 'UNRESOLVED', 0, now, 'SETTLEMENT_TIMEOUT', {
-            baseline: trade.balanceBeforeClickCents,
-            expectedGrossCents: trade.expectedGrossCents,
-            expectedProfitCents: trade.expectedProfitCents
-          });
+          logConsoleLine('⚠️ Неуспешно потвърждение на резултат (timeout) → маркирам като EVEN, за да избегна фалшива загуба.');
+          finalizeTradeOutcome(trade, 'EVEN', 0, now, 'TIMEOUT_UNRESOLVED');
+
           continue;
         }
 
+        // still waiting
         remaining.push(trade);
       }
 
+      // Keep only unsettled trades
       S.activeTrades = remaining;
-      refreshUI('legacy_direct_render_replaced');
+      renderPendingTrades();
     }
 
     /* ========================= FIXED: MARTINGALE WITH PROPER BALANCE TRACKING ========================= */
@@ -6406,9 +5824,7 @@ function iaaAutoDetectExpiryCoords(scope = 'OTC') {
   const labelMap = {
     M1: ['1m', '01:00', '1:00', '1 min', '1мин', '1 minute', '01 мин'],
     M3: ['3m', '03:00', '3:00', '3 min', '3мин', '3 minutes', '03 мин'],
-    M5: ['5m', '05:00', '5:00', '5 min', '5мин', '5 minutes', '05 мин'],
-    H1: ['1h', '1 hr', '1 hour', '01:00:00'],
-    H4: ['4h', '4 hr', '4 hours', '04:00:00']
+    M5: ['5m', '05:00', '5:00', '5 min', '5мин', '5 minutes', '05 мин']
   };
 
   for (const [key, labels] of Object.entries(labelMap)) {
@@ -6553,10 +5969,7 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       const map = {
         60: '1M',
         180: '3M',
-        300: '5M',
-        1800: '30M',
-        3600: '1H',
-        14400: '4H'
+        300: '5M'
       };
       return map[seconds] || null;
     }
@@ -6704,7 +6117,11 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
 
     async function ensurePlatformExpiry(expiry) {
       const norm = normalizeExpiry(expiry);
-      if (!norm) return false;
+      if (!norm) {
+        logConsoleLine(`ПРОПУСК: Неподдържано време: ${String(expiry || '—')}`);
+        S.lastSkipReason = 'Expiry';
+        return false;
+      }
       const assetLabel = getCurrentAssetLabel();
       const scope = getExpiryScopeFromAsset(assetLabel);
 
@@ -6912,215 +6329,12 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       };
     }
 
-    function getTimeInCandleSec(windowMs, nowMs = Date.now()) {
-      const timing = computeEntryTiming('', windowMs, nowMs);
-      return timing.timeInCandleSec;
+    function getTimeInCandleSec(windowMs) {
+      return (Date.now() % windowMs) / 1000;
     }
 
-    function getCandleStart(windowMs, nowMs = Date.now()) {
-      const ms = Number(windowMs || 0);
-      const now = Number(nowMs);
-      if (!Number.isFinite(ms) || ms <= 0 || !Number.isFinite(now)) return NaN;
-      return Math.floor(now / ms) * ms;
-    }
-
-    function isEarlyEntryEnabledForTf(tfKey) {
-      const tf = String(tfKey || '').toLowerCase();
-      if (tf === '1m') return Number(S.entryWindowSec1m || 0) > 0;
-      if (tf === '3m') return Number(S.entryWindowSec3m || 0) > 0;
-      if (tf === '5m') return Number(S.entryWindowSec5m || 0) > 0;
-      if (tf === '15m') return false;
-      return false;
-    }
-
-    function getEntryWindowLimitSec(tfKey, windowMs) {
-      const key = String(tfKey || '').toLowerCase();
-      const defaults = { '1m': 35, '3m': 90, '5m': 150, '15m': 120 };
-      const byTf = {
-        '1m': Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : defaults['1m'],
-        '3m': Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : defaults['3m'],
-        '5m': Number.isFinite(S.entryWindowSec5m) ? S.entryWindowSec5m : defaults['5m'],
-        '15m': Number.isFinite(S.entryWindowSec15m) ? S.entryWindowSec15m : defaults['15m']
-      };
-      const baseLimit = Number(byTf[key] ?? 0);
-      const cap = Math.floor(Math.max(0, Number(windowMs || 0)) / 1000);
-      if (!Number.isFinite(baseLimit)) return 0;
-      return Math.max(0, Math.min(cap, Math.round(baseLimit)));
-    }
-
-    function getLateToleranceSec(tfKey) {
-      const tf = String(tfKey || '').toLowerCase();
-      if (tf === '1m') return 10;
-      if (tf === '3m') return 15;
-      if (tf === '5m') return 20;
-      return 0;
-    }
-
-    function markTfSyncPending(tfKey, nowMs = Date.now()) {
-      const tf = String(tfKey || '').toLowerCase();
-      const windowMs = Number(SNIPER_TF_MS[tf] || 0);
-      if (!tf || !windowMs) return;
-      const candleStartMs = getCandleStart(windowMs, nowMs);
-      S.tfSync = S.tfSync || {};
-      S.tfSync[tf] = { firstSeenCandleStartMs: candleStartMs, synced: false, loggedSyncWaitForCandleStartMs: null, loggedSyncedForCandleStartMs: null };
-    }
-
-    function computeEntryTiming(tfKey, windowMs, nowMs = Date.now(), signalCtx = null) {
-      const tf = String(tfKey || '').toLowerCase();
-      const now = Number(nowMs);
-      const candleStartMs = getCandleStart(windowMs, now);
-      let timeInCandleSec = Number.isFinite(now) && Number.isFinite(candleStartMs)
-        ? (now - candleStartMs) / 1000
-        : NaN;
-      const earlyEntryEnabled = isEarlyEntryEnabledForTf(tf);
-      let entryWindowLimitSec = getEntryWindowLimitSec(tf, windowMs);
-      if (!Number.isFinite(entryWindowLimitSec)) entryWindowLimitSec = 0;
-      const hasNaNTime = !Number.isFinite(timeInCandleSec);
-      if (hasNaNTime) timeInCandleSec = 999999;
-
-      S.tfSync = S.tfSync || {};
-      let sync = S.tfSync[tf] || null;
-      if (!sync && earlyEntryEnabled) {
-        sync = { firstSeenCandleStartMs: candleStartMs, synced: false, loggedSyncWaitForCandleStartMs: null, loggedSyncedForCandleStartMs: null };
-        S.tfSync[tf] = sync;
-      }
-      let syncWaitNextCandle = false;
-      if (earlyEntryEnabled && sync && !sync.synced) {
-        if (Number(sync.firstSeenCandleStartMs) === Number(candleStartMs)) {
-          syncWaitNextCandle = true;
-          if (Number(sync.loggedSyncWaitForCandleStartMs) !== Number(candleStartMs)) {
-            sync.loggedSyncWaitForCandleStartMs = Number(candleStartMs);
-          }
-        } else {
-          sync.synced = true;
-          if (Number(sync.loggedSyncedForCandleStartMs) !== Number(candleStartMs)) {
-            const tfUpper = String(tf || '').toUpperCase();
-            if (shouldLogSyncEvent(tf, 'OK')) logConsoleLine(`[SYNC] TF=${tfUpper} OK (нова свещ)`);
-            sync.loggedSyncedForCandleStartMs = Number(candleStartMs);
-          }
-        }
-      }
-
-      const eps = 1e-6;
-      let lateBySec = Math.max(0, timeInCandleSec - entryWindowLimitSec);
-      let lateButStrong = false;
-      if (earlyEntryEnabled && !syncWaitNextCandle && !hasNaNTime && lateBySec > eps) {
-        const tolerance = getLateToleranceSec(tf);
-        const confMatched = Number(signalCtx?.confirmationMatched || 0) >= 7;
-        const adxStrong = Number(signalCtx?.adx || 0) >= 25;
-        const dom = Number(signalCtx?.dominance || 0);
-        const domThr = Number(signalCtx?.dominanceThreshold || 0);
-        const domStrong = Number.isFinite(dom) && Number.isFinite(domThr) && dom >= (domThr + 10);
-        if (lateBySec <= tolerance && confMatched && adxStrong && domStrong) {
-          lateButStrong = true;
-          logConsoleLine(`[ENTRY_WIN] tf=${tf} късен вход +${Math.round(lateBySec)}s, но допуснат (силен сигнал)`);
-        }
-      }
-
-      const entryWindowOk = !earlyEntryEnabled
-        || syncWaitNextCandle
-        || lateButStrong
-        || (!hasNaNTime && (entryWindowLimitSec <= 0 || timeInCandleSec <= (entryWindowLimitSec + eps)));
-      const reasonCode = !earlyEntryEnabled
-        ? 'DISABLED_FOR_TF'
-        : syncWaitNextCandle
-          ? 'SYNC_WAIT_NEXT_CANDLE'
-          : hasNaNTime
-            ? 'NAN_TIME'
-            : lateButStrong
-              ? 'LATE_BUT_ALLOWED_STRONG'
-              : (entryWindowOk ? 'PASS' : 'OUTSIDE_WINDOW');
-      const reason = (reasonCode === 'DISABLED_FOR_TF') ? 'РАНЕН ВХОД ИЗКЛЮЧЕН ЗА TF'
-        : (reasonCode === 'SYNC_WAIT_NEXT_CANDLE') ? 'СИНХР.: ЧАКАМ НОВА СВЕЩ'
-          : (reasonCode === 'NAN_TIME') ? 'ГРЕШЕН ТАЙМИНГ (NaN)'
-            : (reasonCode === 'LATE_BUT_ALLOWED_STRONG') ? 'КЪСЕН ВХОД, НО ДОПУСНАТ (силен сигнал)'
-              : (entryWindowOk ? 'PASS' : `КЪСЕН ВХОД (${Math.round(timeInCandleSec)}>${Math.round(entryWindowLimitSec)})`);
-
-      return {
-        nowMs: now,
-        candleStartMs,
-        timeInCandleSec,
-        entryWindowLimitSec,
-        entryWindowOk,
-        earlyEntryEnabled,
-        syncWaitNextCandle,
-        hasNaNTime,
-        lateBySec,
-        lateButStrong,
-        reasonCode,
-        reason,
-        nanReason: hasNaNTime ? 'NAN_TIME' : null
-      };
-    }
-
-    function applyTfEntrySync(tfKey, entryTiming) {
-      const tf = String(tfKey || '').toLowerCase();
-      if (!tf) return true;
-      S.tfFirstSeenCandleStart = S.tfFirstSeenCandleStart || {};
-      const seen = S.tfFirstSeenCandleStart[tf];
-      const cur = Number(entryTiming?.candleStartMs);
-      if (!Number.isFinite(cur)) return false;
-      if (!seen) {
-        S.tfFirstSeenCandleStart[tf] = { first: cur, synced: false };
-        // sync log handled in computeEntryTiming
-        return false;
-      }
-      if (!seen.synced) {
-        if (cur === Number(seen.first)) return false;
-        seen.synced = true;
-      }
-      return true;
-    }
-
-    function applyDirectionLock(tfKey, decision, scoreCard, killerSnapshotTf) {
-      if (!decision?.direction) return decision;
-      const tf = String(tfKey || '').toLowerCase();
-      const now = Date.now();
-      const lockMs = (tf === '1m') ? Number(S.tfDirLockMs1m || 8000)
-        : (tf === '3m') ? Number(S.tfDirLockMs3m || 12000)
-        : Number(S.tfDirLockMsDefault || 10000);
-      S.tfDirectionMemory = S.tfDirectionMemory || {};
-      const prev = S.tfDirectionMemory[tf];
-      const conf = Number(decision.confidence || 0);
-      const points = Number(scoreCard?.points || decision?.scoreCard?.points || 0);
-      const threshold = Number(scoreCard?.threshold || decision?.scoreCard?.threshold || 0);
-      const dom = Number(killerSnapshotTf?.dominance || 0);
-      const domThr = Number(killerSnapshotTf?.dominanceThreshold || 0);
-      if (prev && prev.dir && prev.dir !== decision.direction && (now - Number(prev.atMs || 0)) < lockMs) {
-        const strongOverride = (conf >= Number(prev.conf || 0) + 0.10) || (points >= threshold + 1) || (dom >= domThr + 15);
-        if (!strongOverride) {
-          logConsoleLine(`[DIR_LOCK] tf=${tf} prev=${prev.dir} new=${decision.direction} reason=lock_ms override=false`);
-          decision.direction = prev.dir;
-          decision.confidence = Math.max(0, conf - 0.04);
-        }
-      }
-      S.tfDirectionMemory[tf] = { dir: decision.direction, atMs: now, conf: Number(decision.confidence || 0) };
-      return decision;
-    }
-
-    function applyDominanceHysteresis(snapshot) {
-      if (!snapshot || !snapshot.direction) return snapshot;
-      const delta = Math.max(0, Number(S.domHysteresisDelta || 10));
-      const thr = Number(snapshot.dominanceThreshold || 0);
-      const dom = Number(snapshot.dominance || 0);
-      const dir = String(snapshot.direction || '');
-      S.biasHysteresis = S.biasHysteresis || { dir: null, lastDomPct: 0 };
-      const prevDir = S.biasHysteresis.dir;
-      if (!prevDir) {
-        S.biasHysteresis = { dir, lastDomPct: dom };
-        return snapshot;
-      }
-      if (prevDir !== dir && dom < (thr + delta)) {
-        if (String(getLogVerbosity()).toLowerCase() === 'detailed' && canEmitRateLimitedLog('dom_hys_keep', 30000)) logConsoleLine(`[DOM_HYS] keep=${prevDir} dom=${Math.round(dom)} thr=${Math.round(thr)} delta=${Math.round(delta)}`);
-        snapshot.direction = prevDir;
-        snapshot.passDominance = dom >= thr;
-      } else if (prevDir !== dir && dom >= (thr + delta)) {
-        if (String(getLogVerbosity()).toLowerCase() === 'detailed' && canEmitRateLimitedLog('dom_hys_flip', 30000)) logConsoleLine(`[DOM_HYS] flip ${prevDir}->${dir} dom=${Math.round(dom)} thr=${Math.round(thr)} delta=${Math.round(delta)}`);
-        S.biasHysteresis = { dir, lastDomPct: dom };
-      } else {
-        S.biasHysteresis = { dir: prevDir, lastDomPct: dom };
-      }
-      return snapshot;
+    function getCandleStart(windowMs) {
+      return Math.floor(Date.now() / windowMs) * windowMs;
     }
 
     function calcSniperVwap(windowMs) {
@@ -7365,6 +6579,57 @@ if (!weights.length) return 0;
       return base;
     }
 
+    function getBiasSnapshot(ctx = {}) {
+      const direction = ctx.biasDirection || null;
+      const strength = Number(ctx.biasStrength || 0);
+      return {
+        direction,
+        strength,
+        isStrong: Math.abs(strength) >= Math.max(0.20, Math.min(0.80, Number(S.biasStrongThreshold || 0.45)))
+      };
+    }
+
+    function computeSignalStability(history = [], maxGapMs = 3500) {
+      const arr = Array.isArray(history) ? history.slice(-2) : [];
+      if (arr.length < 2) return '1/2';
+      const a = arr[0] || {};
+      const b = arr[1] || {};
+      const dt = Number(b.t || 0) - Number(a.t || 0);
+      if (Number.isFinite(dt) && dt > Math.max(1000, Math.min(8000, Number(maxGapMs || 3500)))) return '1/2';
+      if (a.dir && b.dir && a.dir === b.dir) return '2/2';
+      if (a.dir && b.dir && a.dir !== b.dir) return '0/2';
+      return '1/2';
+    }
+
+    function getKillerSupportingBonus(ctx = {}) {
+      if (!S.supportingFiltersEnabled) return { bonus: 0, details: [] };
+      const details = [];
+      let bonus = 0;
+      const decision = ctx.decision || {};
+      const regime = ctx.regime || {};
+      const dir = decision.direction || null;
+      const strategyKey = String(decision.strategyKey || '');
+      const mode = String(regime.state || '').toLowerCase();
+      const trendFit = strategyKey.includes('trend') || strategyKey.includes('ema');
+      const rangeFit = strategyKey.includes('candlestick') || strategyKey.includes('pullback');
+      const marketModeMatch = (mode === 'trend' && trendFit) || (mode === 'range' && rangeFit) || (mode === 'chop' && strategyKey.includes('microtrend'));
+      if (marketModeMatch) { bonus += 0.5; details.push('MODE +0.5'); }
+
+      const vol = Number.isFinite(decision.rangePct) ? decision.rangePct : Number(regime.rangePct || 0);
+      const volOk = vol >= 0.0015 && vol <= 0.02;
+      if (volOk) { bonus += 0.5; details.push('VOL +0.5'); }
+
+      const tfs = ['1m','3m','5m'];
+      let aligned = 0;
+      for (const tfKey of tfs) {
+        const tr = calcTrendDirection(SNIPER_TF_MS[tfKey]);
+        const tfDir = tr > 0 ? 'BUY' : tr < 0 ? 'SELL' : null;
+        if (tfDir && dir && tfDir === dir) aligned += 1;
+      }
+      if (aligned >= 2) { bonus += 0.5; details.push('MTF +0.5'); }
+      return { bonus, details };
+    }
+
     function computeKillerSnapshot(tf, decision, regime, confirmation, strategyDecisions = []) {
       if (!decision || !decision.direction) return null;
       const dir = decision.direction;
@@ -7374,9 +6639,6 @@ if (!weights.length) return 0;
       const stoch = calcStochDecision(SNIPER_TF_MS[tf]);
       const momentum = Number.isFinite(decision.momentum) ? decision.momentum : 0;
       const adx = calcAdxProxy(regime, decision);
-
-      const chopThreshold = Math.max(0, Number.isFinite(S.sniperChopThreshold) ? S.sniperChopThreshold : 0.7);
-      const chopPass = Number.isFinite(decision.rangePct) ? decision.rangePct >= chopThreshold : true;
 
       const strategyEnabled = !!decision.strategyKey && isStrategyEnabled(decision.strategyKey);
       const strategyPoints = strategyEnabled ? (decision.strategyKey === 'candlestick_pattern' ? 1 : 2) : 0;
@@ -7403,10 +6665,10 @@ if (!weights.length) return 0;
       const adxOk = adx >= 18;
       checks.push({ key: 'ADX', ok: adxOk, points: adxOk ? 1 : 0, buy: adxOk, sell: adxOk });
 
-      const confOk = chopPass;
+      const chopThreshold = Math.max(0, Number.isFinite(S.sniperChopThreshold) ? S.sniperChopThreshold : 0.7);
+      const confOk = Number.isFinite(decision.rangePct) ? decision.rangePct >= chopThreshold : true;
       checks.push({ key: 'CONF', ok: confOk, points: confOk ? 1 : 0, buy: confOk, sell: confOk });
 
-      // Directional dominance uses only directional votes (avoids permanent 50/50 from neutral checks).
       const directionalVotes = [];
       if (trendDir > 0) directionalVotes.push('BUY');
       if (trendDir < 0) directionalVotes.push('SELL');
@@ -7422,6 +6684,36 @@ if (!weights.length) return 0;
       const shortPct = Math.round((sellVotes / totalVotes) * 100);
       const dominance = dir === 'BUY' ? longPct : shortPct;
 
+      const dominanceThreshold = getKillerDominanceThreshold(adx);
+      const passDominance = dominance >= dominanceThreshold;
+      checks.push({ key: 'DOM', ok: passDominance, points: passDominance ? 1 : 0, buy: passDominance, sell: passDominance });
+
+      const biasDirection = decision.biasDir > 0 ? 'BUY' : decision.biasDir < 0 ? 'SELL' : null;
+      const biasStrength = Number(decision.biasDir || 0);
+      const biasSnap = getBiasSnapshot({ biasDirection, biasStrength });
+      let biasPoints = 0;
+      if (S.biasEnabled) {
+        if (biasSnap.isStrong && biasSnap.direction === dir) biasPoints = 1;
+        else if (biasSnap.isStrong && biasSnap.direction && biasSnap.direction !== dir) biasPoints = -1;
+      }
+      checks.push({ key: 'BIAS', ok: biasPoints >= 0, points: biasPoints, buy: biasPoints >= 0, sell: biasPoints >= 0 });
+
+      const hist = (S.__tfDirHist && S.__tfDirHist[tf]) ? S.__tfDirHist[tf] : [];
+      const stabilityState = S.stabilityEnabled ? computeSignalStability(hist, S.stabilityMaxGapMs) : 'OFF';
+      let stabilityPoints = 0;
+      if (S.stabilityEnabled) {
+        if (stabilityState === '2/2') stabilityPoints = 1;
+        else if (stabilityState === '0/2') stabilityPoints = -1;
+      }
+      checks.push({ key: 'STAB', ok: stabilityPoints >= 0, points: stabilityPoints, buy: stabilityPoints >= 0, sell: stabilityPoints >= 0 });
+
+      let chopPenalty = 0;
+      if (S.chopV2Enabled) {
+        const isChop = String(regime?.state || '').toLowerCase() === 'chop' || ((Number(regime?.rangePct || 0) < 0.0035) && Number(regime?.trendScore || 0) < 0.4);
+        if (isChop) chopPenalty = -1;
+      }
+      checks.push({ key: 'CHOP', ok: chopPenalty >= 0, points: chopPenalty, buy: chopPenalty >= 0, sell: chopPenalty >= 0 });
+
       const strategyVotes = { buy: 0, sell: 0 };
       for (const st of strategyDecisions || []) {
         if (!st?.direction || !isStrategyEnabled(st.strategyKey)) continue;
@@ -7430,21 +6722,28 @@ if (!weights.length) return 0;
       }
       const strategyAgreement = dir === 'BUY' ? strategyVotes.buy : strategyVotes.sell;
 
-      let confluence = checks.reduce((acc, c) => acc + (Number.isFinite(c.points) ? c.points : (c.ok ? 1 : 0)), 0);
-      if (S.killerUseStrategyVotes && strategyAgreement > 0) {
-        confluence = Math.min(8, confluence + 1);
-      }
+      let basePoints = checks.reduce((acc, c) => acc + (Number.isFinite(c.points) ? c.points : (c.ok ? 1 : 0)), 0);
+      if (S.killerUseStrategyVotes && strategyAgreement > 0) basePoints += 1;
 
-      const dominanceThreshold = getKillerDominanceThreshold(adx);
-      const maxPoints = 8;
-      const minConfluence = Math.max(6, Math.min(7, Math.round(S.killerMinConfluence ?? 6)));
+      const supporting = getKillerSupportingBonus({ decision, regime });
+      const supportingBonus = Number(supporting.bonus || 0);
+      const maxPoints = 11;
+      const threshold = getScoreThresholdPoints();
+      const effectivePoints = Math.max(0, Math.min(11, basePoints + supportingBonus));
+      const nearMiss = Math.abs(effectivePoints - (threshold - 1)) < 0.0001;
+      const confOkNear = Number(decision?.confidence || 0) >= Math.max(0.60, Math.min(0.95, Number(S.toleranceConfidence || 0.75)));
+      const passConfluence = effectivePoints >= threshold;
       const candleAgainst = !!(candleDir && candleDir !== dir);
 
-      const snapshot = {
+      return {
         tf,
         direction: dir,
-        confluence,
-        minConfluence,
+        confluence: Number(basePoints.toFixed(2)),
+        effectivePoints: Number(effectivePoints.toFixed(2)),
+        supportingBonus: Number(supportingBonus.toFixed(2)),
+        supportingDetails: supporting.details || [],
+        minConfluence: threshold,
+        threshold,
         maxPoints,
         longPct,
         shortPct,
@@ -7454,22 +6753,13 @@ if (!weights.length) return 0;
         checks,
         strategyVotes,
         strategyAgreement,
+        stabilityState,
         candleAgainst,
-        passConfluence: confluence >= minConfluence,
-        passDominance: dominance >= dominanceThreshold
+        passConfluence,
+        passDominance,
+        nearMiss,
+        confOkNear,
       };
-      return applyDominanceHysteresis(snapshot);
-    }
-
-    function computePerfectTimeOk(ctx = {}) {
-      if (!S.killerPerfectTimeEnabled) return true;
-      const gate = ctx?.perfectTimeOk;
-      if (typeof gate === 'boolean') return gate;
-      const verdict = String(ctx?.verdict || '').toUpperCase();
-      const reason = String(ctx?.reason || '');
-      if (verdict === 'PASS') return true;
-      if (reason === 'PerfectTime' || reason === 'NOT_PERFECT_TIME') return false;
-      return true;
     }
 
     function killerEdgeTriggered(tf, dir, isSignalValid) {
@@ -7497,7 +6787,7 @@ if (!weights.length) return 0;
       body.innerHTML = `
         <div class="iaa-killer-row"><span class="iaa-killer-key">LONG</span><span class="iaa-killer-val">${Number.isFinite(snap.longPct) ? snap.longPct : 50}%</span></div>
         <div class="iaa-killer-row"><span class="iaa-killer-key">SHORT</span><span class="iaa-killer-val">${Number.isFinite(snap.shortPct) ? snap.shortPct : 50}%</span></div>
-        <div class="iaa-killer-row"><span class="iaa-killer-key">CONF</span><span class="iaa-killer-val">${snap.confluence || 0}/${snap.maxPoints || 8} (мин ${snap.minConfluence || 6})</span></div>
+        <div class="iaa-killer-row"><span class="iaa-killer-key">CONF</span><span class="iaa-killer-val">${Number.isFinite(snap.effectivePoints) ? snap.effectivePoints : (snap.confluence || 0)}/${snap.maxPoints || 11} (мин ${snap.minConfluence || 8})</span></div>
         <div class="iaa-killer-row"><span class="iaa-killer-key">TRD</span><span class="iaa-killer-val">${snap.trd || '—'}</span></div>
         <div class="iaa-killer-row"><span class="iaa-killer-key">MACD</span><span class="iaa-killer-val">${snap.macd || '—'}</span></div>
         <div class="iaa-killer-row"><span class="iaa-killer-key">RSI</span><span class="iaa-killer-val">${snap.rsi || '—'}</span></div>
@@ -8070,158 +7360,10 @@ if (!weights.length) return 0;
     }
 
     function getScoreThresholdPoints() {
-      const strictByConfluence = Math.round(S.killerMinConfluence || 6) >= 7;
-      return strictByConfluence ? 8 : 7;
-    }
-
-    function evaluateMandatoryGates(ctx = {}) {
-      const {
-        decision,
-        regime,
-        payoutOk,
-        entryWindowOk,
-        biasDirection,
-        analysisUpdatedSec,
-        tfKey,
-        timeInCandle,
-        entryWindowLimit,
-        perfectTimeOk,
-        earlyEntryEnabled,
-        syncWaitNextCandle
-      } = ctx;
-      const regimeState = String(regime?.state || '').toLowerCase();
-      const feedState = String(S.feedState || '').toUpperCase();
-      const staleFeed = ['NO_FEED', 'STALE'].includes(feedState);
-      const timeIsFinite = Number.isFinite(timeInCandle);
-      const limitIsFinite = Number.isFinite(entryWindowLimit);
-      const timingLeft = timeIsFinite ? Math.round(Number(timeInCandle)) : 'NaN';
-      const timingRight = limitIsFinite ? Math.round(Number(entryWindowLimit)) : 'NaN';
-      const timingNanFlag = (!timeIsFinite) ? '|NAN_TIME' : (!limitIsFinite) ? '|NAN_LIMIT' : '';
-      const timingReason = (String(decision?.entryTimingReasonCode || '') === 'DISABLED_FOR_TF')
-        ? 'РАНЕН ВХОД ИЗКЛЮЧЕН ЗА TF'
-        : (String(decision?.entryTimingReasonCode || '') === 'SYNC_WAIT_NEXT_CANDLE')
-          ? 'СИНХР.: ЧАКАМ НОВА СВЕЩ'
-          : (String(decision?.entryTimingReasonCode || '') === 'NAN_TIME' || !timeIsFinite)
-            ? 'ГРЕШЕН ТАЙМИНГ (NaN)'
-            : (String(decision?.entryTimingReasonCode || '') === 'LATE_BUT_ALLOWED_STRONG')
-              ? 'КЪСЕН ВХОД, НО ДОПУСНАТ (силен сигнал)'
-              : `КЪСЕН ВХОД (${timingLeft}>${timingRight}${timingNanFlag})`;
-      const reasons = {
-        RegimeGate: !(S.sniperNoTradeInChop && regimeState === 'chop') ? 'PASS' : 'CHOP',
-        VolatilitySpikeGate: !(decision?.spikeFlag || decision?.volatilitySpike) ? 'PASS' : 'SPIKE',
-        EntryTimingGate: (!earlyEntryEnabled || syncWaitNextCandle || !!entryWindowOk) ? 'PASS' : timingReason,
-        PerfectTimeGate: !!perfectTimeOk ? 'PASS' : 'НЯМА PT',
-        BiasConflictGate: !(biasDirection && decision?.direction && biasDirection !== decision.direction) ? 'PASS' : `Bias конфликт (${biasDirection}→${decision?.direction})`,
-        StalenessGate: !(Number.isFinite(analysisUpdatedSec) && analysisUpdatedSec > 15) ? 'PASS' : `STALE_${Math.round(analysisUpdatedSec)}s`,
-        PayoutFloorGate: !!payoutOk ? 'PASS' : 'LOW_PAYOUT',
-        FeedTickRateGate: !staleFeed ? 'PASS' : feedState
-      };
-      const failed = Object.keys(reasons).filter((k) => reasons[k] !== 'PASS');
-      const timingBucket = Number.isFinite(timeInCandle) ? Math.floor(Number(timeInCandle) / 5) : -1;
-      const gateHash = [
-        `tf=${String(tfKey || decision?.tfKey || '').toLowerCase()}`,
-        `reg=${regimeState || 'na'}`,
-        `spk=${decision?.spikeFlag || decision?.volatilitySpike ? 1 : 0}`,
-        `tim=${timingBucket}`,
-        `bias=${biasDirection || 'na'}`,
-        `pay=${payoutOk ? 1 : 0}`,
-        `feed=${staleFeed ? 0 : 1}`
-      ].join('|');
-      return {
-        verdict: failed.length ? 'FAIL' : 'PASS',
-        failed,
-        reasons,
-        gateHash
-      };
-    }
-
-    function runEntryTimingRegressionHarness() {
-      const tfList = ['1m', '3m', '5m', '15m'];
-      const toWindowMs = (tf) => Number(SNIPER_TF_MS[tf] || 0);
-      logConsoleLine('[ENTRY_TIMING_HARNESS] START');
-      for (const tf of tfList) {
-        const windowMs = toWindowMs(tf);
-        const baseNow = Number.isFinite(windowMs) && windowMs > 0 ? (Math.floor(Date.now() / windowMs) * windowMs) : Date.now();
-        const limit = getEntryWindowLimitSec(tf, windowMs);
-        const nowPass = baseNow + Math.max(0, (limit - 1)) * 1000;
-        const casePass = computeEntryTiming(tf, windowMs, nowPass);
-        const passOk = casePass.entryWindowOk === true;
-        logConsoleLine(`[ENTRY_TIMING_HARNESS] ${passOk ? 'PASS' : 'FAIL'} tf=${tf} case=LIMIT_MINUS_1 t=${Number(casePass.timeInCandleSec).toFixed(3)} limit=${Number(casePass.entryWindowLimitSec).toFixed(3)} ok=${casePass.entryWindowOk}`);
-
-        const nowFail = baseNow + (limit + 1) * 1000;
-        const caseFail = computeEntryTiming(tf, windowMs, nowFail);
-        const failReason = `OUTSIDE_WINDOW:${Number.isFinite(caseFail.timeInCandleSec) ? Math.round(caseFail.timeInCandleSec) : 'NaN'}>${Number.isFinite(caseFail.entryWindowLimitSec) ? Math.round(caseFail.entryWindowLimitSec) : 'NaN'}`;
-        const failOk = caseFail.entryWindowOk === false;
-        logConsoleLine(`[ENTRY_TIMING_HARNESS] ${failOk ? 'PASS' : 'FAIL'} tf=${tf} case=LIMIT_PLUS_1 reason=${failReason} ok=${caseFail.entryWindowOk}`);
-
-        const caseNaN = computeEntryTiming(tf, windowMs, Number.NaN);
-        const nanOk = caseNaN.entryWindowOk === false && caseNaN.nanReason === 'NAN_TIME';
-        logConsoleLine(`[ENTRY_TIMING_HARNESS] ${nanOk ? 'PASS' : 'FAIL'} tf=${tf} case=NAN_NOW reason=${caseNaN.nanReason || 'NONE'} t=${Number.isFinite(caseNaN.timeInCandleSec) ? Number(caseNaN.timeInCandleSec).toFixed(3) : 'NaN'} ok=${caseNaN.entryWindowOk}`);
-      }
-      logConsoleLine('[ENTRY_TIMING_HARNESS] END');
-    }
-
-    function runUiPersistenceHarness() {
-      const sample = {
-        minPayout: Number(S.sniperMinPayout || 0),
-        early1m: !!S.earlyEntry1mEnabled,
-        early3m: !!S.earlyEntry3mEnabled,
-        early5m: !!S.earlyEntry5mEnabled,
-        win1m: Number(S.entryWindowSec1m || 0),
-        win3m: Number(S.entryWindowSec3m || 0),
-        win5m: Number(S.entryWindowSec5m || 0),
-        maxOpen: Number(S.maxOpenTrades || 0),
-        maxPerMin: Number(S.maxTradesPerMinute || 0),
-        catchMove: !!S.phaseCatchMoveEnabled,
-        reload: !!S.phaseReloadSniperEnabled,
-        chop: !!S.sniperChopEnabled
-      };
-      logConsoleLine(`[UI_PERSIST_HARNESS] STATE ${JSON.stringify(sample)}`);
-      return sample;
-    }
-
-    function runDirectionLockHarness() {
-      const tf = '1m';
-      S.tfDirectionMemory = {};
-      S.domHysteresisDelta = Number.isFinite(S.domHysteresisDelta) ? S.domHysteresisDelta : 10;
-      const now = Date.now();
-      const d1 = { direction: 'BUY', confidence: 0.62 };
-      applyDirectionLock(tf, d1, { points: 7, threshold: 7 }, { dominance: 66, dominanceThreshold: 62 });
-      S.tfDirectionMemory[tf] = { dir: 'BUY', atMs: now, conf: 0.62 };
-      const d2 = { direction: 'SELL', confidence: 0.64 };
-      applyDirectionLock(tf, d2, { points: 7, threshold: 7 }, { dominance: 65, dominanceThreshold: 62 });
-      const lockOk = d2.direction === 'BUY';
-      logConsoleLine(`[DIR_LOCK_HARNESS] ${lockOk ? 'PASS' : 'FAIL'} case=lock_hold dir=${d2.direction}`);
-
-      const snapKeep = applyDominanceHysteresis({ direction: 'BUY', dominance: 67, dominanceThreshold: 62, passDominance: true });
-      const keepOk = snapKeep.direction === 'BUY';
-      logConsoleLine(`[DOM_HYS_HARNESS] ${keepOk ? 'PASS' : 'FAIL'} case=keep dir=${snapKeep.direction}`);
-
-      S.biasHysteresis = { dir: 'BUY', lastDomPct: 67 };
-      const snapFlip = applyDominanceHysteresis({ direction: 'SELL', dominance: 78, dominanceThreshold: 62, passDominance: true });
-      const flipOk = snapFlip.direction === 'SELL';
-      logConsoleLine(`[DOM_HYS_HARNESS] ${flipOk ? 'PASS' : 'FAIL'} case=flip dir=${snapFlip.direction}`);
-    }
-
-    function computeSignalStability(assetLabel, decision, mandatoryGates, scoreCard) {
-      const key = `${assetLabel}|${decision?.tfKey || ''}|${decision?.strategyKey || ''}|${decision?.direction || ''}`;
-      S.stabilityCache = S.stabilityCache || {};
-      const prev = S.stabilityCache[key] || { passesCount: 0, gateHash: '', direction: '', lastAt: 0 };
-      const scorePass = !!scoreCard && Number(scoreCard.points || 0) >= Number(scoreCard.threshold || 0);
-      const passNow = String(mandatoryGates?.verdict || '') === 'PASS' && scorePass;
-      const now = Date.now();
-      let passesCount = passNow ? (prev.passesCount + 1) : 0;
-      if (prev.direction && prev.direction !== decision?.direction) passesCount = passNow ? 1 : 0;
-      if (prev.gateHash && prev.gateHash !== mandatoryGates?.gateHash) passesCount = passNow ? 1 : 0;
-      if (prev.lastAt && (now - prev.lastAt > 1200)) passesCount = passNow ? 1 : 0;
-      const stablePass = passNow && passesCount >= 2;
-      S.stabilityCache[key] = {
-        passesCount,
-        gateHash: mandatoryGates?.gateHash || '',
-        direction: decision?.direction || '',
-        lastAt: now
-      };
-      return { key, passesCount, stablePass };
+      const mode = String(S.killerThresholdMode || '8of11');
+      if (mode === '7of11') return 7;
+      if (mode === '9of11') return 9;
+      return 8;
     }
 
     function evaluateScoreDecision(ctx = {}) {
@@ -8239,85 +7381,33 @@ if (!weights.length) return 0;
       } = ctx;
       const breakdown = [];
       const hardFails = [];
-      let points = 0;
-      const maxPoints = 9;
 
-      if (!decision || !decision.direction) {
-        hardFails.push('Няма сигнал от стратегия');
-      } else {
-        points += 2;
-        breakdown.push(`Стратегия сигнал: +2 (${decision.strategyKey || 'unknown'})`);
+      const maxPoints = 11;
+      const threshold = getScoreThresholdPoints();
+      const basePoints = Number(killerSnapshot?.confluence || 0);
+      const supportingBonus = Number(killerSnapshot?.supportingBonus || 0);
+      const effectivePoints = Math.max(0, Math.min(11, basePoints + supportingBonus));
+
+      breakdown.push(`CONF ${basePoints.toFixed(1)}/${maxPoints} + BONUS ${supportingBonus.toFixed(1)} → ${effectivePoints.toFixed(1)}/${maxPoints} (мин ${threshold})`);
+      if (Array.isArray(killerSnapshot?.supportingDetails) && killerSnapshot.supportingDetails.length) {
+        breakdown.push(`BONUS: ${killerSnapshot.supportingDetails.join(' • ')}`);
       }
 
       const regimeState = String(regime?.state || '').toLowerCase();
-      const regimeFit = regimeState === 'trend' || regimeState === 'range';
-      if (regimeFit) {
-        points += 1;
-        breakdown.push(`Режим подходящ: +1 (${regimeState.toUpperCase()})`);
-      } else {
-        breakdown.push(`Режим подходящ: 0 (${regimeState || 'N/A'})`);
-      }
-      if (noTradeInChop && regimeState === 'chop') {
-        hardFails.push('CHOP – без сделки');
-      }
+      if (noTradeInChop && regimeState === 'chop') hardFails.push('CHOP – без сделки');
+      if (!payoutOk) hardFails.push('PAYOUT под минималния праг');
+      if (counterCandleHardStop) hardFails.push('Силна контра-свещ срещу входа');
+      if (!entryWindowOk) breakdown.push('Тайминг: 0');
+      if (!spreadOk) breakdown.push('Spread/Liquidity: 0');
+      if (!patternSupport) breakdown.push('Pattern: 0');
+      if (!decision || !decision.direction) hardFails.push('Няма сигнал от стратегия');
+      if (!killerAlignmentOk) breakdown.push('Killer gate: WAIT');
 
-      if (killerAlignmentOk) {
-        points += 1;
-        breakdown.push(`Killer: +1 (CONF ${killerSnapshot?.confluence || 0}/${killerSnapshot?.maxPoints || 8})`);
-      } else {
-        breakdown.push('Killer: 0');
-      }
-
-      const structureOk = !!decision?.trendAligned;
-      if (structureOk) {
-        points += 1;
-        breakdown.push('Структура: +1');
-      } else {
-        breakdown.push('Структура: 0');
-      }
-
-      const volatilityOk = Number.isFinite(decision?.rangePct)
-        ? decision.rangePct >= Math.max(0, Number(S.sniperChopThreshold || 0))
-        : true;
-      if (volatilityOk) {
-        points += 1;
-        breakdown.push('Волатилност: +1');
-      } else {
-        breakdown.push('Волатилност: 0');
-      }
-
-      if (entryWindowOk) {
-        points += 1;
-        breakdown.push('Тайминг: +1');
-      } else {
-        breakdown.push('Тайминг: 0');
-      }
-
-      if (spreadOk) {
-        points += 1;
-        breakdown.push('Spread/Liquidity: +1');
-      } else {
-        breakdown.push('Spread/Liquidity: 0');
-      }
-
-      if (patternSupport) {
-        points += 1;
-        breakdown.push('Pattern: +1');
-      } else {
-        breakdown.push('Pattern: 0');
-      }
-
-      if (!payoutOk) {
-        hardFails.push('PAYOUT под минималния праг');
-      }
-      if (counterCandleHardStop) {
-        hardFails.push('Силна контра-свещ срещу входа');
-      }
-
-      const threshold = getScoreThresholdPoints();
       return {
         hardFailReason: hardFails.length ? hardFails.join(' | ') : null,
-        points,
+        points: Number(effectivePoints.toFixed(2)),
+        basePoints: Number(basePoints.toFixed(2)),
+        supportingBonus: Number(supportingBonus.toFixed(2)),
         maxPoints,
         threshold,
         breakdown
@@ -8425,12 +7515,13 @@ if (!weights.length) return 0;
         S.tradeQualityScore = 0;
         S.sniperTfStatus = feedStatuses;
         setStatusOverlay(formatStatus('sniper_no_feed'), '', false);
-        refreshUI('no_feed');
+        renderSniperMatrix();
+        renderPendingTrades();
         return;
       }
 
       S.feedState = 'READY';
-      const canTrade = S.autoTrade;
+      const canTrade = S.autoTrade && !S.executing;
 
       const timeframes = getSniperTimeframes();
       if (!timeframes.length) {
@@ -8444,7 +7535,8 @@ if (!weights.length) return 0;
         S.analysisDirection = null;
         S.tradeQualityScore = 0;
         setStatusOverlay('Снайпер: няма активни таймфрейми', '', false);
-        refreshUI('no_timeframes');
+        renderSniperMatrix();
+        renderPendingTrades();
         return;
       }
 
@@ -8464,11 +7556,16 @@ if (!weights.length) return 0;
       S.lastScoreSnapshot = null;
       for (const tf of timeframes) {
         const windowMs = SNIPER_TF_MS[tf];
-        let entryTiming = computeEntryTiming(tf, windowMs);
-        const syncReady = !entryTiming.syncWaitNextCandle;
-        const candleStart = entryTiming.candleStartMs;
-        const timeInCandle = entryTiming.timeInCandleSec;
-        const entryWindowLimit = entryTiming.entryWindowLimitSec;
+        const timeInCandle = getTimeInCandleSec(windowMs);
+        let entryWindowLimit = 0;
+        if (S.entryWindowTfEnabled) {
+          const baseLimit = (tf === '1m') ? (S.entryWindowSec1m ?? 15)
+            : (tf === '3m') ? (S.entryWindowSec3m ?? 35)
+            : (tf === '5m') ? (S.entryWindowSec5m ?? 0)
+            : 0;
+          entryWindowLimit = Math.min(999, Math.max(0, Math.round(baseLimit)));
+        }
+        const candleStart = getCandleStart(windowMs);  
         const readiness = partnerReady.details?.[tf];
         if (readiness && !readiness.ready) {
           const confPrev = getPrevStatus(tf)?.confidence ?? null;
@@ -8487,10 +7584,6 @@ if (!weights.length) return 0;
           decision.regime = regime;
           decision.biasDir = biasDir;
           decision.confirmation = confirmation;
-          decision.timeInCandleSec = timeInCandle;
-          decision.entryWindowLimitSec = entryWindowLimit;
-          decision.candleStartMs = candleStart;
-          // backward-compatible aliases
           decision.timeInCandle = timeInCandle;
           decision.entryWindowSec = entryWindowLimit;
           decision.candleStart = candleStart;
@@ -8525,10 +7618,6 @@ if (!weights.length) return 0;
           };
           continue;
         }
-        if (!syncReady) {
-          tfStatus[tf] = { state: 'sync_wait', detail: 'СИНХР.: ЧАКАМ НОВА СВЕЩ', confidence: decision?.confidence ?? null, direction: decision?.direction || null };
-          continue;
-        }
 
         // Smooth TF direction for UI (avoid rapid BUY↔SELL flicker in the matrix).
         // We keep the real trade direction in decision.direction; the UI uses decision._smoothedDirection when present.
@@ -8560,21 +7649,6 @@ if (!weights.length) return 0;
         if (S.killerEnabled) {
           killerEdgeTriggered(tf, decision.direction, false);
         }
-        entryTiming = computeEntryTiming(tf, windowMs, Date.now(), {
-          confirmationMatched: Number(confirmation?.matched || 0),
-          adx: Number(killerSnapshotTf?.adx || 0),
-          dominance: Number(killerSnapshotTf?.dominance || 0),
-          dominanceThreshold: Number(killerSnapshotTf?.dominanceThreshold || 0)
-        });
-        decision.entryTimingReason = entryTiming.reason;
-        decision.entryTimingReasonCode = entryTiming.reasonCode;
-        decision.timeInCandleSec = entryTiming.timeInCandleSec;
-        decision.entryWindowLimitSec = entryTiming.entryWindowLimitSec;
-        decision.candleStartMs = entryTiming.candleStartMs;
-        decision.timeInCandle = entryTiming.timeInCandleSec;
-        decision.entryWindowSec = entryTiming.entryWindowLimitSec;
-        decision.candleStart = entryTiming.candleStartMs;
-        applyDirectionLock(tf, decision, decision?.scoreCard || null, killerSnapshotTf);
         const entryWindowExceeded = entryWindowLimit > 0 && Number.isFinite(timeInCandle) && timeInCandle > entryWindowLimit;
         if (entryWindowExceeded) {
           const over = Math.max(0, timeInCandle - entryWindowLimit);
@@ -8642,11 +7716,19 @@ if (!weights.length) return 0;
           const strategyGateOk = !S.killerUseStrategyVotes || killerSnapshotTf.strategyAgreement >= minAgreement;
           const counterCandleHardStop = !!(S.killerCandleAgainstHardStop && killerSnapshotTf.candleAgainst);
           decision.counterCandleHardStop = counterCandleHardStop;
-          killerAlignmentOk = !!(killerSnapshotTf.passConfluence && killerSnapshotTf.passDominance && strategyGateOk);
-          perfectTimeOk = killerEdgeTriggered(tf, decision.direction, killerAlignmentOk);
+          const threshold = Number(killerSnapshotTf.threshold || getScoreThresholdPoints());
+          const nearMiss = Math.abs(Number(killerSnapshotTf.effectivePoints || 0) - (threshold - 1)) < 0.0001;
+          const confOkNear = !!killerSnapshotTf.confOkNear;
+          const mode = String(S.toleranceMode || 'either');
+          perfectTimeOk = killerEdgeTriggered(tf, decision.direction, true);
+          const ptOkNear = !!perfectTimeOk;
+          const allowNearMiss = mode === 'confidence' ? confOkNear : mode === 'pt' ? ptOkNear : mode === 'either' ? (confOkNear || ptOkNear) : false;
+          const confluenceWithTolerance = !!(killerSnapshotTf.passConfluence || (nearMiss && allowNearMiss));
+          killerSnapshotTf.allowNearMiss = allowNearMiss;
+          killerAlignmentOk = !!(confluenceWithTolerance && killerSnapshotTf.passDominance && strategyGateOk);
           if (!killerAlignmentOk) {
             try {
-              const reason = !killerSnapshotTf.passConfluence ? 'Confluence' : (!killerSnapshotTf.passDominance ? 'Dominance' : (!strategyGateOk ? 'Strategy' : ''));
+              const reason = !(killerSnapshotTf.passConfluence || (killerSnapshotTf.nearMiss && killerSnapshotTf.allowNearMiss)) ? 'Confluence' : (!killerSnapshotTf.passDominance ? 'Dominance' : (!strategyGateOk ? 'Strategy' : ''));
               sessionRecordKiller(tf, killerSnapshotTf, 'WAIT', reason);
             } catch (e) {}
           } else if (!perfectTimeOk) {
@@ -8656,135 +7738,94 @@ if (!weights.length) return 0;
 
         if (S.killerEnabled && killerAlignmentOk && perfectTimeOk) { try { sessionRecordKiller(tf, killerSnapshotTf, 'PASS', ''); } catch (e) {} }
 
-        if (String(decision.tfKey || '') === '1m' && getDynamicMode() === 'hybrid' && !S.hybridAllow1m) {
-          tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
-          if (shouldLogScoreEvent(tf, 'hard', '1m disabled in hybrid by setting')) logConsoleLine('[GATES] 1m е изключен в Hybrid (setting)');
-          continue;
-        }
-        const entryWindowOk = !!entryTiming.entryWindowOk;
-        const combinedTimingOk = entryWindowOk && perfectTimeOk;
+        const entryWindowOk = !S.entryWindowTfEnabled || entryWindowLimit <= 0 || timeInCandle <= entryWindowLimit;
         const spreadMetric = Number.isFinite(S.lastGlobalSpread) ? S.lastGlobalSpread : 0;
         const spreadOk = !S.filterSpreadEnabled || !Number.isFinite(S.filterSpreadThreshold) || spreadMetric >= S.filterSpreadThreshold;
         const patternSupport = !S.candlestickPatternEnabled || decision.strategyKey === 'candlestick_pattern';
-        const analysisUpdatedSec = Number.isFinite(S.lastPriceAt) && S.lastPriceAt > 0 ? ((Date.now() - S.lastPriceAt) / 1000) : null;
-        const mandatoryGates = evaluateMandatoryGates({
-          decision,
-          regime,
-          payoutOk,
-          entryWindowOk: entryTiming.entryWindowOk,
-          perfectTimeOk,
-          biasDirection,
-          analysisUpdatedSec,
-          tfKey: tf,
-          timeInCandle: entryTiming.timeInCandleSec,
-          entryWindowLimit: entryTiming.entryWindowLimitSec,
-          earlyEntryEnabled: entryTiming.earlyEntryEnabled,
-          syncWaitNextCandle: !syncReady
-        });
-        decision.mandatoryGates = mandatoryGates;
-        if (mandatoryGates.verdict !== 'PASS') {
-          const failedGates = (mandatoryGates.failed || []).map((g) => `${g}:${mandatoryGates?.reasons?.[g] || 'FAIL'}`);
-          const reason = `ГЕЙТОВЕ: ${failedGates.join(' | ')}`;
-          recordGateBlockers(tf, mandatoryGates.failed || [], mandatoryGates.reasons || {});
-          const topGate = String((mandatoryGates.failed || [])[0] || 'UNKNOWN');
-          const topReasonRaw = String(mandatoryGates?.reasons?.[topGate] || 'UNKNOWN');
-          const topReasonKey = normalizeEntryTimingReasonKey(topReasonRaw || topGate);
-          if ((mandatoryGates.failed || []).includes('EntryTimingGate') && shouldLogEntryTimingFail(tf, mandatoryGates?.reasons?.EntryTimingGate || '')) {
-            logConsoleLine(`[GATE_FAIL EntryTiming] tf=${tf} nowMs=${entryTiming.nowMs} candleStartMs=${entryTiming.candleStartMs} timeInCandleSec=${Number.isFinite(entryTiming.timeInCandleSec) ? Number(entryTiming.timeInCandleSec).toFixed(3) : 'NaN'} entryWindowLimitSec=${Number.isFinite(entryTiming.entryWindowLimitSec) ? Number(entryTiming.entryWindowLimitSec).toFixed(3) : 'NaN'} entryWindowOk=${!!entryTiming.entryWindowOk}`);
+        let scoreCard;
+        if (S.killerEnabled) {
+          S.engineState = 'KILLER';
+          const killerGatePass = !!(killerAlignmentOk && perfectTimeOk && entryWindowOk);
+          const killerThreshold = Number(killerSnapshotTf?.threshold || getScoreThresholdPoints());
+          const killerPts = Number(killerSnapshotTf?.effectivePoints || killerSnapshotTf?.confluence || 0);
+          scoreCard = {
+            points: killerPts,
+            maxPoints: Number(killerSnapshotTf?.maxPoints || 11),
+            threshold: killerThreshold,
+            hardFailReason: '',
+            breakdown: ['SCORE_BYPASS: killer-enabled']
+          };
+          decision.scoreCard = scoreCard;
+          if (!killerGatePass) {
+            const reason = `Killer gate: WAIT (CONF ${killerPts.toFixed(1)}/${scoreCard.maxPoints}, мин ${killerThreshold})`;
+            S.lastScoreSnapshot = {
+              result: 'SKIP(KILLER)',
+              points: scoreCard.points,
+              maxPoints: scoreCard.maxPoints,
+              threshold: scoreCard.threshold,
+              strategyKey: decision.strategyKey,
+              reason
+            };
+            tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
+            continue;
           }
-          S.lastScoreSnapshot = {
-            result: 'SKIP(GATES)',
-            points: 0,
-            maxPoints: 9,
-            threshold: getScoreThresholdPoints(),
-            strategyKey: decision.strategyKey,
-            reason
-          };
-          if (shouldLogGateFailSummary(tf, `${topGate}|${topReasonKey}`)) {
-            if (getLogVerbosity() === 'minimal') {
-              const blockers = computeTopBlockers(300000);
-              logSpamControlled('status_wait', `wait:blockers:${tf}`, `СТАТУС: WAIT | топ блокери: ${blockers.summary} | ${blockers.last}`, { stateValue: `${blockers.summary}|${blockers.last}` });
-            } else {
-              logSpamControlled('gates', `gates:${tf}`, reason);
-            }
+        } else {
+          S.engineState = 'SCORE';
+          scoreCard = evaluateScoreDecision({
+            decision,
+            regime,
+            payoutOk,
+            entryWindowOk: entryWindowOk && perfectTimeOk,
+            spreadOk,
+            killerSnapshot: killerSnapshotTf,
+            killerAlignmentOk,
+            patternSupport,
+            noTradeInChop: !!S.sniperNoTradeInChop,
+            counterCandleHardStop: !!decision.counterCandleHardStop
+          });
+          decision.scoreCard = scoreCard;
+
+          if (scoreCard.hardFailReason) {
+            const reason = scoreCard.hardFailReason;
+            S.lastScoreSnapshot = {
+              result: 'SKIP(HARD)',
+              points: scoreCard.points,
+              maxPoints: scoreCard.maxPoints,
+              threshold: scoreCard.threshold,
+              strategyKey: decision.strategyKey,
+              reason
+            };
+            if (!S.killerEnabled && shouldLogScoreEvent(tf, 'hard', reason)) logConsoleLine(`[АНАЛИЗ] Твърд стоп: ${reason}`);
+            tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
+            continue;
           }
-          tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
-          continue;
-        }
-        S.engineState = 'SCORE';
-        const tfPolicy = (String(decision.tfKey || '').toLowerCase() === '5m') ? 'SOFT_5M' : 'BASELINE';
-        const scoreCard = evaluateScoreDecision({
-          decision,
-          regime,
-          payoutOk,
-          entryWindowOk: combinedTimingOk,
-          spreadOk,
-          killerSnapshot: killerSnapshotTf,
-          killerAlignmentOk,
-          patternSupport,
-          noTradeInChop: !!S.sniperNoTradeInChop,
-          counterCandleHardStop: !!decision.counterCandleHardStop
-        });
-        decision.scoreCard = scoreCard;
-        if (tfPolicy === 'SOFT_5M') scoreCard.threshold = Math.max(6, Number(scoreCard.threshold || 7) - 1);
-
-        if (scoreCard.hardFailReason) {
-          const reason = scoreCard.hardFailReason;
-          S.lastScoreSnapshot = {
-            result: 'SKIP(HARD)',
-            points: scoreCard.points,
-            maxPoints: scoreCard.maxPoints,
-            threshold: scoreCard.threshold,
-            strategyKey: decision.strategyKey,
-            reason
-          };
-          if (shouldLogScoreEvent(tf, 'hard', reason)) logConsoleLine(`[СКОР] Твърд стоп: ${reason}`);
-          tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
-          continue;
-        }
-        if (scoreCard.points < scoreCard.threshold) {
-          const reason = `Недостатъчно точки: ${scoreCard.points}/${scoreCard.maxPoints} (праг ${scoreCard.threshold}/${scoreCard.maxPoints})`;
-          S.lastScoreSnapshot = {
-            result: 'SKIP(SCORE)',
-            points: scoreCard.points,
-            maxPoints: scoreCard.maxPoints,
-            threshold: scoreCard.threshold,
-            strategyKey: decision.strategyKey,
-            reason
-          };
-          if (shouldLogScoreEvent(tf, 'score', reason)) logConsoleLine(`[СКОР] ${reason}`);
-          tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
-          continue;
+          if (scoreCard.points < scoreCard.threshold) {
+            const reason = `Недостатъчно точки: ${scoreCard.points}/${scoreCard.maxPoints} (праг ${scoreCard.threshold}/${scoreCard.maxPoints})`;
+            S.lastScoreSnapshot = {
+              result: 'SKIP(SCORE)',
+              points: scoreCard.points,
+              maxPoints: scoreCard.maxPoints,
+              threshold: scoreCard.threshold,
+              strategyKey: decision.strategyKey,
+              reason
+            };
+            if (!S.killerEnabled && shouldLogScoreEvent(tf, 'score', reason)) logConsoleLine(`[АНАЛИЗ] ${reason}`);
+            tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
+            continue;
+          }
         }
 
-        const stability = computeSignalStability(getCurrentAssetLabel() || '—', decision, decision.mandatoryGates, scoreCard);
-        decision.stablePass = !!stability.stablePass;
-        decision.passesCount = Number(stability.passesCount || 0);
-        if (!decision.stablePass) {
-          const reason = `Stability FAIL: ${decision.passesCount}/2`;
-          S.lastScoreSnapshot = {
-            result: 'SKIP(STABILITY)',
-            points: scoreCard.points,
-            maxPoints: scoreCard.maxPoints,
-            threshold: scoreCard.threshold,
-            strategyKey: decision.strategyKey,
-            reason
-          };
-          if (shouldLogScoreEvent(tf, 'score', reason)) logConsoleLine(`[STABILITY] ${reason}`);
-          tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
-          continue;
-        }
-
-
-        logSpamControlled('decision', `decision:${String(decision.tfKey || tf).toLowerCase()}`, `[DECISION] tf=${String(decision.tfKey || tf).toLowerCase()} dir=${decision.direction || 'N/A'} conf=${Number(decision.confidence || 0).toFixed(2)} momentum=${Number(decision.momentum || 0).toFixed(4)} bias=${biasDirection || 'NONE'} flipGuard=OK`);
         S.lastScoreSnapshot = {
-          result: 'READY',
+          result: S.killerEnabled ? 'READY(KILLER)' : 'READY',
           points: scoreCard.points,
           maxPoints: scoreCard.maxPoints,
           threshold: scoreCard.threshold,
           strategyKey: decision.strategyKey,
-          reason: 'Готов за вход'
+          reason: S.killerEnabled ? 'Готов за вход (SCORE BYPASS)' : 'Готов за вход'
         };
+        if (S.debugEnabled) {
+          logConsoleLine(`[DEBUG] PRE-EXEC gates: killer=PASS score=BYPASS pt=${perfectTimeOk ? 'OK' : 'WAIT'} entry=${entryWindowOk ? 'OK' : 'WAIT'}`);
+        }
 
         if (!best || decision.confidence > best.confidence) {
           best = {
@@ -8830,6 +7871,9 @@ if (!weights.length) return 0;
           longPct: killerBest.longPct,
           shortPct: killerBest.shortPct,
           confluence: killerBest.confluence,
+          effectivePoints: killerBest.effectivePoints,
+          supportingBonus: killerBest.supportingBonus,
+          maxPoints: killerBest.maxPoints,
           minConfluence: killerBest.minConfluence,
           adx: killerBest.adx,
           trd: killerBest.checks?.find((c) => c.key === 'TRD')?.ok ? 'OK' : 'Слаб',
@@ -8840,9 +7884,10 @@ if (!weights.length) return 0;
           signal: best ? best.direction : 'WAIT'
         };
       } else {
-        S.killerSnapshot = { signal: 'WAIT', longPct: 50, shortPct: 50, confluence: 0, minConfluence: Math.max(6, Math.min(7, Math.round(S.killerMinConfluence || 6))), adx: null };
+        S.killerSnapshot = { signal: 'WAIT', longPct: 50, shortPct: 50, confluence: 0, effectivePoints: 0, supportingBonus: 0, minConfluence: getScoreThresholdPoints(), maxPoints: 11, adx: null };
       }
-      refreshUI('scan_update');
+      renderSniperMatrix();
+      renderPendingTrades();
       renderKillerHud();
       if (!best) {
         S.analysisConfidence = bestCandidate ? bestCandidate.confidence : 0;
@@ -8859,21 +7904,13 @@ if (!weights.length) return 0;
         } else {
           setStatusOverlay('Снайпер: няма чист вход', '', false);
         }
-        if (String(getLogVerbosity()).toLowerCase() === 'minimal') {
-          const t = Date.now();
-          if (!Number.isFinite(S.lastMinimalHeartbeatAt) || (t - Number(S.lastMinimalHeartbeatAt)) > 30000) {
-            S.lastMinimalHeartbeatAt = t;
-            logSpamControlled('status_wait', 'wait:tf', `СТАТУС: WAIT | TF=1m/3m/5m | причина=тайминг/PT/гейтове`, { stateValue: 'TF_WAIT' });
-          }
-        }
-        refreshUI('scan_wait');
+        renderPendingTrades();
         return;
       }
 
       if (S.lastStrategyDirection && best.direction && S.lastStrategyDirection !== best.direction) {
         const sinceFlip = now - (S.lastStrategyDirectionAt || 0);
         if (sinceFlip < Math.max(500, S.strategyFlipCooldownMs || 2500)) {
-          logConsoleLine(`[FLIP_BLOCKED] prev=${S.lastStrategyDirection} new=${best.direction} reason=cooldown`);
           best.direction = S.lastStrategyDirection;
           best.confidence = Math.max(0, (best.confidence || 0) - 0.08);
         }
@@ -8898,7 +7935,7 @@ if (!weights.length) return 0;
 
       if (!canTrade) {
         setStatusOverlay('Снайпер: изчакване', '', false);
-        refreshUI('scan_wait');
+        renderPendingTrades();
         return;
       }
 
@@ -8937,25 +7974,6 @@ const readySignals = Object.keys(tfStatus)
         .filter(sig => sig && sig.direction);
 
       readySignals.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
-      const preferRank = (tf) => (tf === '1m' ? 1 : tf === '3m' ? 2 : tf === '5m' ? 3 : tf === '15m' ? 4 : 9);
-      const ordered = [...readySignals].sort((a, b) => {
-        const ra = preferRank(String(a?.tfKey || '').toLowerCase());
-        const rb = preferRank(String(b?.tfKey || '').toLowerCase());
-        if (ra !== rb) return ra - rb;
-        return (Number(b?.confidence || 0) - Number(a?.confidence || 0));
-      });
-      const primary1m = ordered.find((x) => String(x?.tfKey || '').toLowerCase() === '1m');
-      const primary3m = ordered.find((x) => String(x?.tfKey || '').toLowerCase() === '3m');
-      let pickedPrimary = null;
-      if (primary1m) pickedPrimary = primary1m;
-      else if (primary3m) pickedPrimary = primary3m;
-      const prioritized = pickedPrimary ? [pickedPrimary, ...ordered.filter((x) => x !== pickedPrimary)] : ordered;
-      if (prioritized.length) {
-        const cands = prioritized.map((x) => String(x?.tfKey || '').toLowerCase()).join(',');
-        const chosen = String(prioritized[0]?.tfKey || '').toLowerCase();
-        const reason = (chosen === '1m' || chosen === '3m') ? 'prefer_primary' : 'fallback_higher_tf';
-        logSpamControlled('decision', 'tf_pick', `[TF_PICK] chosen=${chosen} reason=${reason} candidates=${cands}`, { stateValue: `${chosen}|${reason}` });
-      }
 
       const maxConcurrentSniperTrades = Math.max(1, Math.round(S.maxOpenTrades || timeframes.length));
       const availableSlots = Math.max(0, maxConcurrentSniperTrades - S.activeTrades.length);
@@ -8964,12 +7982,14 @@ const readySignals = Object.keys(tfStatus)
         return;
       }
 
-      const signalsToExecute = prioritized.slice(0, availableSlots);
+      const signalsToExecute = readySignals.slice(0, availableSlots);
 
       for (let i = 0; i < signalsToExecute.length; i += 1) {
         const decision = signalsToExecute[i];
 
-        // Non-blocking scan: no sleep in SCAN loop. Recompute immediately.
+        // Fixed pre-trade recheck delay (anti-fake-signal)
+        const preDelayMs = Math.max(600, Number.isFinite(S.preTradeRecheckDelayMs) ? S.preTradeRecheckDelayMs : 1200);
+        await new Promise(r => setTimeout(r, preDelayMs));
         // Recompute decision using the currently enabled strategy (not a fixed strategy),
         // and use the same threshold scaling as the main scan (0..1).
         const assetScopePre = getExpiryScopeFromAsset(getCurrentAssetLabel());
@@ -8988,11 +8008,15 @@ const readySignals = Object.keys(tfStatus)
             if (Math.abs(preConf - oldConf) >= 0.08) preReasonParts.push(`увереност ${Math.round(oldConf*100)}%→${Math.round(preConf*100)}%`);
           }
           const preReason = preReasonParts.length ? preReasonParts.join(', ') : 'промяна след повторна проверка';
-          logSpamControlled('scan', 'scan:precheck', `[SCAN V5] ПРОПУСК: ${decision.tfKey} повторна проверка (${preReason})`);
+          logConsoleLine(`[SCAN V5] ПРОПУСК: ${decision.tfKey} повторна проверка (${preReason})`);
           continue;
         }
 
-        // Non-blocking SCAN: sequencing delay handled by EXEC queue worker/TTL guards.
+        if (i > 0) {
+          const delayMs = Math.max(800, Number.isFinite(S.multiSignalDelayMs) ? S.multiSignalDelayMs : 1500);
+          await new Promise(r => setTimeout(r, delayMs));
+        }
+
 
         const assetLabel = getCurrentAssetLabel() || '—';
         const assetSearch = assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim();
@@ -9061,29 +8085,14 @@ const signal = {
             strategyKey: decision.strategyKey,
             scoreCard: decision.scoreCard || null,
             regime: decision.regime,
-            regimeStrength: decision.regimeStrength,
             biasDir: decision.biasDir,
-            biasStrength: decision.biasStrength,
             confirmation: decision.confirmation,
-            candleStartMs: decision.candleStartMs,
-            timeInCandleSec: decision.timeInCandleSec,
-            entryWindowLimitSec: decision.entryWindowLimitSec,
-            // backward-compatible aliases
             timeInCandle: decision.timeInCandle,
             entryWindowSec: decision.entryWindowSec,
             rangePct: decision.rangePct,
             trendDir: decision.trendDir,
             trendAligned: decision.trendAligned,
-            volumeOk: decision.volumeOk,
-            payoutPercent: decision.payoutPercent,
-            volatility: {
-              atr: decision.atr || null,
-              rangePct: decision.rangePct,
-              spikeFlag: !!(decision.spikeFlag || decision.volatilitySpike)
-            },
-            mandatoryGates: decision.mandatoryGates || null,
-            stablePass: !!decision.stablePass,
-            passesCount: Number(decision.passesCount || 0)
+            volumeOk: decision.volumeOk
           },
           expiry: decision.tfKey.toUpperCase(),
           minute: getCurrentMinute(),
@@ -9102,11 +8111,12 @@ const signal = {
 
         const inFlightKey = `${signal.asset}|${decision.tfKey}|${signal.direction}|${decision.candleStart}|${signal.expiry}`;
         if (S.sniperInFlightKey === inFlightKey && Date.now() < (S.sniperInFlightUntil || 0)) {
-          logSpamControlled('scan', 'scan:inflight', '[SCAN V5] ПРОПУСК: In-flight (двоен вход)');
+          logConsoleLine('[SCAN V5] ПРОПУСК: In-flight (двоен вход)');
           continue;
         }
         S.sniperInFlightKey = inFlightKey;
         S.sniperInFlightUntil = Date.now() + 1500;
+        logConsoleLine(`[SCAN V5] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
         if (decision.aiVision?.pattern) logConsoleLine(`[AI VISION] Patterns: ${decision.aiVision.pattern}`);
         
         // -------- Confirm Delay (delay_ms) + stability check (NO cooldown) --------
@@ -9114,7 +8124,7 @@ const signal = {
         // 1) Quick stability: streak (default 2 ticks)
         const minStreak = Math.max(1, Number.isFinite(S.confirmStreakMin) ? S.confirmStreakMin : 2);
         if ((decision._dirStreak || 0) < minStreak) {
-          logSpamControlled('scan', 'scan:unstable_dir', `[SCAN V5] ПРОПУСК: Нестабилна посока (streak=${decision._dirStreak || 0}/${minStreak})`);
+          logConsoleLine(`[SCAN V5] ПРОПУСК: Нестабилна посока (streak=${decision._dirStreak || 0}/${minStreak})`);
           S.sniperInFlightUntil = 0;
           S.baseAmount = prevBase;
           S.assetSelectedForSignal = false;
@@ -9128,7 +8138,7 @@ const signal = {
         const __need = (__recent.length >= 3) ? 2 : Math.min(2, __recent.length); // 1→1, 2→2, 3→2
         const __match = __recent.filter(x => x && x.dir === decision.direction).length;
         if (__need > 0 && __match < __need) {
-          logSpamControlled('scan', 'scan:flip_noise', `[SCAN V5] ПРОПУСК: Flip шум (vote=${__match}/${__recent.length}, need=${__need}, dir=${decision.direction})`);
+          logConsoleLine(`[SCAN V5] ПРОПУСК: Flip шум (vote=${__match}/${__recent.length}, need=${__need}, dir=${decision.direction})`);
           S.sniperInFlightUntil = 0;
           S.baseAmount = prevBase;
           S.assetSelectedForSignal = false;
@@ -9138,17 +8148,18 @@ const signal = {
 
         const confirmDelayMs = Math.max(0, Math.min(2000, Number.isFinite(S.confirmDelayMs) ? S.confirmDelayMs : 600));
         if (confirmDelayMs > 0) {
-          // Non-blocking scan: emulate delay via re-validation without waiting.
+          await new Promise(r => setTimeout(r, confirmDelayMs));
 
           // Re-check entry window after delay (we do NOT modify your entry-window settings).
           if (S.entryWindowTfEnabled) {
-            const timing2 = computeEntryTiming(decision.tfKey, decision.windowMs);
-            const t2 = timing2.timeInCandleSec;
-            const limit2 = timing2.entryWindowLimitSec;
-            if (!timing2.entryWindowOk) {
-              const t2Label = Number.isFinite(t2) ? Math.round(t2) : 'NaN';
-              const l2Label = Number.isFinite(limit2) ? Math.round(limit2) : 'NaN';
-              logSpamControlled('scan', 'scan:entry_window_delay', `[SCAN V5] ПРОПУСК: Извън Entry Window след delay (${decision.tfKey} t=${t2Label}s > ${l2Label}s${timing2.hasNaNTime ? ' NAN_TIME' : ''})`);
+            const t2 = getTimeInCandleSec(decision.windowMs);
+            const baseLimit2 = (decision.tfKey === '1m') ? (S.entryWindowSec1m ?? 15)
+              : (decision.tfKey === '3m') ? (S.entryWindowSec3m ?? 35)
+              : (decision.tfKey === '5m') ? (S.entryWindowSec5m ?? 0)
+              : 0;
+            const limit2 = Math.min(999, Math.max(0, Math.round(baseLimit2)));
+            if (limit2 > 0 && t2 > limit2) {
+              logConsoleLine(`[SCAN V5] ПРОПУСК: Извън Entry Window след delay (${decision.tfKey} t=${Math.round(t2)}s > ${limit2}s)`);
               S.sniperInFlightUntil = 0;
               S.baseAmount = prevBase;
               S.assetSelectedForSignal = false;
@@ -9167,10 +8178,10 @@ const signal = {
           if (!decision2 || !decision2.direction) {
             // Ползваме предишния сигнал като fallback (без "догонване" при липсващ сигнал).
             decision2 = { ...decision };
-            logSpamControlled('scan', 'scan:no_signal_delay', `[SCAN V5] INFO: Няма сигнал след delay (${decision.tfKey}) → fallback към предишния сигнал`);
+            logConsoleLine(`[SCAN V5] INFO: Няма сигнал след delay (${decision.tfKey}) → fallback към предишния сигнал`);
           }
           if (decision2.direction !== decision.direction) {
-            logSpamControlled('scan', 'scan:flip_after_delay', `[SCAN V5] ПРОПУСК: Flip след delay (${decision.tfKey} ${decision.direction}→${decision2.direction})`);
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Flip след delay (${decision.tfKey} ${decision.direction}→${decision2.direction})`);
             S.sniperInFlightUntil = 0;
             S.baseAmount = prevBase;
             S.assetSelectedForSignal = false;
@@ -9183,7 +8194,7 @@ const signal = {
           const __conf2 = (decision2.confidence || 0);
           const __drop = __baseConf - __conf2;
           if (__drop > 0.20) {
-            logSpamControlled('scan', 'scan:conf_drop_sharp', `[SCAN V5] ПРОПУСК: Рязък спад в увереността след delay (${decision.tfKey} ${Math.round(__baseConf*100)}%→${Math.round(__conf2*100)}%)`);
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Рязък спад в увереността след delay (${decision.tfKey} ${Math.round(__baseConf*100)}%→${Math.round(__conf2*100)}%)`);
             S.sniperInFlightUntil = 0;
             S.baseAmount = prevBase;
             S.assetSelectedForSignal = false;
@@ -9193,7 +8204,7 @@ const signal = {
 
           const thr = getSniperThresholdForScope();
           if ((decision2.confidence || 0) < thr) {
-            logSpamControlled('scan', 'scan:conf_drop', `[SCAN V5] ПРОПУСК: Увереност падна след delay (${decision.tfKey} ${(decision2.confidence || 0).toFixed(2)} < ${thr.toFixed(2)})`);
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Увереност падна след delay (${decision.tfKey} ${(decision2.confidence || 0).toFixed(2)} < ${thr.toFixed(2)})`);
             S.sniperInFlightUntil = 0;
             S.baseAmount = prevBase;
             S.assetSelectedForSignal = false;
@@ -9202,64 +8213,39 @@ const signal = {
           }
         }
         // ------------------------------------------------------------------------
-        const entryWindowSec = Number(signal?.entryMeta?.entryWindowLimitSec ?? signal?.entryMeta?.entryWindowSec ?? 0);
-        const candleStart = Number(decision?.candleStartMs ?? decision?.candleStart ?? now);
-        const validUntil = entryWindowSec > 0 ? (candleStart + entryWindowSec * 1000) : (Date.now() + 2000);
-        const candidate = {
-          id: `cand_${Date.now().toString(36)}_${Math.random().toString(16).slice(2,8)}`,
-          scanCycleId: Number(S.scanCycleId || 0),
-          createdAtMs: Date.now(),
-          asset: signal?.asset || getCurrentAssetLabel() || '',
-          tf: decision?.tfKey || '',
-          direction: decision?.direction || '',
-          strategyKey: decision?.strategyKey || '',
-          candleStartMs: candleStart,
-          entryWindowSec,
-          validUntilMs: validUntil,
-          gates: { verdict: decision?.mandatoryGates?.verdict || 'FAIL', failed: decision?.mandatoryGates?.failed || [], reasons: decision?.mandatoryGates?.reasons || {}, gateHash: decision?.mandatoryGates?.gateHash || '' },
-          score: { points: Number(decision?.scoreCard?.points || 0), threshold: Number(decision?.scoreCard?.threshold || 0), breakdown: decision?.scoreCard?.breakdown || [] },
-          stability: { stablePass: !!decision?.stablePass, passesCount: Number(decision?.passesCount || 0) },
-          snapshot: { confidence: Number(decision?.confidence || 0), dom: Number(S.killerSnapshot?.longPct || 0), regimeSummary: String(decision?.regime?.state || ''), payout: Number(S.lastPayoutPercent || 0), timeInCandleSec: Number(signal?.entryMeta?.timeInCandleSec ?? signal?.entryMeta?.timeInCandle ?? 0), analysisUpdatedSec: Number((Date.now()-Number(S.analysisUpdatedAt||Date.now()))/1000) },
-          signal,
-          decision,
-          points: Number(decision?.scoreCard?.points || 0)
-        };
-        candidate.signal.scanCycleId = candidate.scanCycleId;
-        if (Date.now() > validUntil) {
-          logSpamControlled('scan', 'scan:expired', `[SCAN V5] EXPIRED(SCAN) tf=${decision?.tfKey || candidate?.tf || 'n/a'} t=${Math.round(Number(signal?.entryMeta?.timeInCandleSec ?? signal?.entryMeta?.timeInCandle ?? 0))}s window=${Math.round(Number(entryWindowSec || 0))}s`);
-          S.sniperInFlightUntil = 0;
-          S.baseAmount = prevBase;
-          S.assetSelectedForSignal = false;
-          S.assetSelectionAttempted = false;
-          continue;
-        }
-        const queued = enqueueExecutionCandidate(candidate);
+const ok = await executeTradeOrder(signal);
         S.sniperInFlightUntil = 0;
         S.baseAmount = prevBase;
         S.assetSelectedForSignal = false;
-        S.assetSelectionAttempted = false;
-        if (queued) {
-          logSpamControlled('scan', 'scan:ready', `[SCAN V5] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
+        S.assetSelectionAttempted = false; 
+        if (ok) {
           setStatusOverlay(formatStatus('sniper_ready'), '', false);
         }
-      }
+}
     }
 
     /* ========================= FIXED TICK LOOP WITH CONTINUOUS COUNTDOWN ========================= */
     async function tick() {
       if (!S.running) {
-        clearInterval(S.scanLoop);
-        S.scanLoop = null;
+        clearInterval(S.loop);
+        S.loop = null;
         stopKeepAlive();
         stopPriceMonitoring();
         return;
       }
 
-      // SCAN loop lock only (does not block EXEC/SETTLE loops).
-      if (S.scanBusy) return;
-      S.scanBusy = true;
-      S.scanCycleId = Number(S.scanCycleId || 0) + 1;
-      const __scanStarted = Date.now();
+      // Re-entry guard: never allow overlapping ticks.
+      if (S.__tickBusy) {
+        const nowBusy = Date.now();
+        const stuckFor = nowBusy - (S.__tickBusyAt || 0);
+        if (stuckFor > 4000 && nowBusy - (S.lastTickBusyWarnAt || 0) > 4000) {
+          S.lastTickBusyWarnAt = nowBusy;
+          logConsoleLine(`[ENGINE] Изчакване: предишният tick още работи (${Math.round(stuckFor)}ms)`);
+        }
+        return;
+      }
+      S.__tickBusy = true;
+      S.__tickBusyAt = Date.now();
       try {
 
 
@@ -9307,6 +8293,11 @@ const signal = {
         setStatusOverlay(formatStatus('warming_up', { seconds: Math.ceil((S.analysisReadyAt - Date.now()) / 1000) }), '', false);
       }
 
+      await processPendingTradeConfirmations();
+      if (hasActiveTrade()) {
+        await finalizeActiveTrades();
+      }
+
       await maybeSwitchIdleAsset();
 
       const priceStaleMs = 15000;
@@ -9319,7 +8310,7 @@ const signal = {
 
       const warm = clamp01((nowMs() - S.botStartTime) / 5000);
       renderWarmup(warm);
-      if (warm < 1) { refreshUI('warmup'); return; }
+      if (warm < 1) { renderPendingTrades(); updateProfitDisplay(); return; }
 
       if (isSniperMode()) {
         await runSniperTick();
@@ -9363,59 +8354,113 @@ const signal = {
         }
       }
 
+      if (null && false && false && !hasActiveTrade()) {
+        const sig = null;
+        const delayMs = calculateDelay(sig);
+        if (!S.assetSelectedForSignal && S.assetSelectionAttempted) {
+          const verification = verifyAssetSelection(sig.asset);
+          if (verification.verified) {
+            S.assetSelectedForSignal = true;
+            S.assetSelectionFlipped = false;
+          }
+        }
 
-      // legacy direct-exec branch removed; SCAN remains analyze/enqueue only.
+        // Update UI states based on countdown timing - FIXED: Continue countdown in all states
+        if (delayMs > -C.LATE_TOL_MS) {
+          const secondsLeft = Math.max(0, Math.floor(delayMs / 1000));
 
+          if (secondsLeft <= 10 && S.uiState !== 'PATTERN_IDENTIFIED') {
+            setUIState('PATTERN_IDENTIFIED', {
+              countdownValue: formatCountdown(delayMs),
+              direction: sig.direction
+            });
+            S.patternIdentifiedTime = Date.now();
+          } else if (secondsLeft > 10 && S.uiState === 'IDENTIFYING_PATTERN') {
+            // Update countdown in identifying state - CONTINUOUS COUNTDOWN
+            updateCountdownDisplay(formatCountdown(delayMs));
+          } else if (S.uiState === 'PATTERN_IDENTIFIED') {
+            // Continue countdown in pattern identified state - FIXED
+            updateCountdownDisplay(formatCountdown(delayMs), true);
+          }
+        }
 
-      refreshUI('tick');
+        if (S.forceImmediate) {
+          let executed = false;
+
+          for (let attempt = 1; attempt <= C.MAX_EXECUTION_ATTEMPTS; attempt++) {
+            const ok = await executeTradeOrder(sig);
+            if (ok) {
+              executed = true;
+              break;
+            } else if (attempt < C.MAX_EXECUTION_ATTEMPTS) {
+              await delay(50);
+            }
+          }
+
+          if (executed) {
+            S.forceImmediate = false;
+          } else {
+            resetExecutionState();
+            endCycle();
+          }
+          renderPendingTrades();
+          updateProfitDisplay();
+          return;
+        }
+
+        if (delayMs <= C.EARLY_FIRE_MS && !S.assetSelectedForSignal && !S.assetSelecting) {
+          await selectAssetWithVerification(sig);
+        }
+
+        if (S.assetSelectedForSignal && delayMs <= C.EARLY_FIRE_MS && delayMs >= -C.LATE_TOL_MS) {
+          let executed = false;
+
+          for (let attempt = 1; attempt <= C.MAX_EXECUTION_ATTEMPTS; attempt++) {
+            const ok = await executeTradeOrder(sig);
+            if (ok) {
+              executed = true;
+              break;
+            } else if (attempt < C.MAX_EXECUTION_ATTEMPTS) {
+              await delay(10);
+            }
+          }
+
+          if (executed) {
+            S.assetSelectedForSignal = false;
+            S.assetSelectionAttempted = false;
+          } else {
+            resetExecutionState();
+            endCycle();
+          }
+          renderPendingTrades();
+          updateProfitDisplay();
+          return;
+        }
+
+        if (!S.assetSelectionAttempted && !S.assetSelectedForSignal && !S.assetSelecting && delayMs > C.EARLY_FIRE_MS) {
+          setUIState('SWITCHING_ASSET');
+          await selectAssetWithVerification(sig);
+          if (S.assetSelectedForSignal) {
+            setUIState('IDENTIFYING_PATTERN', {
+              countdownValue: formatCountdown(delayMs)
+            });
+          }
+        }
+
+        if (delayMs < -C.LATE_TOL_MS) {
+          resetExecutionState();
+          endCycle();
+        }
+      }
+
+      renderPendingTrades();
+      updateProfitDisplay();
     
       } finally {
-        const dt = Date.now() - __scanStarted;
-        const n = (S.queueMetrics._scanN || 0) + 1;
-        S.queueMetrics._scanN = n;
-        S.queueMetrics.scanCycleMs = ((S.queueMetrics.scanCycleMs || 0) * (n - 1) + dt) / n;
-        S.metrics.scanCycleMs = S.queueMetrics.scanCycleMs;
-        S.scanBusy = false;
+        S.__tickBusy = false;
+        S.__tickBusyAt = 0;
       }
 }
-
-    async function settleLoopTick() {
-      if (!S.running || S.settleBusy) return;
-      S.settleBusy = true;
-      const started = Date.now();
-      try {
-        await processPendingTradeConfirmations();
-        if (hasActiveTrade()) await finalizeActiveTrades();
-      } finally {
-        const dt = Date.now() - started;
-        const n = (S.queueMetrics._settleN || 0) + 1;
-        S.queueMetrics._settleN = n;
-        S.queueMetrics.avgSettleMs = ((S.queueMetrics.avgSettleMs || 0) * (n - 1) + dt) / n;
-        S.metrics.avgSettleMs = S.queueMetrics.avgSettleMs;
-        S.settleBusy = false;
-      }
-    }
-
-    function startEngineLoops() {
-      clearInterval(S.scanLoop);
-      clearInterval(S.execLoop);
-      clearInterval(S.settleLoop);
-      S.scanLoop = setInterval(tick, 250);
-      S.execLoop = setInterval(() => { runExecutionQueueWorker(); }, 90);
-      S.settleLoop = setInterval(() => { settleLoopTick(); }, 750);
-    }
-
-    function stopEngineLoops() {
-      clearInterval(S.scanLoop); S.scanLoop = null;
-      clearInterval(S.execLoop); S.execLoop = null;
-      clearInterval(S.settleLoop); S.settleLoop = null;
-      S.executionQueue = [];
-      S.execWorkerBusy = false;
-      S.scanBusy = false;
-      S.settleBusy = false;
-      if (S.queueMetrics) S.queueMetrics.queueLen = 0;
-      if (S.metrics) S.metrics.queueLen = 0;
-    }
 
     /* ========================= ENHANCED ASSET SELECTION WITH OTC/REAL FALLBACK ========================= */
     async function selectAssetWithVerification(signal) {
@@ -9835,8 +8880,8 @@ const signal = {
         #iaa-debug-content{ white-space:pre-wrap; word-break:break-word; margin-top:10px; }
         .iaa-debug-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
         .iaa-debug-actions{ display:flex; align-items:center; gap:6px; }
-        #iaa-debug-copy{ padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.35); background:none; color:#f9fafb; font-size:10px; cursor:pointer; letter-spacing:.08em; font-weight:700; }
-        #iaa-debug-copy:hover{ color:#ffffff; border-color:rgba(255,255,255,.55); }
+        #iaa-debug-copy{ padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#fff; font-size:10px; cursor:pointer; letter-spacing:.08em; }
+        #iaa-debug-copy:hover{ background:#1f1f1f; }
         #iaa-loss-copy{ padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#1f2937; color:#e5e7eb; font-size:10px; cursor:pointer; letter-spacing:.08em; }
         #iaa-loss-copy:hover{ background:#334155; }
         .iaa-debug-line{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:2px 0; }
@@ -9847,15 +8892,6 @@ const signal = {
         .iaa-debug-tabs{ display:flex; gap:6px; margin-top:8px; }
         .iaa-debug-tab{ flex:1; padding:4px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#e5e7eb; font-size:10px; cursor:pointer; }
         .iaa-debug-tab.active{ background:#1f2937; color:#fff; }
-        .iaa-entry-row{ display:grid; grid-template-columns:minmax(64px,auto) auto auto; column-gap:10px; row-gap:8px; align-items:center; }
-        .iaa-entry-row .iaa-field-label{ min-width:64px; }
-        .iaa-tfgrp{ display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
-        .iaa-tfsec{ width:58px; padding:2px 6px; }
-        .iaa-tfgrp-5m{ grid-column:2 / 3; }
-        #iaa-recheck-settlement{ color:#f9fafb; font-size:10px; font-weight:700; background:none; }
-        #iaa-recheck-settlement:hover{ color:#ffffff; }
-        .dbg-red{ color:#ff5a5a; font-weight:700; }
-        .dbg-small{ font-size:11px; font-weight:600; }
         #iaa-loss-content{ margin-top:10px; display:flex; flex-direction:column; gap:8px; }
         .iaa-loss-card{ border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:8px; background:#0b0b0b; }
         .iaa-loss-header{ display:flex; justify-content:space-between; font-weight:700; color:#e5e7eb; font-size:11px; margin-bottom:6px; }
@@ -9935,21 +8971,19 @@ const signal = {
         </div>
         <div id="iaa-warm" class="warmup red">ENGINE 0% ЗАГРЯВА</div>
         <div id="iaa-feed-cloud">Цена: — • История: 0</div>
-        <div id="iaa-last-trade-card" style="font-size:11px;color:#cbd5e1;margin-top:4px;">Bot PnL: — | Platform: —</div>
 
         <div class="iaa-controls">
           <button id="iaa-mouse-toggle" class="iaa-control-btn" title="Mouse Mapping">🖱</button>
           <button id="iaa-settings-toggle" class="iaa-control-btn" title="Settings">⚙</button>
           
-          <button id="iaa-debug-toggle" class="iaa-control-btn" title="Проверка">🧪</button>
+          <button id="iaa-debug-toggle" class="iaa-control-btn" title="Диагностика">🧪</button>
         </div>
 
         <div id="iaa-debug-panel">
           <div class="iaa-debug-header">
-            <span>Проверка</span>
+            <span>Диагностика</span>
             <div class="iaa-debug-actions">
-              <button id="iaa-debug-copy" title="Копирай проверка">КОПИРАЙ</button>
-              <button id="iaa-recheck-settlement" title="Проверка на последната unresolved сделка">Проверка</button>
+              <button id="iaa-debug-copy" title="Копирай диагностика">КОПИРАЙ</button>
               <button id="iaa-loss-copy" title="Копирай анализ загуби">КОПИРАЙ ЗАГУБИ</button>
               <button id="iaa-debug-close" title="Затвори">×</button>
             </div>
@@ -10074,11 +9108,18 @@ const signal = {
   <label class="iaa-checkbox"><input type="checkbox" id="iaa-sniper-min-payout-enabled" checked> </label>
   <input type="number" id="iaa-sniper-min-payout" min="60" max="92" step="1" value="70">
 </div>
-                <div class="iaa-field-row iaa-field-toggle iaa-max-row iaa-entry-row" title="Вход TF: секунди за 1m/3m/5m (0=изкл.).">
-                  <span class="iaa-field-label">Вход TF</span>
-                  <span class="iaa-tfgrp"><span class="iaa-mini-label">1M</span><input type="number" class="iaa-tfsec" id="iaa-entrywin-1m" min="0" max="60" step="1" value="35"></span>
-                  <span class="iaa-tfgrp"><span class="iaa-mini-label">3M</span><input type="number" class="iaa-tfsec" id="iaa-entrywin-3m" min="0" max="180" step="1" value="90"></span>
-                  <span class="iaa-tfgrp iaa-tfgrp-5m"><span class="iaa-mini-label">5M</span><input type="number" class="iaa-tfsec" id="iaa-entrywin-5m" min="0" max="300" step="1" value="150"></span>
+                <div class="iaa-field-row iaa-field-toggle iaa-max-row" title="Филтър за късен вход по TF (0=без лимит).">
+                  <span class="iaa-field-label">Ранен вход </span>
+                  <label class="iaa-checkbox"><input type="checkbox" id="iaa-entrywin-enabled" checked> </label>
+                  <span class="iaa-mini-label">1m</span>
+                  <input type="number" id="iaa-entrywin-1m" min="0" max="999" step="1" value="15" title="0=без лимит">
+                  <span class="iaa-mini-label">3m</span>
+                  <input type="number" id="iaa-entrywin-3m" min="0" max="999" step="1" value="35" title="0=без лимит">
+                </div>
+                <div class="iaa-field-row iaa-field-toggle iaa-max-row" title="Филтър за късен вход по TF (0=без лимит).">
+                  <span class="iaa-field-label">Ранен вход 5m</span>
+                  <span class="iaa-mini-label">5m</span>
+                  <input type="number" id="iaa-entrywin-5m" min="0" max="999" step="1" value="150" title="0=без лимит">
                 </div>
 
                 <div class="iaa-field-row iaa-max-row" title="Лимити: макс. сделки на минута и макс. отворени сделки.">
@@ -10098,22 +9139,31 @@ const signal = {
 </div>
 
               <div id="iaa-tab-advanced" class="iaa-tab-body" style="display:none;">
-                 <div class="iaa-field-row" title="Контролира детайлността на конзолния лог.">
-                  <span class="iaa-field-label">Ниво на лог (verbosity)</span>
-                  <select id="iaa-log-verbosity">
-                    <option value="minimal">Минимален</option>
-                    <option value="normal">Нормален</option>
-                    <option value="detailed">Детайлен</option>
-                  </select>
-                </div>
-                <div class="iaa-subtitle iaa-subtitle-new" style="color:${UI_WARM_RED};" title="Нови опции за тайминг (влизане по-рано и след pullback).">TIMING</div>
+              <div class="iaa-subtitle iaa-subtitle-new" style="color:${UI_WARM_RED};" title="Нови опции за тайминг (влизане по-рано и след pullback).">TIMING</div>
                  <label class="iaa-checkbox iaa-new-setting" title="Catch the move: позволява по-ранен вход когато увереността расте бързо и има тренд. Не променя стратегията, само тайминга."><input type="checkbox" id="iaa-phase-catch-move"> Catch the move</label>
                  <label class="iaa-checkbox iaa-new-setting" title="Snipe after reload: позволява вход след кратък pullback/колебание, когато сигналът се върне в посоката на тренда. Не променя стратегията, само тайминга."><input type="checkbox" id="iaa-phase-reload-snipe"> Snipe after reload</label>
                  <div class="iaa-field-row iaa-field-toggle" title="Филтър за ниска волатилност (chop).">
-                  <label title="Филтър за ниска волатилност (chop)."><input type="checkbox" id="iaa-sniper-chop-enabled"> Chop Вкл/Изкл</label>
+                  <label title="V2 = -1 точка при chop, без hard stop"><input type="checkbox" id="iaa-sniper-chop-enabled"> Chop v2 (вкл./изкл.)</label>
                   <input type="number" id="iaa-sniper-chop" min="1" max="100" step="1" value="70">
                 </div>
                                 <div class="iaa-field-row"><span class="iaa-field-label" style="color:${UI_WARM_RED};">НОВИ • ФИЛТРИ</span><button id="iaa-newfilters-toggle" type="button" class="iaa-toggle-btn">${S.sniperNewFiltersCollapsed ? '▸' : '▾'}</button></div>
+                                <div id="iaa-bias-body" style="display:none;">
+                                  <div class="iaa-field-row"><span class="iaa-field-label" style="color:${UI_WARM_RED};">BIAS</span><button id="iaa-bias-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
+                                  <div id="iaa-bias-panel" style="display:none;">
+                                    <div class="iaa-field-row iaa-field-toggle"><span class="iaa-field-label">Bias enabled</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-bias-enabled"></label></div>
+                                    <div class="iaa-field-row"><span class="iaa-field-label">Bias mode</span><select id="iaa-bias-mode"><option value="points">points</option><option value="hybrid">hybrid</option></select></div>
+                                    <div class="iaa-field-row"><span class="iaa-field-label">Bias strong threshold</span><input type="number" id="iaa-bias-strong-threshold" min="0.20" max="0.80" step="0.01"></div>
+                                  </div>
+                                </div>
+                                <div id="iaa-stability-body" style="display:none;">
+                                  <div class="iaa-field-row"><span class="iaa-field-label" style="color:${UI_WARM_RED};">STABILITY</span><button id="iaa-stability-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
+                                  <div id="iaa-stability-panel" style="display:none;">
+                                    <div class="iaa-field-row iaa-field-toggle"><span class="iaa-field-label">Stability enabled</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-stability-enabled"></label></div>
+                                    <div class="iaa-field-row"><span class="iaa-field-label">Max gap ms</span><input type="number" id="iaa-stability-max-gap-ms" min="1000" max="8000" step="100"></div>
+                                    <div class="iaa-field-row"><span class="iaa-field-label" style="color:${UI_WARM_RED};">Режим толеранс</span><select id="iaa-tolerance-mode"><option value="either">или</option><option value="confidence">увереност</option><option value="pt">PT</option><option value="off">изкл.</option></select></div>
+                                    <div class="iaa-field-row"><span class="iaa-field-label">Праг толеранс</span><input type="number" id="iaa-tolerance-confidence" min="0.60" max="0.95" step="0.01"></div>
+                                  </div>
+                                </div>
                 <div id="iaa-newfilters-body" style="${S.sniperNewFiltersCollapsed ? 'display:none;' : ''}">
 
 
@@ -10186,10 +9236,11 @@ const signal = {
                     <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-enabled"></label>
                   </div>
 <div class="iaa-field-row" title="Минимален брой съвпадения (CONFLUENCE), за да се счита сигналът за валиден.">
-                    <span class="iaa-field-label">Режим строгост (точки)</span>
-                    <select id="iaa-killer-min-confluence" style="font-size:11px;">
-                      <option value="6">Нормален (7/9)</option>
-                      <option value="7">Строг (8/9)</option>
+                    <span class="iaa-field-label">Праг Killer</span>
+                    <select id="iaa-killer-threshold-mode" style="font-size:11px;">
+                      <option value="7of11">7/11</option>
+                      <option value="8of11">8/11</option>
+                      <option value="9of11">9/11</option>
                     </select>
                   </div>
                   <div class="iaa-field-row" title="Минимално доминиране LONG/SHORT за разрешен вход.">
@@ -10220,6 +9271,10 @@ const signal = {
                       <option value="2">2</option>
                       <option value="3">3</option>
                     </select>
+                  </div>
+                  <div class="iaa-field-row iaa-field-toggle" title="Подкрепящи филтри: бонус до +1.5 към effective points.">
+                    <span class="iaa-field-label" style="color:${UI_WARM_RED};">Подкрепящи филтри (0.5)</span>
+                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-supporting-filters-enabled"></label>
                   </div>
                 </div>
                 <div class="iaa-field-row" title="EMA fast период.">
@@ -10266,7 +9321,7 @@ const signal = {
                     <span class="iaa-field-label">Диапазон (сек)</span>
                     <span class="iaa-mini-label">мин</span>
                     <input type="number" id="iaa-dynamic-min-sec" min="3" max="3600" step="1" value="15">
-                    <span class="iaa-mini-label">/</span>
+                    <span class="iaa-mini-label">макс</span>
                     <input type="number" id="iaa-dynamic-max-sec" min="3" max="3600" step="1" value="300">
                   </div>
                   <div class="iaa-field-row" title="Стъпка за вход в симулацията назад.">
@@ -10297,8 +9352,8 @@ const signal = {
                   <div class="iaa-field-row" style="margin-top:10px;"><span class="iaa-field-label" style="color:${UI_WARM_RED};">Скалиране на stake</span><button id="iaa-dynamic-stake-toggle" type="button" class="iaa-toggle-btn">▾</button></div>
                   <div id="iaa-dynamic-stake-body">
                   <label class="iaa-checkbox"><input type="checkbox" id="iaa-dynamic-stake-scale-enabled"> Скалиране по точки</label>
-                  <div class="iaa-field-row"><span class="iaa-field-label">Множител при 8/9</span><input type="number" id="iaa-dynamic-stake-mult8" min="0" max="2" step="0.01" value="0.15"></div>
-                  <div class="iaa-field-row"><span class="iaa-field-label">Множител при 9/9</span><input type="number" id="iaa-dynamic-stake-mult9" min="0" max="2" step="0.01" value="0.30"></div>
+                  <div class="iaa-field-row"><span class="iaa-field-label">Множител при 8/11</span><input type="number" id="iaa-dynamic-stake-mult8" min="0" max="2" step="0.01" value="0.15"></div>
+                  <div class="iaa-field-row"><span class="iaa-field-label">Множител при 9/11</span><input type="number" id="iaa-dynamic-stake-mult9" min="0" max="2" step="0.01" value="0.30"></div>
                   <div class="iaa-field-row"><span class="iaa-field-label">Dynamic boost при WR >= 60%</span><input type="number" id="iaa-dynamic-stake-boost" min="0" max="1" step="0.01" value="0.05"></div>
                   <div class="iaa-field-row"><span class="iaa-field-label">Мин. проби за boost</span><input type="number" id="iaa-dynamic-stake-boost-min-samples" min="1" max="2000" step="1" value="60"></div>
                   <div class="iaa-field-row"><span class="iaa-field-label">Намаляване при серия загуби (%)</span><input type="number" id="iaa-dynamic-stake-loss-reduce" min="0" max="100" step="1" value="10"></div>
@@ -10504,7 +9559,6 @@ const signal = {
       const debugClose = $id('iaa-debug-close');
       const killerClose = $id('iaa-killer-close');
       const debugCopy = $id('iaa-debug-copy');
-      const recheckSettlementBtn = $id('iaa-recheck-settlement');
       const lossCopy = $id('iaa-loss-copy');
       const debugTabStatus = $id('iaa-debug-tab-status');
       const debugTabLoss = $id('iaa-debug-tab-loss');
@@ -10620,18 +9674,6 @@ setTimeout(() => {
           hidePopups();
         }, true);
       }
-      if (recheckSettlementBtn) {
-        recheckSettlementBtn.addEventListener('click', async () => {
-          try {
-            const res = await manualRecheckSettlement();
-            if (!res?.ok) { logConsoleLine('[SETTLE] Няма UNRESOLVED за recheck'); return; }
-            logConsoleLine('MANUAL_RECHECK:OK');
-            refreshUI('manual_recheck');
-            logConsoleLine('[SETTLE] Manual recheck изпълнен');
-          } catch (e) { logConsoleLine('[SETTLE] Manual recheck error'); }
-        });
-      }
-
       if (debugCopy) {
         debugCopy.addEventListener('click', async () => {
           const ok = await copyDebugInfo();
@@ -10691,25 +9733,6 @@ setTimeout(() => {
         });
       }
       rebindPanelPopupButtons();
-    }
-
-    
-    async function manualRecheckSettlement(tradeId = null) {
-      const unresolvedActive = (S.activeTrades || []).slice().reverse().find(t => t && (t.state === 'UNRESOLVED' || t.outcome === 'UNRESOLVED'));
-      let unresolved = unresolvedActive;
-      const sess = _sessionEnsure();
-      const unresolvedSess = (sess.unresolvedTrades || []).slice().reverse()[0] || null;
-      const fallbackId = unresolvedSess?.tradeId || unresolvedSess?.id || null;
-      const targetId = tradeId || fallbackId;
-      if (!unresolved && targetId) unresolved = (S.trades || []).find(t => t && (t.id === targetId || t.tradeId === targetId));
-      if (!unresolved) unresolved = (S.trades || []).slice().reverse().find(t => t && t.outcome === 'UNRESOLVED');
-      if (!unresolved) return { ok: false, reason: 'NOT_FOUND' };
-      unresolved.outcomeChecked = false;
-      unresolved.recheckAttempts = Number(unresolved.recheckAttempts || 0);
-      S.activeTrades = S.activeTrades || [];
-      if (!S.activeTrades.find(t => t.id === unresolved.id)) S.activeTrades.push(unresolved);
-      await finalizeActiveTrades();
-      return { ok: true, tradeId: unresolved.id };
     }
 
     function setStatusOverlay(text, countdown = '', logToConsole = true) {
@@ -10783,7 +9806,7 @@ setTimeout(() => {
       const blocks = '▁▂▃▄▅▆▇█';
       return arr.map(v => blocks[Math.max(0, Math.min(7, Math.round((v / 100) * 7))) ]).join('');
     }
-    function renderPendingTrades (){
+    function renderPendingTrades(){
       const execEl = $id('iaa-exec');
       if (null && execEl) execEl.textContent = fmtHHMMSSLocal(new Date(null.targetTsMs));
       else if (execEl) execEl.textContent = '—';
@@ -10803,18 +9826,7 @@ setTimeout(() => {
 
       const etaEl = $id('iaa-next-trade');
       if (etaEl) etaEl.textContent = getNextEtaLabel();
-      const lastTradeCard = $id('iaa-last-trade-card');
-      if (lastTradeCard) {
-        const all = Array.isArray(S.trades) ? S.trades : [];
-        const last = all.length ? all[all.length - 1] : null;
-        if (last) {
-          const botPnl = Number.isFinite(last.profitCents) ? last.profitCents : 0;
-          const platformBadge = last.platformOutcomeBadge || '—';
-          lastTradeCard.innerHTML = `Bot PnL: <b>${formatOutcomeAmount(botPnl)}</b> <span style="opacity:.75; margin-left:8px;">Platform: <b>${platformBadge}</b></span>`;
-        } else {
-          lastTradeCard.textContent = 'Bot PnL: — | Platform: —';
-        }
-      }
+      renderSniperMatrix();
 
       const feedEl = $id('iaa-feed-cloud');
       if (feedEl) {
@@ -10832,7 +9844,7 @@ setTimeout(() => {
       }
     }
 
-    async function loadSettings(){
+    async function restoreSettings(){
       const base = await storage.get(BASE_AMOUNT_KEY);
       if (typeof base === 'number' && base > 0) S.baseAmount = base;
       const ex  = await storage.get(EXPIRY_KEY); if (typeof ex === 'string') S.expirySetting = normalizeExpiry(ex) || '1M';
@@ -10857,20 +9869,14 @@ setTimeout(() => {
       const tradeIntervalMin = await storage.get(TRADE_INTERVAL_MIN_KEY); if (typeof tradeIntervalMin === 'number') S.tradeIntervalMin = tradeIntervalMin;
       const maxTradesPerMinute = await storage.get(MAX_СДЕЛКИ_PER_MIN_KEY); if (typeof maxTradesPerMinute === 'number') S.maxTradesPerMinute = maxTradesPerMinute; else if (!Number.isFinite(S.maxTradesPerMinute)) S.maxTradesPerMinute = 5;
       const maxOpenTrades = await storage.get(MAX_OPEN_СДЕЛКИ_KEY); if (typeof maxOpenTrades === 'number') S.maxOpenTrades = maxOpenTrades; else if (!Number.isFinite(S.maxOpenTrades)) S.maxOpenTrades = 5;
-      const ewEnabled = await storage.get(ENTRY_WIN_TF_ENABLED_KEY);
+      const ewEnabled = await storage.get(ENTRYПЕЧАЛБИ_TF_ENABLED_KEY);
       if (typeof ewEnabled === 'boolean') S.entryWindowTfEnabled = ewEnabled;
-      const ew1m = await storage.get(ENTRY_WIN_1M_SEC_KEY);
-      if (typeof ew1m === 'number') S.entryWindowSec1m = Math.max(0, Math.min(60, Math.round(ew1m)));
-      const ew3m = await storage.get(ENTRY_WIN_3M_SEC_KEY);
-      if (typeof ew3m === 'number') S.entryWindowSec3m = Math.max(0, Math.min(180, Math.round(ew3m)));
-      const ew5m = await storage.get(ENTRY_WIN_5M_SEC_KEY);
-      if (typeof ew5m === 'number') S.entryWindowSec5m = Math.max(0, Math.min(300, Math.round(ew5m)));
-      const early1m = await storage.get(EARLY_ENTRY_1M_ENABLED_KEY);
-      if (typeof early1m === 'boolean') S.earlyEntry1mEnabled = early1m;
-      const early3m = await storage.get(EARLY_ENTRY_3M_ENABLED_KEY);
-      if (typeof early3m === 'boolean') S.earlyEntry3mEnabled = early3m;
-      const early5m = await storage.get(EARLY_ENTRY_5M_ENABLED_KEY);
-      if (typeof early5m === 'boolean') S.earlyEntry5mEnabled = early5m;
+      const ew1m = await storage.get(ENTRYПЕЧАЛБИ_1M_SEC_KEY);
+      if (typeof ew1m === 'number') S.entryWindowSec1m = Math.max(0, Math.min(999, Math.round(ew1m)));
+      const ew3m = await storage.get(ENTRYПЕЧАЛБИ_3M_SEC_KEY);
+      if (typeof ew3m === 'number') S.entryWindowSec3m = Math.max(0, Math.min(999, Math.round(ew3m)));
+      const ew5m = await storage.get(ENTRYПЕЧАЛБИ_5M_SEC_KEY);
+      if (typeof ew5m === 'number') S.entryWindowSec5m = Math.max(0, Math.min(999, Math.round(ew5m)));
       const payoutMin = await storage.get(PAYOUT_MIN_KEY); if (typeof payoutMin === 'number') S.payoutMin = payoutMin;
       const payoutMax = await storage.get(PAYOUT_MAX_KEY); if (typeof payoutMax === 'number') S.payoutMax = payoutMax;
       const payoutRequired = await storage.get(PAYOUT_REQUIRED_KEY); if (typeof payoutRequired === 'boolean') S.payoutRequired = payoutRequired;
@@ -10892,7 +9898,6 @@ setTimeout(() => {
       const dynamicStakeBoostWr = await storage.get(DYNAMIC_STAKE_BOOST_KEY); if (typeof dynamicStakeBoostWr === 'number') S.dynamicStakeBoostWr = Math.max(0, Math.min(1, dynamicStakeBoostWr));
       const dynamicStakeBoostMinSamples = await storage.get(DYNAMIC_STAKE_BOOST_MIN_SAMPLES_KEY); if (typeof dynamicStakeBoostMinSamples === 'number') S.dynamicStakeBoostMinSamples = Math.max(1, Math.min(2000, Math.round(dynamicStakeBoostMinSamples)));
       const dynamicStakeLossReduce = await storage.get(DYNAMIC_STAKE_LOSS_REDUCE_KEY); if (typeof dynamicStakeLossReduce === 'number') S.dynamicStakeLossReduce = Math.max(0, Math.min(1, dynamicStakeLossReduce));
-      const logVerbosity = await storage.get(LOG_VERBOSITY_KEY); if (typeof logVerbosity === 'string') S.logVerbosity = ['minimal','normal','detailed'].includes(logVerbosity) ? logVerbosity : 'normal';
       // Legacy VWAP/Momentum/Volume weighting path is disabled in the score-first core.
       S.sniperVwapEnabled = false;
       S.sniperMomentumEnabled = false;
@@ -10906,7 +9911,7 @@ setTimeout(() => {
       const killerDynamicCollapsed = await storage.get(KILLER_DYNAMIC_COLLAPSED_KEY); if (typeof killerDynamicCollapsed === 'boolean') S.killerDynamicCollapsed = killerDynamicCollapsed;
       const killerEnabled = await storage.get(KILLER_ENABLED_KEY); if (typeof killerEnabled === 'boolean') S.killerEnabled = killerEnabled;
       const killerHudEnabled = await storage.get(KILLER_HUD_ENABLED_KEY); if (typeof killerHudEnabled === 'boolean') S.killerHudEnabled = killerHudEnabled;
-      const killerMinConfluence = await storage.get(KILLER_MIN_CONFLUENCE_KEY); if (typeof killerMinConfluence === 'number') S.killerMinConfluence = Math.max(6, Math.min(7, Math.round(killerMinConfluence)));
+      const killerMinConfluence = await storage.get(KILLER_MIN_CONFLUENCE_KEY); if (typeof killerMinConfluence === 'number') S.killerMinConfluence = Math.max(7, Math.min(9, Math.round(killerMinConfluence)));
       const killerDomThreshold = await storage.get(KILLER_DOM_THRESHOLD_KEY); if (typeof killerDomThreshold === 'number') S.killerDominanceThreshold = Math.max(50, Math.min(90, Math.round(killerDomThreshold)));
       const killerPerfectTime = await storage.get(KILLER_PERFECT_TIME_KEY); if (typeof killerPerfectTime === 'boolean') S.killerPerfectTimeEnabled = killerPerfectTime;
       const killerAdxDynamic = await storage.get(KILLER_ADX_DYNAMIC_KEY); if (typeof killerAdxDynamic === 'boolean') S.killerAdxDynamicEnabled = killerAdxDynamic;
@@ -10914,6 +9919,17 @@ setTimeout(() => {
       const killerSignalCooldownSec = await storage.get(KILLER_SIGNAL_COOLDOWN_SEC_KEY); if (typeof killerSignalCooldownSec === 'number') S.killerSignalCooldownSec = Math.max(0, Math.min(30, Math.round(killerSignalCooldownSec)));
       const killerUseStrategyVotes = await storage.get(KILLER_USE_STRATEGY_VOTES_KEY); if (typeof killerUseStrategyVotes === 'boolean') S.killerUseStrategyVotes = killerUseStrategyVotes;
       const killerStrategyAgreement = await storage.get(KILLER_STRATEGY_AGREEMENT_KEY); if (typeof killerStrategyAgreement === 'number') S.killerStrategyAgreementMin = Math.max(1, Math.min(3, Math.round(killerStrategyAgreement)));
+      const biasEnabled = await storage.get(BIAS_ENABLED_KEY); if (typeof biasEnabled === 'boolean') S.biasEnabled = biasEnabled;
+      const biasMode = await storage.get(BIAS_MODE_KEY); if (typeof biasMode === 'string') S.biasMode = ['points','hybrid'].includes(biasMode) ? biasMode : 'points';
+      const biasStrongThreshold = await storage.get(BIAS_STRONG_THRESHOLD_KEY); if (typeof biasStrongThreshold === 'number') S.biasStrongThreshold = Math.max(0.20, Math.min(0.80, biasStrongThreshold));
+      const stabilityEnabled = await storage.get(STABILITY_ENABLED_KEY); if (typeof stabilityEnabled === 'boolean') S.stabilityEnabled = stabilityEnabled;
+      const stabilityMaxGapMs = await storage.get(STABILITY_MAX_GAP_MS_KEY); if (typeof stabilityMaxGapMs === 'number') S.stabilityMaxGapMs = Math.max(1000, Math.min(8000, Math.round(stabilityMaxGapMs)));
+      const toleranceMode = await storage.get(TOLERANCE_MODE_KEY); if (typeof toleranceMode === 'string') S.toleranceMode = ['confidence','pt','either','off'].includes(toleranceMode) ? toleranceMode : 'either';
+      const toleranceConfidence = await storage.get(TOLERANCE_CONFIDENCE_KEY); if (typeof toleranceConfidence === 'number') S.toleranceConfidence = Math.max(0.60, Math.min(0.95, toleranceConfidence));
+      const killerThresholdMode = await storage.get(KILLER_THRESHOLD_MODE_KEY); if (typeof killerThresholdMode === 'string') S.killerThresholdMode = ['7of11','8of11','9of11'].includes(killerThresholdMode) ? killerThresholdMode : '8of11';
+      S.killerMinConfluence = getScoreThresholdPoints();
+      const supportingFiltersEnabled = await storage.get(SUPPORTING_FILTERS_ENABLED_KEY); if (typeof supportingFiltersEnabled === 'boolean') S.supportingFiltersEnabled = supportingFiltersEnabled;
+      const chopV2Enabled = await storage.get(CHOP_V2_ENABLED_KEY); if (typeof chopV2Enabled === 'boolean') S.chopV2Enabled = chopV2Enabled;
       const killerHudPos = await storage.get(KILLER_HUD_POS_KEY);
       if (killerHudPos && Number.isFinite(killerHudPos.x) && Number.isFinite(killerHudPos.y)) {
         S.killerHudPos = { x: killerHudPos.x, y: killerHudPos.y };
@@ -10994,7 +10010,7 @@ setTimeout(() => {
       const sniperVolumeEnabled = await storage.get(SNIPER_VOLUME_ENABLED_KEY);
       if (typeof sniperVolumeEnabled === 'boolean') S.sniperVolumeEnabled = sniperVolumeEnabled;
       const sniperChopEnabled = await storage.get(SNIPER_CHOP_ENABLED_KEY);
-      if (typeof sniperChopEnabled === 'boolean') S.sniperChopEnabled = sniperChopEnabled;
+      if (typeof sniperChopEnabled === 'boolean') { S.sniperChopEnabled = sniperChopEnabled; S.chopV2Enabled = sniperChopEnabled; }
       const savedTimeframes = await storage.get(SNIPER_TIMEFRAMES_KEY);
       if (savedTimeframes && typeof savedTimeframes === 'object') {
         S.sniperEnabledTimeframes = Object.assign({}, S.sniperEnabledTimeframes, savedTimeframes);
@@ -11215,13 +10231,10 @@ setTimeout(() => {
       storage.set(MAX_OPEN_СДЕЛКИ_KEY, S.maxOpenTrades);
       storage.set(MAX_SESSION_ЗАГУБИ_KEY, Math.max(0, Math.round(S.maxSessionLossCents || 0)));
       storage.set(MAX_CONSECUTIVE_ЗАГУБИES_KEY, Math.max(0, Math.round(S.maxConsecutiveLosses || 0)));
-      storage.set(ENTRY_WIN_TF_ENABLED_KEY, !!S.entryWindowTfEnabled);
-      storage.set(ENTRY_WIN_1M_SEC_KEY, Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 35);
-      storage.set(ENTRY_WIN_3M_SEC_KEY, Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 90);
-      storage.set(ENTRY_WIN_5M_SEC_KEY, Number.isFinite(S.entryWindowSec5m) ? S.entryWindowSec5m : 150);
-      storage.set(EARLY_ENTRY_1M_ENABLED_KEY, !!S.earlyEntry1mEnabled);
-      storage.set(EARLY_ENTRY_3M_ENABLED_KEY, !!S.earlyEntry3mEnabled);
-      storage.set(EARLY_ENTRY_5M_ENABLED_KEY, !!S.earlyEntry5mEnabled);
+      storage.set(ENTRYПЕЧАЛБИ_TF_ENABLED_KEY, !!S.entryWindowTfEnabled);
+      storage.set(ENTRYПЕЧАЛБИ_1M_SEC_KEY, Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15);
+      storage.set(ENTRYПЕЧАЛБИ_3M_SEC_KEY, Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35);
+      storage.set(ENTRYПЕЧАЛБИ_5M_SEC_KEY, Number.isFinite(S.entryWindowSec5m) ? S.entryWindowSec5m : 150);
       storage.set(PAYOUT_MIN_KEY, S.payoutMin);
       storage.set(PAYOUT_MAX_KEY, S.payoutMax);
       storage.set(PAYOUT_REQUIRED_KEY, S.payoutRequired);
@@ -11243,7 +10256,6 @@ setTimeout(() => {
       storage.set(DYNAMIC_STAKE_BOOST_KEY, S.dynamicStakeBoostWr);
       storage.set(DYNAMIC_STAKE_BOOST_MIN_SAMPLES_KEY, S.dynamicStakeBoostMinSamples);
       storage.set(DYNAMIC_STAKE_LOSS_REDUCE_KEY, S.dynamicStakeLossReduce);
-      storage.set(LOG_VERBOSITY_KEY, S.logVerbosity || 'normal');
       storage.set(DYNAMIC_CORE_COLLAPSED_KEY, !!S.dynamicCoreCollapsed);
       storage.set(DYNAMIC_STAKE_COLLAPSED_KEY, !!S.dynamicStakeCollapsed);
       storage.set(KILLER_DYNAMIC_COLLAPSED_KEY, !!S.killerDynamicCollapsed);
@@ -11257,6 +10269,16 @@ setTimeout(() => {
       storage.set(KILLER_SIGNAL_COOLDOWN_SEC_KEY, S.killerSignalCooldownSec);
       storage.set(KILLER_USE_STRATEGY_VOTES_KEY, !!S.killerUseStrategyVotes);
       storage.set(KILLER_STRATEGY_AGREEMENT_KEY, S.killerStrategyAgreementMin);
+      storage.set(BIAS_ENABLED_KEY, !!S.biasEnabled);
+      storage.set(BIAS_MODE_KEY, ['points','hybrid'].includes(S.biasMode) ? S.biasMode : 'points');
+      storage.set(BIAS_STRONG_THRESHOLD_KEY, Math.max(0.20, Math.min(0.80, Number(S.biasStrongThreshold || 0.45))));
+      storage.set(STABILITY_ENABLED_KEY, !!S.stabilityEnabled);
+      storage.set(STABILITY_MAX_GAP_MS_KEY, Math.max(1000, Math.min(8000, Math.round(Number(S.stabilityMaxGapMs || 3500)))));
+      storage.set(TOLERANCE_MODE_KEY, ['confidence','pt','either','off'].includes(S.toleranceMode) ? S.toleranceMode : 'either');
+      storage.set(TOLERANCE_CONFIDENCE_KEY, Math.max(0.60, Math.min(0.95, Number(S.toleranceConfidence || 0.75))));
+      storage.set(KILLER_THRESHOLD_MODE_KEY, ['7of11','8of11','9of11'].includes(S.killerThresholdMode) ? S.killerThresholdMode : '8of11');
+      storage.set(SUPPORTING_FILTERS_ENABLED_KEY, !!S.supportingFiltersEnabled);
+      storage.set(CHOP_V2_ENABLED_KEY, !!S.chopV2Enabled);
       storage.set(KILLER_HUD_POS_KEY, S.killerHudPos || { x: null, y: null });
       storage.set(IDLE_SWITCH_ENABLED_KEY, S.idleSwitchEnabled);
       storage.set(IDLE_SWITCH_MIN_KEY, S.idleSwitchMinutes);
@@ -11293,7 +10315,7 @@ setTimeout(() => {
       storage.set(SNIPER_VWAP_ENABLED_KEY, S.sniperVwapEnabled);
       storage.set(SNIPER_MOMENTUM_ENABLED_KEY, S.sniperMomentumEnabled);
       storage.set(SNIPER_VOLUME_ENABLED_KEY, S.sniperVolumeEnabled);
-      storage.set(SNIPER_CHOP_ENABLED_KEY, S.sniperChopEnabled);
+      storage.set(SNIPER_CHOP_ENABLED_KEY, !!S.chopV2Enabled);
       storage.set(SNIPER_TIMEFRAMES_KEY, S.sniperEnabledTimeframes);
       storage.set(FEATURE_VOLUME_REJECTION_KEY, S.featureVolumeRejection);
       storage.set(FEATURE_VWAP_ANALYSIS_KEY, S.featureVwapAnalysis);
@@ -11349,7 +10371,6 @@ setTimeout(() => {
 
       await storage.set(RANGE_OSC_PENALTY_ENABLED_KEY, !!S.rangeOscPenaltyEnabled);
       await storage.set(RANGE_OSC_PENALTY_PCT_KEY, Number(S.rangeOscPenaltyPct || 0));
-      refreshUI('settingsChange');
     }
     function captureSettingsSnapshot(){}
 
@@ -11404,13 +10425,10 @@ setTimeout(() => {
       const SNIPER_MIN_PAYOUT = sniperMinPayout;
       const SNIPER_MIN_PAYOUT_ENABLED = $id('iaa-sniper-min-payout-enabled');
 
-      const ENTRY_WIN_ENABLED = $id('iaa-entrywin-enabled');
-      const ENTRY_WIN_TF_1M = $id('iaa-entrywin-tf-1m');
-      const ENTRY_WIN_TF_3M = $id('iaa-entrywin-tf-3m');
-      const ENTRY_WIN_TF_5M = $id('iaa-entrywin-tf-5m');
-      const ENTRY_WIN_1M = $id('iaa-entrywin-1m');
-      const ENTRY_WIN_3M = $id('iaa-entrywin-3m');
-      const ENTRY_WIN_5M = $id('iaa-entrywin-5m');
+      const ENTRYПЕЧАЛБИ_ENABLED = $id('iaa-entrywin-enabled');
+      const ENTRYПЕЧАЛБИ_1M = $id('iaa-entrywin-1m');
+      const ENTRYПЕЧАЛБИ_3M = $id('iaa-entrywin-3m');
+      const ENTRYПЕЧАЛБИ_5M = $id('iaa-entrywin-5m');
       const sniperChop = $id('iaa-sniper-chop');
       const sniperWarmup = $id('iaa-sniper-warmup');
       const sniperMaxSessionLoss = $id('iaa-sniper-max-session-loss');
@@ -11456,7 +10474,6 @@ setTimeout(() => {
       const dynamicStakeBoostSettings = $id('iaa-dynamic-stake-boost');
       const dynamicStakeBoostMinSamplesSettings = $id('iaa-dynamic-stake-boost-min-samples');
       const dynamicStakeLossReduceSettings = $id('iaa-dynamic-stake-loss-reduce');
-      const logVerbositySettings = $id('iaa-log-verbosity');
       const featureVolumeRejection = $id('iaa-feature-volume-rejection');
       const featureVwapAnalysis = $id('iaa-feature-vwap-analysis');
       const featureSessionBoost = $id('iaa-feature-session-boost');
@@ -11536,13 +10553,10 @@ setTimeout(() => {
       const sniperMinPayoutEnabled = $id('iaa-sniper-min-payout-enabled');
       if (sniperMinPayoutEnabled) sniperMinPayoutEnabled.checked = (S.sniperMinPayoutEnabled ?? true);
       if (sniperMinPayout && sniperMinPayoutEnabled) sniperMinPayout.disabled = !sniperMinPayoutEnabled.checked;
-      if (ENTRY_WIN_ENABLED) ENTRY_WIN_ENABLED.checked = !!S.entryWindowTfEnabled;
-      if (ENTRY_WIN_TF_1M) ENTRY_WIN_TF_1M.checked = !!S.earlyEntry1mEnabled;
-      if (ENTRY_WIN_TF_3M) ENTRY_WIN_TF_3M.checked = !!S.earlyEntry3mEnabled;
-      if (ENTRY_WIN_TF_5M) ENTRY_WIN_TF_5M.checked = !!S.earlyEntry5mEnabled;
-      if (ENTRY_WIN_1M) ENTRY_WIN_1M.value = Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 35;
-      if (ENTRY_WIN_3M) ENTRY_WIN_3M.value = Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 90;
-      if (ENTRY_WIN_5M) ENTRY_WIN_5M.value = Number.isFinite(S.entryWindowSec5m) ? S.entryWindowSec5m : 150;
+      if (ENTRYПЕЧАЛБИ_ENABLED) ENTRYПЕЧАЛБИ_ENABLED.checked = !!S.entryWindowTfEnabled;
+      if (ENTRYПЕЧАЛБИ_1M) ENTRYПЕЧАЛБИ_1M.value = Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15;
+      if (ENTRYПЕЧАЛБИ_3M) ENTRYПЕЧАЛБИ_3M.value = Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35;
+      if (ENTRYПЕЧАЛБИ_5M) ENTRYПЕЧАЛБИ_5M.value = Number.isFinite(S.entryWindowSec5m) ? S.entryWindowSec5m : 150;
       if (sniperChop) sniperChop.value = mapChopThresholdToUiPct(S.sniperChopThreshold ?? SNIPER_5S_DEFAULTS.chopThreshold);
       if (sniperWarmup) sniperWarmup.value = S.sniperWarmupMin ?? 10;
       if (sniperMaxSessionLoss) sniperMaxSessionLoss.value = (S.maxSessionLossCents || 0) / 100;
@@ -11554,7 +10568,7 @@ setTimeout(() => {
       if (sniperVwapEnabled) sniperVwapEnabled.checked = !!S.sniperVwapEnabled;
       if (sniperMomentumEnabled) sniperMomentumEnabled.checked = !!S.sniperMomentumEnabled;
       if (sniperVolumeEnabled) sniperVolumeEnabled.checked = !!S.sniperVolumeEnabled;
-      if (sniperChopEnabled) sniperChopEnabled.checked = !!S.sniperChopEnabled;
+      if (sniperChopEnabled) sniperChopEnabled.checked = !!S.chopV2Enabled;
       if (sniperVwapWeight) sniperVwapWeight.value = Math.round(((S.sniperVwapWeight ?? 0.55) * 100));
       if (sniperMomentumWeight) sniperMomentumWeight.value = Math.round(((S.sniperMomentumWeight ?? 0.35) * 100));
       if (sniperVolumeWeight) sniperVolumeWeight.value = Math.round(((S.sniperVolumeWeight ?? 0.10) * 100));
@@ -11582,20 +10596,9 @@ setTimeout(() => {
       if (dynamicStakeBoostSettings) dynamicStakeBoostSettings.value = Number(S.dynamicStakeBoostWr ?? 0.05).toFixed(2);
       if (dynamicStakeBoostMinSamplesSettings) dynamicStakeBoostMinSamplesSettings.value = Math.round(Number(S.dynamicStakeBoostMinSamples ?? 60));
       if (dynamicStakeLossReduceSettings) dynamicStakeLossReduceSettings.value = Math.round(Math.max(0, Number(S.dynamicStakeLossReduce ?? 0.10)) * 100);
-      if (logVerbositySettings) {
-        logVerbositySettings.value = getLogVerbosity();
-        if (!logVerbositySettings.dataset.bound) {
-          logVerbositySettings.dataset.bound = '1';
-          logVerbositySettings.addEventListener('change', () => {
-            const v = String(logVerbositySettings.value || 'normal');
-            S.logVerbosity = ['minimal', 'normal', 'detailed'].includes(v) ? v : 'normal';
-            persistSettings();
-          });
-        }
-      }
       const killerEnabledSettings = $id('iaa-killer-enabled');
       const killerHudEnabledSettings = $id('iaa-killer-hud-enabled');
-      const killerMinConfluenceSettings = $id('iaa-killer-min-confluence');
+      const killerMinConfluenceSettings = $id('iaa-killer-threshold-mode');
       const killerDomThresholdSettings = $id('iaa-killer-dominance-threshold');
       const killerPerfectTimeSettings = $id('iaa-killer-perfect-time');
       const killerCooldownSettings = $id('iaa-killer-cooldown-sec');
@@ -11603,9 +10606,18 @@ setTimeout(() => {
       const killerCandleHardStopSettings = $id('iaa-killer-candle-hardstop');
       const killerUseStrategyVotesSettings = $id('iaa-killer-use-strategy-votes');
       const killerStrategyAgreementSettings = $id('iaa-killer-strategy-agreement');
+      const supportingFiltersEnabledSettings = $id('iaa-supporting-filters-enabled');
+      const chopV2EnabledSettings = null;
+      const biasEnabledSettings = $id('iaa-bias-enabled');
+      const biasModeSettings = $id('iaa-bias-mode');
+      const biasStrongThresholdSettings = $id('iaa-bias-strong-threshold');
+      const stabilityEnabledSettings = $id('iaa-stability-enabled');
+      const stabilityMaxGapMsSettings = $id('iaa-stability-max-gap-ms');
+      const toleranceModeSettings = $id('iaa-tolerance-mode');
+      const toleranceConfidenceSettings = $id('iaa-tolerance-confidence');
       if (killerEnabledSettings) killerEnabledSettings.checked = !!S.killerEnabled;
       if (killerHudEnabledSettings) killerHudEnabledSettings.checked = !!S.killerHudEnabled;
-      if (killerMinConfluenceSettings) killerMinConfluenceSettings.value = Math.max(6, Math.min(7, Math.round(S.killerMinConfluence || 6)));
+      if (killerMinConfluenceSettings) killerMinConfluenceSettings.value = ['7of11','8of11','9of11'].includes(S.killerThresholdMode) ? S.killerThresholdMode : '8of11';
       if (killerDomThresholdSettings) killerDomThresholdSettings.value = Math.max(50, Math.min(90, Math.round(S.killerDominanceThreshold || 68)));
       if (killerPerfectTimeSettings) killerPerfectTimeSettings.checked = !!S.killerPerfectTimeEnabled;
       if (killerCooldownSettings) killerCooldownSettings.value = Math.max(0, Math.min(30, Math.round(S.killerSignalCooldownSec || 5)));
@@ -11613,6 +10625,19 @@ setTimeout(() => {
       if (killerCandleHardStopSettings) killerCandleHardStopSettings.checked = !!S.killerCandleAgainstHardStop;
       if (killerUseStrategyVotesSettings) killerUseStrategyVotesSettings.checked = !!S.killerUseStrategyVotes;
       if (killerStrategyAgreementSettings) killerStrategyAgreementSettings.value = Math.max(1, Math.min(3, Math.round(S.killerStrategyAgreementMin || 1)));
+      if (supportingFiltersEnabledSettings) supportingFiltersEnabledSettings.checked = !!S.supportingFiltersEnabled;
+      if (biasEnabledSettings) biasEnabledSettings.checked = !!S.biasEnabled;
+      if (biasModeSettings) biasModeSettings.value = ['points','hybrid'].includes(S.biasMode) ? S.biasMode : 'points';
+      if (biasStrongThresholdSettings) biasStrongThresholdSettings.value = Number(S.biasStrongThreshold || 0.45).toFixed(2);
+      if (stabilityEnabledSettings) stabilityEnabledSettings.checked = !!S.stabilityEnabled;
+      if (stabilityMaxGapMsSettings) stabilityMaxGapMsSettings.value = Math.max(1000, Math.min(8000, Math.round(Number(S.stabilityMaxGapMs || 3500))));
+      if (toleranceModeSettings) toleranceModeSettings.value = ['confidence','pt','either','off'].includes(S.toleranceMode) ? S.toleranceMode : 'either';
+      if (toleranceConfidenceSettings) toleranceConfidenceSettings.value = Number(S.toleranceConfidence || 0.75).toFixed(2);
+      const biasBody = $id('iaa-bias-body'); const biasPanel = $id('iaa-bias-panel'); const biasToggle = $id('iaa-bias-toggle');
+      const stabBody = $id('iaa-stability-body'); const stabPanel = $id('iaa-stability-panel'); const stabToggle = $id('iaa-stability-toggle');
+      if (biasBody) biasBody.style.display = ''; if (stabBody) stabBody.style.display = '';
+      if (biasPanel) biasPanel.style.display = (S.biasPanelOpen ? 'block' : 'none'); if (biasToggle) biasToggle.textContent = S.biasPanelOpen ? '▾' : '▸';
+      if (stabPanel) stabPanel.style.display = (S.stabilityPanelOpen ? 'block' : 'none'); if (stabToggle) stabToggle.textContent = S.stabilityPanelOpen ? '▾' : '▸';
       if (featureVolumeRejection) featureVolumeRejection.checked = !!S.featureVolumeRejection;
       if (featureVwapAnalysis) featureVwapAnalysis.checked = !!S.featureVwapAnalysis;
       if (featureSessionBoost) featureSessionBoost.checked = !!S.featureSessionBoost;
@@ -11957,7 +10982,7 @@ const closeSettingsPanel = () => {
             dotEl.style.boxShadow = S.running ? '0 0 8px rgba(34,197,94,.85)' : '0 0 8px rgba(239,68,68,.85)';
           }
           if (S.running) { 
-            startEngineLoops(); 
+            S.loop = setInterval(tick, 1000/C.FPS); 
             S.botStartTime = nowMs();
             S.botStartAt = Date.now();
             S.lastSignalLagSec = null;
@@ -11986,7 +11011,7 @@ const closeSettingsPanel = () => {
             S.strategyStats = {};
             S.strategyTradeCount = 0;
             S.lossReports = [];
-            refreshUI('start/stop');
+            renderTradeStats();
             
             const startBal = readBalanceCents();
             if (startBal !== null) {
@@ -12003,7 +11028,8 @@ const closeSettingsPanel = () => {
               startKeepAlive();
             }
           } else {
-            stopEngineLoops();
+            clearInterval(S.loop);
+            S.loop = null;
             stopKeepAlive();
             stopPriceMonitoring();
             S.assetSelecting = false;
@@ -12019,10 +11045,11 @@ const closeSettingsPanel = () => {
             stopCountdown();
             setUIState('IDLE');
             renderWarmup(0);
-            refreshUI('legacy_direct_render_replaced');
+            renderSniperMatrix();
+            renderPendingTrades();
             try { sessionStop(); } catch (e) {}
             logConsoleLine(formatStatus('bot_stopped'));
-            refreshUI('start/stop');
+            renderTradeStats();
           }
         });
       }
@@ -12142,7 +11169,7 @@ const closeSettingsPanel = () => {
       // --- KILLER settings (bind after elements exist) ---
       const killerEnabledSettings = $id('iaa-killer-enabled');
       const killerHudEnabledSettings = $id('iaa-killer-hud-enabled');
-      const killerMinConfluenceSettings = $id('iaa-killer-min-confluence');
+      const killerMinConfluenceSettings = $id('iaa-killer-threshold-mode');
       const killerDomThresholdSettings = $id('iaa-killer-dominance-threshold');
       const killerPerfectTimeSettings = $id('iaa-killer-perfect-time');
       const killerCooldownSettings = $id('iaa-killer-cooldown-sec');
@@ -12150,10 +11177,24 @@ const closeSettingsPanel = () => {
       const killerCandleHardstopSettings = $id('iaa-killer-candle-hardstop');
       const killerUseStrategyVotesSettings = $id('iaa-killer-use-strategy-votes');
       const killerStrategyAgreementSettings = $id('iaa-killer-strategy-agreement');
+      const supportingFiltersEnabledSettings = $id('iaa-supporting-filters-enabled');
+      const chopV2EnabledSettings = null;
+      const biasEnabledSettings = $id('iaa-bias-enabled');
+      const biasModeSettings = $id('iaa-bias-mode');
+      const biasStrongThresholdSettings = $id('iaa-bias-strong-threshold');
+      const stabilityEnabledSettings = $id('iaa-stability-enabled');
+      const stabilityMaxGapMsSettings = $id('iaa-stability-max-gap-ms');
+      const toleranceModeSettings = $id('iaa-tolerance-mode');
+      const toleranceConfidenceSettings = $id('iaa-tolerance-confidence');
+      const biasToggleBtn = $id('iaa-bias-toggle');
+      const biasPanel = $id('iaa-bias-panel');
+      const stabilityToggleBtn = $id('iaa-stability-toggle');
+      const stabilityPanel = $id('iaa-stability-panel');
 
+      bindSettingsListenersOnce();
       if (killerEnabledSettings) killerEnabledSettings.addEventListener('change', () => { S.killerEnabled = !!killerEnabledSettings.checked; void persistSettings(); });
       if (killerHudEnabledSettings) killerHudEnabledSettings.addEventListener('change', () => { S.killerHudEnabled = !!killerHudEnabledSettings.checked; void persistSettings(); });
-      if (killerMinConfluenceSettings) killerMinConfluenceSettings.addEventListener('change', () => { const v = parseNumberFlexible(killerMinConfluenceSettings.value); S.killerMinConfluence = Math.max(6, Math.min(7, Math.round(Number.isFinite(v) ? v : 6))); void persistSettings(); });
+      if (killerMinConfluenceSettings) killerMinConfluenceSettings.addEventListener('change', () => { const v = String(killerMinConfluenceSettings.value || '8of11'); S.killerThresholdMode = ['7of11','8of11','9of11'].includes(v) ? v : '8of11'; S.killerMinConfluence = getScoreThresholdPoints(); void persistSettings(); });
       if (killerDomThresholdSettings) killerDomThresholdSettings.addEventListener('input', () => { const v = parseNumberFlexible(killerDomThresholdSettings.value); S.killerDominanceThreshold = Math.max(50, Math.min(90, Math.round(Number.isFinite(v) ? v : 68))); void persistSettings(); });
       if (killerPerfectTimeSettings) killerPerfectTimeSettings.addEventListener('change', () => { S.killerPerfectTimeEnabled = !!killerPerfectTimeSettings.checked; void persistSettings(); });
       if (killerCooldownSettings) killerCooldownSettings.addEventListener('input', () => { const v = parseNumberFlexible(killerCooldownSettings.value); S.killerSignalCooldownSec = Math.max(0, Math.min(30, Math.round(Number.isFinite(v) ? v : 5))); void persistSettings(); });
@@ -12161,6 +11202,16 @@ const closeSettingsPanel = () => {
       if (killerCandleHardstopSettings) killerCandleHardstopSettings.addEventListener('change', () => { S.killerCandleAgainstHardStop = !!killerCandleHardstopSettings.checked; void persistSettings(); });
       if (killerUseStrategyVotesSettings) killerUseStrategyVotesSettings.addEventListener('change', () => { S.killerUseStrategyVotes = !!killerUseStrategyVotesSettings.checked; void persistSettings(); });
       if (killerStrategyAgreementSettings) killerStrategyAgreementSettings.addEventListener('change', () => { const v = parseNumberFlexible(killerStrategyAgreementSettings.value); S.killerStrategyAgreementMin = Math.max(1, Math.min(3, Math.round(Number.isFinite(v) ? v : 1))); void persistSettings(); });
+      bindOnce(supportingFiltersEnabledSettings, 'change', () => { S.supportingFiltersEnabled = !!supportingFiltersEnabledSettings.checked; void persistSettings(); });
+      bindOnce(biasEnabledSettings, 'change', () => { S.biasEnabled = !!biasEnabledSettings.checked; void persistSettings(); });
+      bindOnce(biasModeSettings, 'change', () => { const v = String(biasModeSettings.value || 'points'); S.biasMode = ['points','hybrid'].includes(v) ? v : 'points'; void persistSettings(); });
+      bindOnce(biasStrongThresholdSettings, 'input', () => { const v = parseNumberFlexible(biasStrongThresholdSettings.value); S.biasStrongThreshold = Math.max(0.20, Math.min(0.80, Number.isFinite(v) ? v : 0.45)); void persistSettings(); });
+      bindOnce(stabilityEnabledSettings, 'change', () => { S.stabilityEnabled = !!stabilityEnabledSettings.checked; void persistSettings(); });
+      bindOnce(stabilityMaxGapMsSettings, 'input', () => { const v = parseNumberFlexible(stabilityMaxGapMsSettings.value); S.stabilityMaxGapMs = Math.max(1000, Math.min(8000, Math.round(Number.isFinite(v) ? v : 3500))); void persistSettings(); });
+      bindOnce(toleranceModeSettings, 'change', () => { const v = String(toleranceModeSettings.value || 'either'); S.toleranceMode = ['confidence','pt','either','off'].includes(v) ? v : 'either'; void persistSettings(); });
+      bindOnce(toleranceConfidenceSettings, 'input', () => { const v = parseNumberFlexible(toleranceConfidenceSettings.value); S.toleranceConfidence = Math.max(0.60, Math.min(0.95, Number.isFinite(v) ? v : 0.75)); void persistSettings(); });
+      bindOnce(biasToggleBtn, 'click', () => { S.biasPanelOpen = !S.biasPanelOpen; if (biasPanel) biasPanel.style.display = S.biasPanelOpen ? 'block' : 'none'; if (biasToggleBtn) biasToggleBtn.textContent = S.biasPanelOpen ? '▾' : '▸'; });
+      bindOnce(stabilityToggleBtn, 'click', () => { S.stabilityPanelOpen = !S.stabilityPanelOpen; if (stabilityPanel) stabilityPanel.style.display = S.stabilityPanelOpen ? 'block' : 'none'; if (stabilityToggleBtn) stabilityToggleBtn.textContent = S.stabilityPanelOpen ? '▾' : '▸'; });
       applyDynamicUiState();
       const EXP = $id('iaa-expiry-setting');
       const BASE = $id('iaa-base-amount');
@@ -12192,7 +11243,7 @@ const closeSettingsPanel = () => {
       const DYNAMIC_NO_TRADE_SETTINGS = $id('iaa-dynamic-no-trade');
       const KILLER_ENABLED_SETTINGS = $id('iaa-killer-enabled');
       const KILLER_HUD_ENABLED_SETTINGS = $id('iaa-killer-hud-enabled');
-      const KILLER_MIN_CONFLUENCE_SETTINGS = $id('iaa-killer-min-confluence');
+      const KILLER_MIN_CONFLUENCE_SETTINGS = $id('iaa-killer-threshold-mode');
       const KILLER_DOM_THRESHOLD_SETTINGS = $id('iaa-killer-dominance-threshold');
       const KILLER_PERFECT_TIME_SETTINGS = $id('iaa-killer-perfect-time');
       const KILLER_COOLDOWN_SETTINGS = $id('iaa-killer-cooldown-sec');
@@ -12200,13 +11251,10 @@ const closeSettingsPanel = () => {
       const KILLER_CANDLE_HARDSTOP_SETTINGS = $id('iaa-killer-candle-hardstop');
       const KILLER_USE_STRATEGY_VOTES_SETTINGS = $id('iaa-killer-use-strategy-votes');
       const KILLER_STRATEGY_AGREEMENT_SETTINGS = $id('iaa-killer-strategy-agreement');
-      const entryWinEnabledEl = $id('iaa-entrywin-enabled');
-      const entryWinTf1mEl = $id('iaa-entrywin-tf-1m');
-      const entryWinTf3mEl = $id('iaa-entrywin-tf-3m');
-      const entryWinTf5mEl = $id('iaa-entrywin-tf-5m');
-      const entryWin1mEl = $id('iaa-entrywin-1m');
-      const entryWin3mEl = $id('iaa-entrywin-3m');
-      const entryWin5mEl = $id('iaa-entrywin-5m');
+      const ENTRYПЕЧАЛБИ_ENABLED = $id('iaa-entrywin-enabled');
+      const ENTRYПЕЧАЛБИ_1M = $id('iaa-entrywin-1m');
+      const ENTRYПЕЧАЛБИ_3M = $id('iaa-entrywin-3m');
+      const ENTRYПЕЧАЛБИ_5M = $id('iaa-entrywin-5m');
       const SNIPER_CHOP = $id('iaa-sniper-chop');
       const SNIPER_WARMUP = $id('iaa-sniper-warmup');
       const SNIPER_EMA_FAST = $id('iaa-sniper-ema-fast');
@@ -12416,41 +11464,35 @@ const closeSettingsPanel = () => {
           persistSettings();
         });
 }
-      if (entryWinEnabledEl || entryWin1mEl || entryWin3mEl || entryWin5mEl) {
-        const bindOnce = (el, evt, fn) => {
-          if (!el) return;
-          const key = `bound_${evt}`;
-          if (el.dataset[key]) return;
-          el.dataset[key] = '1';
-          el.addEventListener(evt, fn);
-        };
+      if (ENTRYПЕЧАЛБИ_ENABLED || ENTRYПЕЧАЛБИ_1M || ENTRYПЕЧАЛБИ_3M || ENTRYПЕЧАЛБИ_5M) {
         const updateEntryWinUi = () => {
-          const en = !!(entryWinEnabledEl ? entryWinEnabledEl.checked : true);
+          const en = !!(ENTRYПЕЧАЛБИ_ENABLED && ENTRYПЕЧАЛБИ_ENABLED.checked);
           S.entryWindowTfEnabled = en;
-          if (entryWin1mEl) entryWin1mEl.disabled = !en;
-          if (entryWin3mEl) entryWin3mEl.disabled = !en;
-          if (entryWin5mEl) entryWin5mEl.disabled = !en;
+          if (ENTRYПЕЧАЛБИ_1M) ENTRYПЕЧАЛБИ_1M.disabled = !en;
+          if (ENTRYПЕЧАЛБИ_3M) ENTRYПЕЧАЛБИ_3M.disabled = !en;
+          if (ENTRYПЕЧАЛБИ_5M) ENTRYПЕЧАЛБИ_5M.disabled = !en;
           persistSettings();
         };
-        bindOnce(entryWinEnabledEl, 'change', updateEntryWinUi);
-                bindOnce(entryWin1mEl, 'input', () => {
-          const d = parseNumberFlexible(entryWin1mEl.value);
-          S.entryWindowSec1m = Math.max(0, Math.min(60, Math.round(Number.isFinite(d) ? d : 35)));
-          if (S.entryWindowSec1m > 0) markTfSyncPending('1m');
-          persistSettings();
-        });
-        bindOnce(entryWin3mEl, 'input', () => {
-          const d = parseNumberFlexible(entryWin3mEl.value);
-          S.entryWindowSec3m = Math.max(0, Math.min(180, Math.round(Number.isFinite(d) ? d : 90)));
-          if (S.entryWindowSec3m > 0) markTfSyncPending('3m');
-          persistSettings();
-        });
-        bindOnce(entryWin5mEl, 'input', () => {
-          const d = parseNumberFlexible(entryWin5mEl.value);
-          S.entryWindowSec5m = Math.max(0, Math.min(300, Math.round(Number.isFinite(d) ? d : 150)));
-          if (S.entryWindowSec5m > 0) markTfSyncPending('5m');
-          persistSettings();
-        });
+        const commitEntryValue = (el, fallback) => {
+          if (!el) return fallback;
+          const d = parseNumberFlexible(el.value);
+          const v = Math.max(0, Math.min(999, Math.round(Number.isFinite(d) ? d : fallback)));
+          el.value = String(v);
+          return v;
+        };
+        if (ENTRYПЕЧАЛБИ_ENABLED) ENTRYПЕЧАЛБИ_ENABLED.addEventListener('change', updateEntryWinUi);
+        if (ENTRYПЕЧАЛБИ_1M) {
+          ENTRYПЕЧАЛБИ_1M.addEventListener('change', () => { S.entryWindowSec1m = commitEntryValue(ENTRYПЕЧАЛБИ_1M, 15); persistSettings(); });
+          ENTRYПЕЧАЛБИ_1M.addEventListener('blur', () => { S.entryWindowSec1m = commitEntryValue(ENTRYПЕЧАЛБИ_1M, 15); persistSettings(); });
+        }
+        if (ENTRYПЕЧАЛБИ_3M) {
+          ENTRYПЕЧАЛБИ_3M.addEventListener('change', () => { S.entryWindowSec3m = commitEntryValue(ENTRYПЕЧАЛБИ_3M, 35); persistSettings(); });
+          ENTRYПЕЧАЛБИ_3M.addEventListener('blur', () => { S.entryWindowSec3m = commitEntryValue(ENTRYПЕЧАЛБИ_3M, 35); persistSettings(); });
+        }
+        if (ENTRYПЕЧАЛБИ_5M) {
+          ENTRYПЕЧАЛБИ_5M.addEventListener('change', () => { S.entryWindowSec5m = commitEntryValue(ENTRYПЕЧАЛБИ_5M, 0); persistSettings(); });
+          ENTRYПЕЧАЛБИ_5M.addEventListener('blur', () => { S.entryWindowSec5m = commitEntryValue(ENTRYПЕЧАЛБИ_5M, 0); persistSettings(); });
+        }
         updateEntryWinUi();
       }
 if (true) {
@@ -12580,7 +11622,8 @@ if (SNIPER_VOLUME_THRESHOLD) {
       }
       if (SNIPER_CHOP_ENABLED) {
         SNIPER_CHOP_ENABLED.addEventListener('change', () => {
-          S.sniperChopEnabled = SNIPER_CHOP_ENABLED.checked;
+          S.chopV2Enabled = SNIPER_CHOP_ENABLED.checked;
+          S.sniperChopEnabled = S.chopV2Enabled;
           persistSettings();
         });
       }
@@ -12700,7 +11743,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperEnabledTimeframes['1m'] = FEATURE_TF_1M.checked;
           S.sniperEnabledTimeframes['1m'] = FEATURE_TF_1M.checked;
           persistSettings();
-          refreshUI('legacy_direct_render_replaced');
+          renderSniperMatrix();
         });
       }
       if (FEATURE_TF_3M) {
@@ -12708,7 +11751,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperEnabledTimeframes['3m'] = FEATURE_TF_3M.checked;
           S.sniperEnabledTimeframes['3m'] = FEATURE_TF_3M.checked;
           persistSettings();
-          refreshUI('legacy_direct_render_replaced');
+          renderSniperMatrix();
         });
       }
       if (FEATURE_TF_5M) {
@@ -12716,7 +11759,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperEnabledTimeframes['5m'] = FEATURE_TF_5M.checked;
           S.sniperEnabledTimeframes['5m'] = FEATURE_TF_5M.checked;
           persistSettings();
-          refreshUI('legacy_direct_render_replaced');
+          renderSniperMatrix();
         });
       }
       if (FEATURE_TF_15M) {
@@ -12724,7 +11767,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperEnabledTimeframes['15m'] = FEATURE_TF_15M.checked;
           S.sniperEnabledTimeframes['15m'] = FEATURE_TF_15M.checked;
           persistSettings();
-          refreshUI('legacy_direct_render_replaced');
+          renderSniperMatrix();
         });
       }
       if (STRATEGY_EMA_RSI_PULLBACK) {
@@ -12956,7 +11999,7 @@ if (SNIPER_VOLUME_THRESHOLD) {
     api.boot = async function(){
       installWebSocketPriceTap();
       installHttpPriceTap();
-      await loadSettings();
+      await restoreSettings();
       S.wsTapInstalled = true;
       if (WS_FEED_BUFFER.packetsSeen) S.wsPacketsSeen = WS_FEED_BUFFER.packetsSeen;
       S.wsBridgeFramesSeen = WS_FEED_BUFFER.bridgeFramesSeen || 0;
@@ -13040,9 +12083,6 @@ if (SNIPER_VOLUME_THRESHOLD) {
     api.debugLog = debugLog;
     api.logConsole = logConsoleLine;
     api.formatStatus = formatStatus;
-    api.runEntryTimingRegressionHarness = runEntryTimingRegressionHarness;
-    api.runDirectionLockHarness = runDirectionLockHarness;
-    api.runUiPersistenceHarness = runUiPersistenceHarness;
 
     return api;
   })();
