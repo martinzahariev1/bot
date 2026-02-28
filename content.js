@@ -1228,7 +1228,7 @@
       dynamicCoreCollapsed: false,
       dynamicStakeCollapsed: true,
       killerDynamicCollapsed: true,
-      killerEnabled: false,
+      killerEnabled: true,
       killerHudEnabled: false,
       killerMinConfluence: 8,
       killerDominanceThreshold: 68,
@@ -4809,16 +4809,20 @@ function getMinHistoryWindowForReadinessMs() {
 
     /* ========================= KEEP ALIVE SYSTEM ========================= */
     function isSettingsPanelVisible() {
-      const panel = $id('iaa-settings-panel');
+      const panel = document.getElementById('iaa-settings-panel');
       if (S.settingsPanelOpen) return true;
       if (!panel) return false;
-      return panel.style.display === 'block' || !!panel.closest('#iaa-panel')?.querySelector?.('#iaa-settings-panel[style*="display: block"]');
+      const cs = getComputedStyle(panel);
+      return cs.display !== 'none' && cs.visibility !== 'hidden' && panel.offsetWidth > 0 && panel.offsetHeight > 0;
     }
 
     async function performKeepAlive() {
       if (S.keepAliveActive) return;
       if (false || false || hasActiveTrade() || false) return;
-      if (isSettingsPanelVisible()) return;
+      if (isSettingsPanelVisible()) {
+        if (S.debugEnabled) debugLog('KeepAlive skipped: settings panel visible');
+        return;
+      }
 
       S.keepAliveActive = true;
       try {
@@ -7366,7 +7370,7 @@ if (!weights.length) return 0;
       return 8;
     }
 
-    function evaluateScoreDecision(ctx = {}) {
+    function legacyEvaluateScoreDecision(ctx = {}) {
       const {
         decision,
         regime,
@@ -7742,86 +7746,40 @@ if (!weights.length) return 0;
         const spreadMetric = Number.isFinite(S.lastGlobalSpread) ? S.lastGlobalSpread : 0;
         const spreadOk = !S.filterSpreadEnabled || !Number.isFinite(S.filterSpreadThreshold) || spreadMetric >= S.filterSpreadThreshold;
         const patternSupport = !S.candlestickPatternEnabled || decision.strategyKey === 'candlestick_pattern';
-        let scoreCard;
-        if (S.killerEnabled) {
-          S.engineState = 'KILLER';
-          const killerGatePass = !!(killerAlignmentOk && perfectTimeOk && entryWindowOk);
-          const killerThreshold = Number(killerSnapshotTf?.threshold || getScoreThresholdPoints());
-          const killerPts = Number(killerSnapshotTf?.effectivePoints || killerSnapshotTf?.confluence || 0);
-          scoreCard = {
-            points: killerPts,
-            maxPoints: Number(killerSnapshotTf?.maxPoints || 11),
-            threshold: killerThreshold,
-            hardFailReason: '',
-            breakdown: ['SCORE_BYPASS: killer-enabled']
+        S.killerEnabled = true;
+        S.engineState = 'KILLER';
+        const killerGatePass = !!(killerAlignmentOk && perfectTimeOk && entryWindowOk);
+        const killerThreshold = Number(killerSnapshotTf?.threshold || getScoreThresholdPoints());
+        const killerPts = Number(killerSnapshotTf?.effectivePoints || killerSnapshotTf?.confluence || 0);
+        const scoreCard = {
+          points: killerPts,
+          maxPoints: Number(killerSnapshotTf?.maxPoints || 11),
+          threshold: killerThreshold,
+          hardFailReason: '',
+          breakdown: ['KILLER_ONLY_RUNTIME']
+        };
+        decision.scoreCard = scoreCard;
+        if (!killerGatePass) {
+          const reason = `Killer gate: WAIT (CONF ${killerPts.toFixed(1)}/${scoreCard.maxPoints}, мин ${killerThreshold})`;
+          S.lastScoreSnapshot = {
+            result: 'SKIP(KILLER)',
+            points: scoreCard.points,
+            maxPoints: scoreCard.maxPoints,
+            threshold: scoreCard.threshold,
+            strategyKey: decision.strategyKey,
+            reason
           };
-          decision.scoreCard = scoreCard;
-          if (!killerGatePass) {
-            const reason = `Killer gate: WAIT (CONF ${killerPts.toFixed(1)}/${scoreCard.maxPoints}, мин ${killerThreshold})`;
-            S.lastScoreSnapshot = {
-              result: 'SKIP(KILLER)',
-              points: scoreCard.points,
-              maxPoints: scoreCard.maxPoints,
-              threshold: scoreCard.threshold,
-              strategyKey: decision.strategyKey,
-              reason
-            };
-            tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
-            continue;
-          }
-        } else {
-          S.engineState = 'SCORE';
-          scoreCard = evaluateScoreDecision({
-            decision,
-            regime,
-            payoutOk,
-            entryWindowOk: entryWindowOk && perfectTimeOk,
-            spreadOk,
-            killerSnapshot: killerSnapshotTf,
-            killerAlignmentOk,
-            patternSupport,
-            noTradeInChop: !!S.sniperNoTradeInChop,
-            counterCandleHardStop: !!decision.counterCandleHardStop
-          });
-          decision.scoreCard = scoreCard;
-
-          if (scoreCard.hardFailReason) {
-            const reason = scoreCard.hardFailReason;
-            S.lastScoreSnapshot = {
-              result: 'SKIP(HARD)',
-              points: scoreCard.points,
-              maxPoints: scoreCard.maxPoints,
-              threshold: scoreCard.threshold,
-              strategyKey: decision.strategyKey,
-              reason
-            };
-            if (!S.killerEnabled && shouldLogScoreEvent(tf, 'hard', reason)) logConsoleLine(`[АНАЛИЗ] Твърд стоп: ${reason}`);
-            tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
-            continue;
-          }
-          if (scoreCard.points < scoreCard.threshold) {
-            const reason = `Недостатъчно точки: ${scoreCard.points}/${scoreCard.maxPoints} (праг ${scoreCard.threshold}/${scoreCard.maxPoints})`;
-            S.lastScoreSnapshot = {
-              result: 'SKIP(SCORE)',
-              points: scoreCard.points,
-              maxPoints: scoreCard.maxPoints,
-              threshold: scoreCard.threshold,
-              strategyKey: decision.strategyKey,
-              reason
-            };
-            if (!S.killerEnabled && shouldLogScoreEvent(tf, 'score', reason)) logConsoleLine(`[АНАЛИЗ] ${reason}`);
-            tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
-            continue;
-          }
+          tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
+          continue;
         }
 
         S.lastScoreSnapshot = {
-          result: S.killerEnabled ? 'READY(KILLER)' : 'READY',
+          result: 'READY(KILLER)',
           points: scoreCard.points,
           maxPoints: scoreCard.maxPoints,
           threshold: scoreCard.threshold,
           strategyKey: decision.strategyKey,
-          reason: S.killerEnabled ? 'Готов за вход (SCORE BYPASS)' : 'Готов за вход'
+          reason: 'Готов за вход (KILLER ONLY)'
         };
         if (S.debugEnabled) {
           logConsoleLine(`[DEBUG] PRE-EXEC gates: killer=PASS score=BYPASS pt=${perfectTimeOk ? 'OK' : 'WAIT'} entry=${entryWindowOk ? 'OK' : 'WAIT'}`);
@@ -9143,7 +9101,7 @@ const ok = await executeTradeOrder(signal);
                  <label class="iaa-checkbox iaa-new-setting" title="Catch the move: позволява по-ранен вход когато увереността расте бързо и има тренд. Не променя стратегията, само тайминга."><input type="checkbox" id="iaa-phase-catch-move"> Catch the move</label>
                  <label class="iaa-checkbox iaa-new-setting" title="Snipe after reload: позволява вход след кратък pullback/колебание, когато сигналът се върне в посоката на тренда. Не променя стратегията, само тайминга."><input type="checkbox" id="iaa-phase-reload-snipe"> Snipe after reload</label>
                  <div class="iaa-field-row iaa-field-toggle" title="Филтър за ниска волатилност (chop).">
-                  <label title="V2 = -1 точка при chop, без hard stop"><input type="checkbox" id="iaa-sniper-chop-enabled"> Chop v2 (вкл./изкл.)</label>
+                  <span class="iaa-field-label">Sniper Chop threshold (%)</span>
                   <input type="number" id="iaa-sniper-chop" min="1" max="100" step="1" value="70">
                 </div>
                                 <div class="iaa-field-row"><span class="iaa-field-label" style="color:${UI_WARM_RED};">НОВИ • ФИЛТРИ</span><button id="iaa-newfilters-toggle" type="button" class="iaa-toggle-btn">${S.sniperNewFiltersCollapsed ? '▸' : '▾'}</button></div>
@@ -9226,14 +9184,18 @@ const ok = await executeTradeOrder(signal);
 
                 
                 <label class="iaa-checkbox"><input type="checkbox" id="iaa-candle-pattern-enabled"> Candlestick Pattern On/Off</label>
+                <div class="iaa-field-row iaa-field-toggle" title="Penalty only: при chop се прилага наказание, но не е hard stop.">
+                  <span class="iaa-field-label">Chop v2 (анти-chop penalty)</span>
+                  <label class="iaa-checkbox"><input type="checkbox" id="iaa-chop-v2-enabled"></label>
+                </div>
                 <div class="iaa-field-row iaa-field-toggle" title="Ако последната свещ е срещу посоката на входа, сигналът се блокира.">
                     <span class="iaa-field-label">Свещ срещу входа = твърд стоп</span>
                     <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-candle-hardstop"></label>
                   </div>
                 <div id="iaa-killer-dynamic-body">
-                  <div class="iaa-field-row iaa-field-toggle" title="Включва/изключва KILLER логиката. При OFF ботът работи по текущите филтри.">
+                  <div class="iaa-field-row iaa-field-toggle" title="KILLER only runtime (SCORE е изключен).">
                     <span class="iaa-field-label" style="color:${UI_WARM_RED};">KILLER активен</span>
-                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-enabled"></label>
+                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-enabled" checked disabled></label>
                   </div>
 <div class="iaa-field-row" title="Минимален брой съвпадения (CONFLUENCE), за да се счита сигналът за валиден.">
                     <span class="iaa-field-label">Праг Killer</span>
@@ -9910,6 +9872,7 @@ setTimeout(() => {
       const dynamicStakeCollapsed = await storage.get(DYNAMIC_STAKE_COLLAPSED_KEY); if (typeof dynamicStakeCollapsed === 'boolean') S.dynamicStakeCollapsed = dynamicStakeCollapsed;
       const killerDynamicCollapsed = await storage.get(KILLER_DYNAMIC_COLLAPSED_KEY); if (typeof killerDynamicCollapsed === 'boolean') S.killerDynamicCollapsed = killerDynamicCollapsed;
       const killerEnabled = await storage.get(KILLER_ENABLED_KEY); if (typeof killerEnabled === 'boolean') S.killerEnabled = killerEnabled;
+      S.killerEnabled = true;
       const killerHudEnabled = await storage.get(KILLER_HUD_ENABLED_KEY); if (typeof killerHudEnabled === 'boolean') S.killerHudEnabled = killerHudEnabled;
       const killerMinConfluence = await storage.get(KILLER_MIN_CONFLUENCE_KEY); if (typeof killerMinConfluence === 'number') S.killerMinConfluence = Math.max(7, Math.min(9, Math.round(killerMinConfluence)));
       const killerDomThreshold = await storage.get(KILLER_DOM_THRESHOLD_KEY); if (typeof killerDomThreshold === 'number') S.killerDominanceThreshold = Math.max(50, Math.min(90, Math.round(killerDomThreshold)));
@@ -10010,7 +9973,10 @@ setTimeout(() => {
       const sniperVolumeEnabled = await storage.get(SNIPER_VOLUME_ENABLED_KEY);
       if (typeof sniperVolumeEnabled === 'boolean') S.sniperVolumeEnabled = sniperVolumeEnabled;
       const sniperChopEnabled = await storage.get(SNIPER_CHOP_ENABLED_KEY);
-      if (typeof sniperChopEnabled === 'boolean') { S.sniperChopEnabled = sniperChopEnabled; S.chopV2Enabled = sniperChopEnabled; }
+      if (typeof sniperChopEnabled === 'boolean') {
+        S.sniperChopEnabled = sniperChopEnabled;
+        if (typeof chopV2Enabled !== 'boolean') S.chopV2Enabled = sniperChopEnabled;
+      }
       const savedTimeframes = await storage.get(SNIPER_TIMEFRAMES_KEY);
       if (savedTimeframes && typeof savedTimeframes === 'object') {
         S.sniperEnabledTimeframes = Object.assign({}, S.sniperEnabledTimeframes, savedTimeframes);
@@ -10447,7 +10413,7 @@ setTimeout(() => {
       const sniperVwapEnabled = $id('iaa-sniper-vwap-enabled');
       const sniperMomentumEnabled = $id('iaa-sniper-momentum-enabled');
       const sniperVolumeEnabled = $id('iaa-sniper-volume-enabled');
-      const sniperChopEnabled = $id('iaa-sniper-chop-enabled');
+      const chopV2Enabled = $id('iaa-chop-v2-enabled');
                   const sniperTf1m = $id('iaa-sniper-tf-1m');
       const sniperTf3m = $id('iaa-sniper-tf-3m');
       const sniperTf5m = $id('iaa-sniper-tf-5m');
@@ -10568,7 +10534,7 @@ setTimeout(() => {
       if (sniperVwapEnabled) sniperVwapEnabled.checked = !!S.sniperVwapEnabled;
       if (sniperMomentumEnabled) sniperMomentumEnabled.checked = !!S.sniperMomentumEnabled;
       if (sniperVolumeEnabled) sniperVolumeEnabled.checked = !!S.sniperVolumeEnabled;
-      if (sniperChopEnabled) sniperChopEnabled.checked = !!S.chopV2Enabled;
+      if (chopV2Enabled) chopV2Enabled.checked = !!S.chopV2Enabled;
       if (sniperVwapWeight) sniperVwapWeight.value = Math.round(((S.sniperVwapWeight ?? 0.55) * 100));
       if (sniperMomentumWeight) sniperMomentumWeight.value = Math.round(((S.sniperMomentumWeight ?? 0.35) * 100));
       if (sniperVolumeWeight) sniperVolumeWeight.value = Math.round(((S.sniperVolumeWeight ?? 0.10) * 100));
@@ -10607,7 +10573,7 @@ setTimeout(() => {
       const killerUseStrategyVotesSettings = $id('iaa-killer-use-strategy-votes');
       const killerStrategyAgreementSettings = $id('iaa-killer-strategy-agreement');
       const supportingFiltersEnabledSettings = $id('iaa-supporting-filters-enabled');
-      const chopV2EnabledSettings = null;
+      const chopV2EnabledSettings = $id('iaa-chop-v2-enabled');
       const biasEnabledSettings = $id('iaa-bias-enabled');
       const biasModeSettings = $id('iaa-bias-mode');
       const biasStrongThresholdSettings = $id('iaa-bias-strong-threshold');
@@ -10615,7 +10581,7 @@ setTimeout(() => {
       const stabilityMaxGapMsSettings = $id('iaa-stability-max-gap-ms');
       const toleranceModeSettings = $id('iaa-tolerance-mode');
       const toleranceConfidenceSettings = $id('iaa-tolerance-confidence');
-      if (killerEnabledSettings) killerEnabledSettings.checked = !!S.killerEnabled;
+      if (killerEnabledSettings) { killerEnabledSettings.checked = true; killerEnabledSettings.disabled = true; killerEnabledSettings.title = "KILLER only runtime"; }
       if (killerHudEnabledSettings) killerHudEnabledSettings.checked = !!S.killerHudEnabled;
       if (killerMinConfluenceSettings) killerMinConfluenceSettings.value = ['7of11','8of11','9of11'].includes(S.killerThresholdMode) ? S.killerThresholdMode : '8of11';
       if (killerDomThresholdSettings) killerDomThresholdSettings.value = Math.max(50, Math.min(90, Math.round(S.killerDominanceThreshold || 68)));
@@ -10626,6 +10592,7 @@ setTimeout(() => {
       if (killerUseStrategyVotesSettings) killerUseStrategyVotesSettings.checked = !!S.killerUseStrategyVotes;
       if (killerStrategyAgreementSettings) killerStrategyAgreementSettings.value = Math.max(1, Math.min(3, Math.round(S.killerStrategyAgreementMin || 1)));
       if (supportingFiltersEnabledSettings) supportingFiltersEnabledSettings.checked = !!S.supportingFiltersEnabled;
+      if (chopV2EnabledSettings) chopV2EnabledSettings.checked = !!S.chopV2Enabled;
       if (biasEnabledSettings) biasEnabledSettings.checked = !!S.biasEnabled;
       if (biasModeSettings) biasModeSettings.value = ['points','hybrid'].includes(S.biasMode) ? S.biasMode : 'points';
       if (biasStrongThresholdSettings) biasStrongThresholdSettings.value = Number(S.biasStrongThreshold || 0.45).toFixed(2);
@@ -11178,7 +11145,7 @@ const closeSettingsPanel = () => {
       const killerUseStrategyVotesSettings = $id('iaa-killer-use-strategy-votes');
       const killerStrategyAgreementSettings = $id('iaa-killer-strategy-agreement');
       const supportingFiltersEnabledSettings = $id('iaa-supporting-filters-enabled');
-      const chopV2EnabledSettings = null;
+      const chopV2EnabledSettings = $id('iaa-chop-v2-enabled');
       const biasEnabledSettings = $id('iaa-bias-enabled');
       const biasModeSettings = $id('iaa-bias-mode');
       const biasStrongThresholdSettings = $id('iaa-bias-strong-threshold');
@@ -11192,7 +11159,7 @@ const closeSettingsPanel = () => {
       const stabilityPanel = $id('iaa-stability-panel');
 
       bindSettingsListenersOnce();
-      if (killerEnabledSettings) killerEnabledSettings.addEventListener('change', () => { S.killerEnabled = !!killerEnabledSettings.checked; void persistSettings(); });
+      bindOnce(killerEnabledSettings, 'change', () => { S.killerEnabled = true; if (killerEnabledSettings) killerEnabledSettings.checked = true; void persistSettings(); });
       if (killerHudEnabledSettings) killerHudEnabledSettings.addEventListener('change', () => { S.killerHudEnabled = !!killerHudEnabledSettings.checked; void persistSettings(); });
       if (killerMinConfluenceSettings) killerMinConfluenceSettings.addEventListener('change', () => { const v = String(killerMinConfluenceSettings.value || '8of11'); S.killerThresholdMode = ['7of11','8of11','9of11'].includes(v) ? v : '8of11'; S.killerMinConfluence = getScoreThresholdPoints(); void persistSettings(); });
       if (killerDomThresholdSettings) killerDomThresholdSettings.addEventListener('input', () => { const v = parseNumberFlexible(killerDomThresholdSettings.value); S.killerDominanceThreshold = Math.max(50, Math.min(90, Math.round(Number.isFinite(v) ? v : 68))); void persistSettings(); });
@@ -11203,6 +11170,7 @@ const closeSettingsPanel = () => {
       if (killerUseStrategyVotesSettings) killerUseStrategyVotesSettings.addEventListener('change', () => { S.killerUseStrategyVotes = !!killerUseStrategyVotesSettings.checked; void persistSettings(); });
       if (killerStrategyAgreementSettings) killerStrategyAgreementSettings.addEventListener('change', () => { const v = parseNumberFlexible(killerStrategyAgreementSettings.value); S.killerStrategyAgreementMin = Math.max(1, Math.min(3, Math.round(Number.isFinite(v) ? v : 1))); void persistSettings(); });
       bindOnce(supportingFiltersEnabledSettings, 'change', () => { S.supportingFiltersEnabled = !!supportingFiltersEnabledSettings.checked; void persistSettings(); });
+      bindOnce(chopV2EnabledSettings, 'change', () => { S.chopV2Enabled = !!chopV2EnabledSettings.checked; S.sniperChopEnabled = S.chopV2Enabled; void persistSettings(); });
       bindOnce(biasEnabledSettings, 'change', () => { S.biasEnabled = !!biasEnabledSettings.checked; void persistSettings(); });
       bindOnce(biasModeSettings, 'change', () => { const v = String(biasModeSettings.value || 'points'); S.biasMode = ['points','hybrid'].includes(v) ? v : 'points'; void persistSettings(); });
       bindOnce(biasStrongThresholdSettings, 'input', () => { const v = parseNumberFlexible(biasStrongThresholdSettings.value); S.biasStrongThreshold = Math.max(0.20, Math.min(0.80, Number.isFinite(v) ? v : 0.45)); void persistSettings(); });
@@ -11271,7 +11239,7 @@ const closeSettingsPanel = () => {
       const SNIPER_VWAP_ENABLED = $id('iaa-sniper-vwap-enabled');
       const SNIPER_MOMENTUM_ENABLED = $id('iaa-sniper-momentum-enabled');
       const SNIPER_VOLUME_ENABLED = $id('iaa-sniper-volume-enabled');
-      const SNIPER_CHOP_ENABLED = $id('iaa-sniper-chop-enabled');
+      const CHOP_V2_ENABLED = $id('iaa-chop-v2-enabled');
       const SNIPER_SETTINGS_COLLAPSE = $id('iaa-sniper-collapse');
       const SNIPER_VWAP_TOGGLE = $id('iaa-sniper-vwap-toggle');
       const KEEP_TAB_ACTIVE = $id('iaa-sniper-keep-alive');
@@ -11620,13 +11588,11 @@ if (SNIPER_VOLUME_THRESHOLD) {
           persistSettings();
         });
       }
-      if (SNIPER_CHOP_ENABLED) {
-        SNIPER_CHOP_ENABLED.addEventListener('change', () => {
-          S.chopV2Enabled = SNIPER_CHOP_ENABLED.checked;
-          S.sniperChopEnabled = S.chopV2Enabled;
-          persistSettings();
-        });
-      }
+      bindOnce(CHOP_V2_ENABLED, 'change', () => {
+        S.chopV2Enabled = !!CHOP_V2_ENABLED.checked;
+        S.sniperChopEnabled = S.chopV2Enabled;
+        persistSettings();
+      });
       if (SNIPER_VWAP_WEIGHT) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_VWAP_WEIGHT.value);
