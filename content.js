@@ -82,6 +82,7 @@
   const KILLER_MIN_CONFLUENCE_KEY = 'IAA_KILLER_MIN_CONFLUENCE';
   const KILLER_DOM_THRESHOLD_KEY = 'IAA_KILLER_DOM_THRESHOLD';
   const KILLER_PERFECT_TIME_KEY = 'IAA_KILLER_PERFECT_TIME';
+  const KILLER_PT_MODE_KEY = 'IAA_KILLER_PT_MODE';
   const KILLER_ADX_DYNAMIC_KEY = 'IAA_KILLER_ADX_DYNAMIC';
   const KILLER_CANDLE_HARDSTOP_KEY = 'IAA_KILLER_CANDLE_HARDSTOP';
   const KILLER_SIGNAL_COOLDOWN_SEC_KEY = 'IAA_KILLER_SIGNAL_COOLDOWN_SEC';
@@ -97,6 +98,7 @@
   const KILLER_THRESHOLD_MODE_KEY = 'IAA_KILLER_THRESHOLD_MODE';
   const SUPPORTING_FILTERS_ENABLED_KEY = 'IAA_SUPPORTING_FILTERS_ENABLED';
   const CHOP_V2_ENABLED_KEY = 'IAA_CHOP_V2_ENABLED';
+  const CHOP_V2_STRENGTH_KEY = 'IAA_CHOP_V2_STRENGTH';
   const KILLER_DYNAMIC_COLLAPSED_KEY = 'IAA_KILLER_DYNAMIC_COLLAPSED';
   const DYNAMIC_CORE_COLLAPSED_KEY = 'IAA_DYNAMIC_CORE_COLLAPSED';
   const DYNAMIC_STAKE_COLLAPSED_KEY = 'IAA_DYNAMIC_STAKE_COLLAPSED';
@@ -116,7 +118,6 @@
   const SNIPER_VWAP_LOOKBACK_KEY = 'IAA_SNIPER_VWAP_LOOKBACK';
   const SNIPER_MOMENTUM_KEY = 'IAA_SNIPER_MOMENTUM';
   const SNIPER_VOLUME_THRESHOLD_KEY = 'IAA_SNIPER_VOLUME_THRESHOLD';
-  const SNIPER_CHOP_KEY = 'IAA_SNIPER_CHOP';
   const SNIPER_EMA_FAST_KEY = 'IAA_SNIPER_EMA_FAST';
   const SNIPER_EMA_SLOW_KEY = 'IAA_SNIPER_EMA_SLOW';
   const SNIPER_RSI_OVERSOLD_KEY = 'IAA_SNIPER_RSI_OVERSOLD';
@@ -141,7 +142,6 @@
   const SNIPER_VWAP_ENABLED_KEY = 'IAA_SNIPER_VWAP_ENABLED';
   const SNIPER_MOMENTUM_ENABLED_KEY = 'IAA_SNIPER_MOMENTUM_ENABLED';
   const SNIPER_VOLUME_ENABLED_KEY = 'IAA_SNIPER_VOLUME_ENABLED';
-  const SNIPER_CHOP_ENABLED_KEY = 'IAA_SNIPER_CHOP_ENABLED';
   const SNIPER_TIMEFRAMES_KEY = 'IAA_SNIPER_TIMEFRAMES_V1';
 
   const FILTER_SPREAD_ENABLED_KEY = 'IAA_FILTER_SPREAD_ENABLED';
@@ -1188,6 +1188,7 @@
       tradeHistorySeenElements: new WeakSet(),
       tradeTimestamps: [],
       botStartAt: null,
+      readinessStartedAt: 0,
       botBalanceSnapshot: null,
       lastPayoutPercent: null,
       lastPayoutAt: 0,
@@ -1232,7 +1233,8 @@
       killerHudEnabled: false,
       killerMinConfluence: 8,
       killerDominanceThreshold: 68,
-      killerPerfectTimeEnabled: true,
+      killerPerfectTimeEnabled: false,
+      killerPerfectTimeMode: 'hard',
       killerAdxDynamicEnabled: true,
       killerCandleAgainstHardStop: true,
       killerSignalCooldownSec: 5,
@@ -1251,6 +1253,7 @@
       killerThresholdMode: '8of11',
       supportingFiltersEnabled: true,
       chopV2Enabled: true,
+      chopV2StrengthPct: 50,
       biasPanelOpen: false,
       stabilityPanelOpen: false,
       maxTradeAmountCents: 15000,
@@ -1334,11 +1337,9 @@
       sniperVwapDeviation: SNIPER_5S_DEFAULTS.vwapDeviation,
       sniperVwapLookbackMin: SNIPER_5S_DEFAULTS.vwapLookbackMin,
       sniperMomentumThreshold: SNIPER_5S_DEFAULTS.momentumThreshold,
-      sniperChopThreshold: SNIPER_5S_DEFAULTS.chopThreshold,
       sniperVwapEnabled: false,
       sniperMomentumEnabled: false,
       sniperVolumeEnabled: false,
-      sniperChopEnabled: true,
       sniperNoTradeInChop: false,
       sniperRsiOversold: SNIPER_5S_DEFAULTS.rsiOversold,
       sniperRsiOverbought: SNIPER_5S_DEFAULTS.rsiOverbought,
@@ -1443,11 +1444,9 @@
       S.sniperVwapDeviation = defaults.vwapDeviation;
       S.sniperVwapLookbackMin = defaults.vwapLookbackMin;
       S.sniperMomentumThreshold = defaults.momentumThreshold;
-      S.sniperChopThreshold = defaults.chopThreshold;
       if (typeof S.sniperVwapEnabled !== 'boolean') S.sniperVwapEnabled = false;
       if (typeof S.sniperMomentumEnabled !== 'boolean') S.sniperMomentumEnabled = false;
       if (typeof S.sniperVolumeEnabled !== 'boolean') S.sniperVolumeEnabled = false;
-      if (typeof S.sniperChopEnabled !== 'boolean') S.sniperChopEnabled = true;
       if (typeof S.sniperNoTradeInChop !== 'boolean') S.sniperNoTradeInChop = false;
       S.sniperRsiOversold = defaults.rsiOversold;
       S.sniperRsiOverbought = defaults.rsiOverbought;
@@ -2496,6 +2495,14 @@ window.__REPORT_FNAME__ = "${fname}";
       return true;
     }
 
+    function safeBindOnce(el, eventName, handler, options) {
+      try { return bindOnce(el, eventName, handler, options); }
+      catch (err) {
+        console.warn('[IAA] bind failed:', eventName, err);
+        return false;
+      }
+    }
+
     function bindSettingsListenersOnce() {
       if (S.__settingsListenersBound) return;
       S.__settingsListenersBound = true;
@@ -2886,9 +2893,6 @@ window.__REPORT_FNAME__ = "${fname}";
       const labels = [];
       if (ctx.timeInCandle != null && ctx.entryWindowSec != null && ctx.entryWindowSec > 0 && ctx.timeInCandle > ctx.entryWindowSec) {
         labels.push('Late entry');
-      }
-      if (ctx.rangePct != null && typeof S.sniperChopThreshold === 'number' && ctx.rangePct < S.sniperChopThreshold) {
-        labels.push('Chop');
       }
       if (ctx.regime?.state && ['chop', 'volatility'].includes(ctx.regime.state)) {
         labels.push(`Regime:${ctx.regime.state}`);
@@ -3353,7 +3357,6 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
       applyById('iaa-sniper-vwap-weight', { min: 1, max: 100, highIsStrict: true });
       applyById('iaa-sniper-momentum-weight', { min: 1, max: 100, highIsStrict: false });
       applyById('iaa-sniper-volume-weight', { min: 1, max: 100, highIsStrict: false });
-      applyById('iaa-sniper-chop', { min: 1, max: 100, highIsStrict: true });
       applyById('iaa-candle-pattern-min-conf', { min: 1, max: 100, highIsStrict: true });
       applyById('iaa-candle-pattern-weight', { min: 1, max: 100, highIsStrict: false });
       applyById('iaa-entrywin-1m', { min: 0, max: 999, highIsStrict: false });
@@ -3497,7 +3500,6 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
         sniperVolumeWeight: S.sniperVolumeWeight,
         sniperVwapDeviation: S.sniperVwapDeviation,
         sniperMomentumThreshold: S.sniperMomentumThreshold,
-        sniperChopThreshold: S.sniperChopThreshold,
         sniperEntryWindowSec: S.sniperEntryWindowSec,
         sniperTfStatus: S.sniperTfStatus
       };
@@ -5978,6 +5980,15 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       return map[seconds] || null;
     }
 
+
+    function formatSecondsAsHms(seconds) {
+      const n = Math.max(0, Math.round(Number(seconds) || 0));
+      const h = Math.floor(n / 3600);
+      const m = Math.floor((n % 3600) / 60);
+      const sec = n % 60;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+    }
+
     function priceAtOrBefore(ts) {
       const arr = Array.isArray(S.priceHistory) ? S.priceHistory : [];
       if (!arr.length) return null;
@@ -6128,14 +6139,26 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
       }
       const assetLabel = getCurrentAssetLabel();
       const scope = getExpiryScopeFromAsset(assetLabel);
+      const targetSeconds = secsFromTF(norm);
+      const failStatus = (seenSeconds) => {
+        const seenLabel = expiryLabelFromSeconds(Number(seenSeconds)) || formatSecondsAsHms(seenSeconds);
+        const wantedLabel = expiryLabelFromSeconds(targetSeconds) || norm;
+        setStatusOverlay(`❌ Неуспешно задаване на време (${wantedLabel}, налично ${seenLabel || '—'})`, '', false);
+      };
 
-      // anti-spam guard (много важно)
       S._expTryTs = S._expTryTs || 0;
-      if (Date.now() - S._expTryTs < 900) return false;
+      if (Date.now() - S._expTryTs < 400) return false;
       S._expTryTs = Date.now();
 
-      // recent-set guard
-      if (S.lastPlatformExpiry === norm && S.lastPlatformExpiryTS && (Date.now() - S.lastPlatformExpiryTS) < 3500) {
+      if (S.lastPlatformExpiry === norm && S.lastPlatformExpiryTS && (Date.now() - S.lastPlatformExpiryTS) < 2500) {
+        return true;
+      }
+
+      const currentSeconds = readDynamicExpirySeconds();
+      if (Number.isFinite(currentSeconds) && Number.isFinite(targetSeconds) && Math.round(currentSeconds) === Math.round(targetSeconds)) {
+        S.lastPlatformExpiry = norm;
+        S.lastPlatformExpiryTS = Date.now();
+        S.lastSkipReason = null;
         return true;
       }
 
@@ -6146,22 +6169,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         return false;
       }
 
-      if (false && scope === 'OTC') {
-        const opened = await iaaOpenExpiryMenu(scope);
-        if (!opened) return false;
-        const targetSeconds = secsFromTF(norm);
-        const applied = await setDynamicExpiryTime(targetSeconds);
-        if (!applied) {
-          logConsoleLine(`ПРОПУСК: Динамично време не е намерено [${scope}].`);
-          S.lastSkipReason = 'Expiry';
-          return false;
-        }
-        S.lastPlatformExpiry = norm;
-        S.lastPlatformExpiryTS = Date.now();
-        S.lastSkipReason = null;
-        return true;
-      }
-
       const coords = iaaEnsureExpiryCoords(scope);
       const btn = coords?.[key];
       if (!btn || !Number.isFinite(btn.x) || !Number.isFinite(btn.y)) {
@@ -6170,19 +6177,38 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
         return false;
       }
 
-      // 1) open TIME menu
       const opened = await iaaOpenExpiryMenu(scope);
       if (!opened) return false;
 
-      // 2) click wanted time
       if (!clickAtCoordinates(btn.x, btn.y)) {
         logConsoleLine(`ПРОПУСК: Времето ${key} не е намерено [${scope}].`);
         S.lastSkipReason = 'Expiry';
         return false;
       }
-      await delay(140);
+      await delay(85);
 
-      // 3) mark set (не четем UI)
+      const afterPresetSeconds = readDynamicExpirySeconds();
+      if (Number.isFinite(afterPresetSeconds) && Number.isFinite(targetSeconds) && Math.round(afterPresetSeconds) === Math.round(targetSeconds)) {
+        S.lastPlatformExpiry = norm;
+        S.lastPlatformExpiryTS = Date.now();
+        S.lastSkipReason = null;
+        return true;
+      }
+
+      const appliedFallback = await setDynamicExpiryTime(targetSeconds);
+      if (!appliedFallback) {
+        failStatus(afterPresetSeconds);
+        S.lastSkipReason = 'Expiry';
+        return false;
+      }
+      await delay(85);
+      const afterFallbackSeconds = readDynamicExpirySeconds();
+      if (!Number.isFinite(afterFallbackSeconds) || Math.round(afterFallbackSeconds) !== Math.round(targetSeconds)) {
+        failStatus(afterFallbackSeconds);
+        S.lastSkipReason = 'Expiry';
+        return false;
+      }
+
       S.lastPlatformExpiry = norm;
       S.lastPlatformExpiryTS = Date.now();
       S.lastSkipReason = null;
@@ -6358,20 +6384,6 @@ function iaaEnsureExpiryCoords(scope = 'OTC') {
 
     function clamp(value, min, max) {
       return Math.max(min, Math.min(max, value));
-    }
-
-    function mapChopUiPctToThreshold(uiPct) {
-      const pct = clamp(Number(uiPct) || 1, 1, 100);
-      const tMin = 0.001;
-      const tMax = 0.03;
-      const ratio = (pct - 1) / 99;
-      return tMin + (tMax - tMin) * ratio;
-    }
-
-    function mapChopThresholdToUiPct(threshold) {
-      const t = clamp(Number(threshold) || 0.001, 0.001, 0.03);
-      const ratio = (t - 0.001) / (0.03 - 0.001);
-      return Math.round(1 + ratio * 99);
     }
 
 function getRecentPrices(count) {
@@ -6669,10 +6681,6 @@ if (!weights.length) return 0;
       const adxOk = adx >= 18;
       checks.push({ key: 'ADX', ok: adxOk, points: adxOk ? 1 : 0, buy: adxOk, sell: adxOk });
 
-      const chopThreshold = Math.max(0, Number.isFinite(S.sniperChopThreshold) ? S.sniperChopThreshold : 0.7);
-      const confOk = Number.isFinite(decision.rangePct) ? decision.rangePct >= chopThreshold : true;
-      checks.push({ key: 'CONF', ok: confOk, points: confOk ? 1 : 0, buy: confOk, sell: confOk });
-
       const directionalVotes = [];
       if (trendDir > 0) directionalVotes.push('BUY');
       if (trendDir < 0) directionalVotes.push('SELL');
@@ -6714,7 +6722,11 @@ if (!weights.length) return 0;
       let chopPenalty = 0;
       if (S.chopV2Enabled) {
         const isChop = String(regime?.state || '').toLowerCase() === 'chop' || ((Number(regime?.rangePct || 0) < 0.0035) && Number(regime?.trendScore || 0) < 0.4);
-        if (isChop) chopPenalty = -1;
+        if (isChop) {
+          const strength = Math.max(1, Math.min(100, Math.round(S.chopV2StrengthPct || 50)));
+          const penaltyAbs = 0.2 + ((strength - 1) / 99) * 1.8;
+          chopPenalty = -penaltyAbs;
+        }
       }
       checks.push({ key: 'CHOP', ok: chopPenalty >= 0, points: chopPenalty, buy: chopPenalty >= 0, sell: chopPenalty >= 0 });
 
@@ -6776,6 +6788,15 @@ if (!weights.length) return 0;
       const allowedByCooldown = now - (prev.at || 0) >= cooldownMs;
       S.killerEdgeState[tf] = { dir, valid: !!isSignalValid, at: changedToValid ? now : (prev.at || 0) };
       return changedToValid && allowedByCooldown;
+    }
+
+    function getPtModeForRuntime(regimeState = '') {
+      if (!S.killerPerfectTimeEnabled) return 'off';
+      const mode = ['soft','hard','adaptive'].includes(String(S.killerPerfectTimeMode || 'hard')) ? String(S.killerPerfectTimeMode) : 'hard';
+      if (mode !== 'adaptive') return mode;
+      const rs = String(regimeState || '').toLowerCase();
+      if (rs === 'chop' || rs === 'volatility') return 'hard';
+      return 'soft';
     }
 
     function renderKillerHud() {
@@ -7181,26 +7202,46 @@ if (!weights.length) return 0;
       return ready;
     }
 
+    function countReadyBarsSince(windowMs, sinceTs, maxBars = 120) {
+      const since = Number.isFinite(sinceTs) ? sinceTs : 0;
+      if (!since || !Number.isFinite(windowMs) || windowMs <= 0) return countReadyBars(windowMs, maxBars);
+      let ready = 0;
+      const now = Date.now();
+      const lastClosedStart = Math.floor(now / windowMs) * windowMs - windowMs;
+      for (let i = 0; i < maxBars; i += 1) {
+        const candleStart = lastClosedStart - i * windowMs;
+        if (candleStart < since) break;
+        const candleEnd = candleStart + windowMs;
+        const candle = getCandleAt(candleEnd, windowMs);
+        if (!candle || !Number.isFinite(candle.open) || !Number.isFinite(candle.close)) break;
+        ready += 1;
+      }
+      return ready;
+    }
+
     function getPartnerTfReadiness() {
       const checks = [];
+      const readinessSince = Number.isFinite(S.readinessStartedAt) && S.readinessStartedAt > 0
+        ? S.readinessStartedAt
+        : (Number.isFinite(S.botStartAt) ? S.botStartAt : 0);
       if (S.sniperEnabledTimeframes?.['1m']) {
         const req1 = Math.max(1, Math.round(S.partnerReadyBars1m || 10));
-        const bars1 = countReadyBars(SNIPER_TF_MS['1m']);
+        const bars1 = countReadyBarsSince(SNIPER_TF_MS['1m'], readinessSince);
         checks.push(['1m', bars1, req1]);
       }
       if (S.sniperEnabledTimeframes?.['3m']) {
         const req3 = Math.max(1, Math.round(S.partnerReadyBars3m || 6));
-        const bars3 = countReadyBars(SNIPER_TF_MS['3m']);
+        const bars3 = countReadyBarsSince(SNIPER_TF_MS['3m'], readinessSince);
         checks.push(['3m', bars3, req3]);
       }
       if (S.sniperEnabledTimeframes?.['5m']) {
         const req5 = Math.max(1, Math.round(S.partnerReadyBars5m || 3));
-        const bars5 = countReadyBars(SNIPER_TF_MS['5m']);
+        const bars5 = countReadyBarsSince(SNIPER_TF_MS['5m'], readinessSince);
         checks.push(['5m', bars5, req5]);
       }
       if (S.sniperEnabledTimeframes?.['15m']) {
         const req15 = Math.max(1, Math.round(S.partnerReadyBars15m || 2));
-        const bars15 = countReadyBars(SNIPER_TF_MS['15m']);
+        const bars15 = countReadyBarsSince(SNIPER_TF_MS['15m'], readinessSince);
         checks.push(['15m', bars15, req15]);
       }
       const details = {};
@@ -7724,7 +7765,23 @@ if (!weights.length) return 0;
           const nearMiss = Math.abs(Number(killerSnapshotTf.effectivePoints || 0) - (threshold - 1)) < 0.0001;
           const confOkNear = !!killerSnapshotTf.confOkNear;
           const mode = String(S.toleranceMode || 'either');
-          perfectTimeOk = killerEdgeTriggered(tf, decision.direction, true);
+          const ptRuntimeMode = getPtModeForRuntime(regime?.state);
+          const ptEdgeHit = killerEdgeTriggered(tf, decision.direction, true);
+          let ptBonus = 0;
+          if (ptRuntimeMode === 'hard') {
+            perfectTimeOk = !!ptEdgeHit;
+          } else if (ptRuntimeMode === 'soft') {
+            perfectTimeOk = true;
+            ptBonus = ptEdgeHit ? 0.5 : 0;
+          } else {
+            perfectTimeOk = true;
+          }
+          if (ptBonus > 0) {
+            const maxPts = Number(killerSnapshotTf.maxPoints || 11);
+            const thresholdPts = Number(killerSnapshotTf.threshold || getScoreThresholdPoints());
+            killerSnapshotTf.effectivePoints = Math.max(0, Math.min(maxPts, Number(killerSnapshotTf.effectivePoints || 0) + ptBonus));
+            killerSnapshotTf.passConfluence = killerSnapshotTf.effectivePoints >= thresholdPts;
+          }
           const ptOkNear = !!perfectTimeOk;
           const allowNearMiss = mode === 'confidence' ? confOkNear : mode === 'pt' ? ptOkNear : mode === 'either' ? (confOkNear || ptOkNear) : false;
           const confluenceWithTolerance = !!(killerSnapshotTf.passConfluence || (nearMiss && allowNearMiss));
@@ -7746,9 +7803,9 @@ if (!weights.length) return 0;
         const spreadMetric = Number.isFinite(S.lastGlobalSpread) ? S.lastGlobalSpread : 0;
         const spreadOk = !S.filterSpreadEnabled || !Number.isFinite(S.filterSpreadThreshold) || spreadMetric >= S.filterSpreadThreshold;
         const patternSupport = !S.candlestickPatternEnabled || decision.strategyKey === 'candlestick_pattern';
-        S.killerEnabled = true;
-        S.engineState = 'KILLER';
-        const killerGatePass = !!(killerAlignmentOk && perfectTimeOk && entryWindowOk);
+        const confidenceGatePass = Number(decision.confidence || 0) + 1e-9 >= Number(requiredThreshold || 0);
+          S.engineState = 'KILLER';
+        const killerGatePass = !!(killerAlignmentOk && perfectTimeOk && entryWindowOk && confidenceGatePass);
         const killerThreshold = Number(killerSnapshotTf?.threshold || getScoreThresholdPoints());
         const killerPts = Number(killerSnapshotTf?.effectivePoints || killerSnapshotTf?.confluence || 0);
         const scoreCard = {
@@ -7760,7 +7817,9 @@ if (!weights.length) return 0;
         };
         decision.scoreCard = scoreCard;
         if (!killerGatePass) {
-          const reason = `Killer gate: WAIT (CONF ${killerPts.toFixed(1)}/${scoreCard.maxPoints}, мин ${killerThreshold})`;
+          const reason = !confidenceGatePass
+            ? `Killer gate: WAIT (УВЕР ${Math.round(Number(decision.confidence || 0) * 100)}% < праг ${Math.round(Number(requiredThreshold || 0) * 100)}%)`
+            : `Killer gate: WAIT (CONF ${killerPts.toFixed(1)}/${scoreCard.maxPoints}, мин ${killerThreshold})`;
           S.lastScoreSnapshot = {
             result: 'SKIP(KILLER)',
             points: scoreCard.points,
@@ -8238,6 +8297,7 @@ const ok = await executeTradeOrder(signal);
           S.sniperTfStatus = {};
           if (isSniperMode()) {
             S.sniperWarmupUntil = Date.now();
+            S.readinessStartedAt = Date.now();
             S.priceHistory = [];
           }
         }
@@ -9100,26 +9160,22 @@ const ok = await executeTradeOrder(signal);
               <div class="iaa-subtitle iaa-subtitle-new" style="color:${UI_WARM_RED};" title="Нови опции за тайминг (влизане по-рано и след pullback).">TIMING</div>
                  <label class="iaa-checkbox iaa-new-setting" title="Catch the move: позволява по-ранен вход когато увереността расте бързо и има тренд. Не променя стратегията, само тайминга."><input type="checkbox" id="iaa-phase-catch-move"> Catch the move</label>
                  <label class="iaa-checkbox iaa-new-setting" title="Snipe after reload: позволява вход след кратък pullback/колебание, когато сигналът се върне в посоката на тренда. Не променя стратегията, само тайминга."><input type="checkbox" id="iaa-phase-reload-snipe"> Snipe after reload</label>
-                 <div class="iaa-field-row iaa-field-toggle" title="Филтър за ниска волатилност (chop).">
-                  <span class="iaa-field-label">Sniper Chop threshold (%)</span>
-                  <input type="number" id="iaa-sniper-chop" min="1" max="100" step="1" value="70">
-                </div>
                                 <div class="iaa-field-row"><span class="iaa-field-label" style="color:${UI_WARM_RED};">НОВИ • ФИЛТРИ</span><button id="iaa-newfilters-toggle" type="button" class="iaa-toggle-btn">${S.sniperNewFiltersCollapsed ? '▸' : '▾'}</button></div>
                                 <div id="iaa-bias-body" style="display:none;">
-                                  <div class="iaa-field-row"><span class="iaa-field-label" style="color:${UI_WARM_RED};">BIAS</span><button id="iaa-bias-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
+                                  <div class="iaa-field-row" title="Настройки за посоков филтър (BIAS)."><span class="iaa-field-label" style="color:${UI_WARM_RED};">BIAS</span><button id="iaa-bias-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
                                   <div id="iaa-bias-panel" style="display:none;">
-                                    <div class="iaa-field-row iaa-field-toggle"><span class="iaa-field-label">Bias enabled</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-bias-enabled"></label></div>
-                                    <div class="iaa-field-row"><span class="iaa-field-label">Bias mode</span><select id="iaa-bias-mode"><option value="points">points</option><option value="hybrid">hybrid</option></select></div>
-                                    <div class="iaa-field-row"><span class="iaa-field-label">Bias strong threshold</span><input type="number" id="iaa-bias-strong-threshold" min="0.20" max="0.80" step="0.01"></div>
+                                    <div class="iaa-field-row iaa-field-toggle" title="Включва/изключва BIAS филтъра при оценка на посоката."><span class="iaa-field-label">BIAS активен</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-bias-enabled"></label></div>
+                                    <div class="iaa-field-row" title="Точки: само по точки. Хибрид: комбинира точки и посочен филтър за по-строг контрол."><span class="iaa-field-label">Режим BIAS</span><select id="iaa-bias-mode"><option value="points">Точки</option><option value="hybrid">Хибрид</option></select></div>
+                                    <div class="iaa-field-row" title="Праг за „силен“ BIAS. По-висока стойност = по-строг филтър."><span class="iaa-field-label">Праг силен BIAS</span><input type="number" id="iaa-bias-strong-threshold" min="0.20" max="0.80" step="0.01"></div>
                                   </div>
                                 </div>
                                 <div id="iaa-stability-body" style="display:none;">
-                                  <div class="iaa-field-row"><span class="iaa-field-label" style="color:${UI_WARM_RED};">STABILITY</span><button id="iaa-stability-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
+                                  <div class="iaa-field-row" title="Настройки за стабилност на сигнала (STABILITY)."><span class="iaa-field-label" style="color:${UI_WARM_RED};">STABILITY</span><button id="iaa-stability-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
                                   <div id="iaa-stability-panel" style="display:none;">
-                                    <div class="iaa-field-row iaa-field-toggle"><span class="iaa-field-label">Stability enabled</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-stability-enabled"></label></div>
-                                    <div class="iaa-field-row"><span class="iaa-field-label">Max gap ms</span><input type="number" id="iaa-stability-max-gap-ms" min="1000" max="8000" step="100"></div>
-                                    <div class="iaa-field-row"><span class="iaa-field-label" style="color:${UI_WARM_RED};">Режим толеранс</span><select id="iaa-tolerance-mode"><option value="either">или</option><option value="confidence">увереност</option><option value="pt">PT</option><option value="off">изкл.</option></select></div>
-                                    <div class="iaa-field-row"><span class="iaa-field-label">Праг толеранс</span><input type="number" id="iaa-tolerance-confidence" min="0.60" max="0.95" step="0.01"></div>
+                                    <div class="iaa-field-row iaa-field-toggle" title="Включва/изключва STABILITY филтъра за стабилност на сигнала."><span class="iaa-field-label">STABILITY активен</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-stability-enabled"></label></div>
+                                    <div class="iaa-field-row" title="Максимален допустим интервал между валидни обновявания (в ms) преди сигналът да се счита нестабилен."><span class="iaa-field-label">Макс. gap (ms)</span><input type="number" id="iaa-stability-max-gap-ms" min="1000" max="8000" step="100"></div>
+                                    <div class="iaa-field-row" title="Определя как да се допусне near-miss: по увереност, по Perfect Time, или по който и да е от двата сигнала."><span class="iaa-field-label" style="color:${UI_WARM_RED};">Режим толеранс</span><select id="iaa-tolerance-mode"><option value="either">Увереност ИЛИ PT</option><option value="confidence">Само увереност</option><option value="pt">Само PT</option><option value="off">Изключен</option></select></div>
+                                    <div class="iaa-field-row" title="Минимална увереност за near-miss при режим толеранс."><span class="iaa-field-label">Праг толеранс</span><input type="number" id="iaa-tolerance-confidence" min="0.60" max="0.95" step="0.01"></div>
                                   </div>
                                 </div>
                 <div id="iaa-newfilters-body" style="${S.sniperNewFiltersCollapsed ? 'display:none;' : ''}">
@@ -9188,14 +9244,18 @@ const ok = await executeTradeOrder(signal);
                   <span class="iaa-field-label">Chop v2 (анти-chop penalty)</span>
                   <label class="iaa-checkbox"><input type="checkbox" id="iaa-chop-v2-enabled"></label>
                 </div>
+                <div class="iaa-field-row" title="Сила на наказанието при chop. 1 = най-слабо, 50 = средно, 100 = най-силно.">
+                  <span class="iaa-field-label">Сила Chop v2 (1–100)</span>
+                  <input type="number" id="iaa-chop-v2-strength" min="1" max="100" step="1" value="50">
+                </div>
                 <div class="iaa-field-row iaa-field-toggle" title="Ако последната свещ е срещу посоката на входа, сигналът се блокира.">
                     <span class="iaa-field-label">Свещ срещу входа = твърд стоп</span>
                     <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-candle-hardstop"></label>
                   </div>
                 <div id="iaa-killer-dynamic-body">
-                  <div class="iaa-field-row iaa-field-toggle" title="KILLER only runtime (SCORE е изключен).">
+                  <div class="iaa-field-row iaa-field-toggle" title="Включва/изключва KILLER режима.">
                     <span class="iaa-field-label" style="color:${UI_WARM_RED};">KILLER активен</span>
-                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-enabled" checked disabled></label>
+                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-enabled" checked></label>
                   </div>
 <div class="iaa-field-row" title="Минимален брой съвпадения (CONFLUENCE), за да се счита сигналът за валиден.">
                     <span class="iaa-field-label">Праг Killer</span>
@@ -9212,6 +9272,12 @@ const ok = await executeTradeOrder(signal);
                   <div class="iaa-field-row iaa-field-toggle" title="Вход само при първо задействане на сигнал (edge trigger).">
                     <span class="iaa-field-label">Perfect Time (първо задействане)</span>
                     <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-perfect-time"></label>
+                  </div>
+                  <div class="iaa-field-row" id="iaa-pt-modes-row" title="Режими за Perfect Time. Активен е само един режим.">
+                    <span class="iaa-field-label">PT Режими:</span>
+                    <label class="iaa-checkbox" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="iaa-pt-mode-soft"> Soft</label>
+                    <label class="iaa-checkbox" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="iaa-pt-mode-hard"> Hard</label>
+                    <label class="iaa-checkbox" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="iaa-pt-mode-adaptive"> Adaptive</label>
                   </div>
                   <div class="iaa-field-row" title="Минимална пауза между две Perfect Time задействания за същия TF.">
                     <span class="iaa-field-label">Пауза след сигнал (сек)</span>
@@ -9711,6 +9777,10 @@ setTimeout(() => {
       if (el && el.textContent !== nextText) {
         el.textContent = nextText;
       }
+      if (el) {
+        const isError = /^❌/.test(String(nextText || '')) || /Неуспешно задаване на време/i.test(String(nextText || ''));
+        el.style.color = isError ? '#ef4444' : '#fbbf24';
+      }
       if (logToConsole && changed && nextText !== fallback) {
         logConsoleLine(nextText);
       }
@@ -9872,11 +9942,11 @@ setTimeout(() => {
       const dynamicStakeCollapsed = await storage.get(DYNAMIC_STAKE_COLLAPSED_KEY); if (typeof dynamicStakeCollapsed === 'boolean') S.dynamicStakeCollapsed = dynamicStakeCollapsed;
       const killerDynamicCollapsed = await storage.get(KILLER_DYNAMIC_COLLAPSED_KEY); if (typeof killerDynamicCollapsed === 'boolean') S.killerDynamicCollapsed = killerDynamicCollapsed;
       const killerEnabled = await storage.get(KILLER_ENABLED_KEY); if (typeof killerEnabled === 'boolean') S.killerEnabled = killerEnabled;
-      S.killerEnabled = true;
       const killerHudEnabled = await storage.get(KILLER_HUD_ENABLED_KEY); if (typeof killerHudEnabled === 'boolean') S.killerHudEnabled = killerHudEnabled;
       const killerMinConfluence = await storage.get(KILLER_MIN_CONFLUENCE_KEY); if (typeof killerMinConfluence === 'number') S.killerMinConfluence = Math.max(7, Math.min(9, Math.round(killerMinConfluence)));
       const killerDomThreshold = await storage.get(KILLER_DOM_THRESHOLD_KEY); if (typeof killerDomThreshold === 'number') S.killerDominanceThreshold = Math.max(50, Math.min(90, Math.round(killerDomThreshold)));
       const killerPerfectTime = await storage.get(KILLER_PERFECT_TIME_KEY); if (typeof killerPerfectTime === 'boolean') S.killerPerfectTimeEnabled = killerPerfectTime;
+      const killerPtMode = await storage.get(KILLER_PT_MODE_KEY); if (typeof killerPtMode === 'string') S.killerPerfectTimeMode = ['soft','hard','adaptive'].includes(killerPtMode) ? killerPtMode : 'hard';
       const killerAdxDynamic = await storage.get(KILLER_ADX_DYNAMIC_KEY); if (typeof killerAdxDynamic === 'boolean') S.killerAdxDynamicEnabled = killerAdxDynamic;
       const killerCandleHardStop = await storage.get(KILLER_CANDLE_HARDSTOP_KEY); if (typeof killerCandleHardStop === 'boolean') S.killerCandleAgainstHardStop = killerCandleHardStop;
       const killerSignalCooldownSec = await storage.get(KILLER_SIGNAL_COOLDOWN_SEC_KEY); if (typeof killerSignalCooldownSec === 'number') S.killerSignalCooldownSec = Math.max(0, Math.min(30, Math.round(killerSignalCooldownSec)));
@@ -9893,6 +9963,7 @@ setTimeout(() => {
       S.killerMinConfluence = getScoreThresholdPoints();
       const supportingFiltersEnabled = await storage.get(SUPPORTING_FILTERS_ENABLED_KEY); if (typeof supportingFiltersEnabled === 'boolean') S.supportingFiltersEnabled = supportingFiltersEnabled;
       const chopV2Enabled = await storage.get(CHOP_V2_ENABLED_KEY); if (typeof chopV2Enabled === 'boolean') S.chopV2Enabled = chopV2Enabled;
+      const chopV2Strength = await storage.get(CHOP_V2_STRENGTH_KEY); if (typeof chopV2Strength === 'number') S.chopV2StrengthPct = Math.max(1, Math.min(100, Math.round(chopV2Strength)));
       const killerHudPos = await storage.get(KILLER_HUD_POS_KEY);
       if (killerHudPos && Number.isFinite(killerHudPos.x) && Number.isFinite(killerHudPos.y)) {
         S.killerHudPos = { x: killerHudPos.x, y: killerHudPos.y };
@@ -9938,12 +10009,6 @@ setTimeout(() => {
         const v = sniperThresholdReal > 1 ? (sniperThresholdReal / 100) : sniperThresholdReal;
         S.sniperThresholdReal = clamp01(v);
       }
-      const sniperChopThreshold = await storage.get(SNIPER_CHOP_KEY);
-      if (typeof sniperChopThreshold === 'number') S.sniperChopThreshold = sniperChopThreshold;
-      // Legacy migration: old versions used pct/100 directly (e.g. 70% => 0.7, too strict for rangePct).
-      if (Number.isFinite(S.sniperChopThreshold) && S.sniperChopThreshold > 0.06) {
-        S.sniperChopThreshold = mapChopUiPctToThreshold(Math.round(S.sniperChopThreshold * 100));
-      }
       const sniperVwapDeviation = await storage.get(SNIPER_VWAP_DEV_KEY);
       if (typeof sniperVwapDeviation === 'number') S.sniperVwapDeviation = sniperVwapDeviation;
       const sniperVwapLookback = await storage.get(SNIPER_VWAP_LOOKBACK_KEY);
@@ -9972,11 +10037,6 @@ setTimeout(() => {
       if (typeof sniperMomentumEnabled === 'boolean') S.sniperMomentumEnabled = sniperMomentumEnabled;
       const sniperVolumeEnabled = await storage.get(SNIPER_VOLUME_ENABLED_KEY);
       if (typeof sniperVolumeEnabled === 'boolean') S.sniperVolumeEnabled = sniperVolumeEnabled;
-      const sniperChopEnabled = await storage.get(SNIPER_CHOP_ENABLED_KEY);
-      if (typeof sniperChopEnabled === 'boolean') {
-        S.sniperChopEnabled = sniperChopEnabled;
-        if (typeof chopV2Enabled !== 'boolean') S.chopV2Enabled = sniperChopEnabled;
-      }
       const savedTimeframes = await storage.get(SNIPER_TIMEFRAMES_KEY);
       if (savedTimeframes && typeof savedTimeframes === 'object') {
         S.sniperEnabledTimeframes = Object.assign({}, S.sniperEnabledTimeframes, savedTimeframes);
@@ -10230,6 +10290,7 @@ setTimeout(() => {
       storage.set(KILLER_MIN_CONFLUENCE_KEY, S.killerMinConfluence);
       storage.set(KILLER_DOM_THRESHOLD_KEY, S.killerDominanceThreshold);
       storage.set(KILLER_PERFECT_TIME_KEY, !!S.killerPerfectTimeEnabled);
+      storage.set(KILLER_PT_MODE_KEY, ['soft','hard','adaptive'].includes(String(S.killerPerfectTimeMode || 'hard')) ? String(S.killerPerfectTimeMode) : 'hard');
       storage.set(KILLER_ADX_DYNAMIC_KEY, !!S.killerAdxDynamicEnabled);
       storage.set(KILLER_CANDLE_HARDSTOP_KEY, !!S.killerCandleAgainstHardStop);
       storage.set(KILLER_SIGNAL_COOLDOWN_SEC_KEY, S.killerSignalCooldownSec);
@@ -10245,6 +10306,7 @@ setTimeout(() => {
       storage.set(KILLER_THRESHOLD_MODE_KEY, ['7of11','8of11','9of11'].includes(S.killerThresholdMode) ? S.killerThresholdMode : '8of11');
       storage.set(SUPPORTING_FILTERS_ENABLED_KEY, !!S.supportingFiltersEnabled);
       storage.set(CHOP_V2_ENABLED_KEY, !!S.chopV2Enabled);
+      storage.set(CHOP_V2_STRENGTH_KEY, Math.max(1, Math.min(100, Math.round(S.chopV2StrengthPct || 50))));
       storage.set(KILLER_HUD_POS_KEY, S.killerHudPos || { x: null, y: null });
       storage.set(IDLE_SWITCH_ENABLED_KEY, S.idleSwitchEnabled);
       storage.set(IDLE_SWITCH_MIN_KEY, S.idleSwitchMinutes);
@@ -10266,7 +10328,6 @@ setTimeout(() => {
       storage.set(SNIPER_THRESHOLD_KEY, S.sniperThreshold);
       storage.set(SNIPER_THRESHOLD_OTC_KEY, S.sniperThresholdOtc);
       storage.set(SNIPER_THRESHOLD_REAL_KEY, S.sniperThresholdReal);
-      storage.set(SNIPER_CHOP_KEY, S.sniperChopThreshold);
       storage.set(SNIPER_VWAP_DEV_KEY, S.sniperVwapDeviation);
       storage.set(SNIPER_VWAP_LOOKBACK_KEY, S.sniperVwapLookbackMin);
       storage.set(SNIPER_MOMENTUM_KEY, S.sniperMomentumThreshold);
@@ -10281,7 +10342,6 @@ setTimeout(() => {
       storage.set(SNIPER_VWAP_ENABLED_KEY, S.sniperVwapEnabled);
       storage.set(SNIPER_MOMENTUM_ENABLED_KEY, S.sniperMomentumEnabled);
       storage.set(SNIPER_VOLUME_ENABLED_KEY, S.sniperVolumeEnabled);
-      storage.set(SNIPER_CHOP_ENABLED_KEY, !!S.chopV2Enabled);
       storage.set(SNIPER_TIMEFRAMES_KEY, S.sniperEnabledTimeframes);
       storage.set(FEATURE_VOLUME_REJECTION_KEY, S.featureVolumeRejection);
       storage.set(FEATURE_VWAP_ANALYSIS_KEY, S.featureVwapAnalysis);
@@ -10395,7 +10455,6 @@ setTimeout(() => {
       const ENTRYПЕЧАЛБИ_1M = $id('iaa-entrywin-1m');
       const ENTRYПЕЧАЛБИ_3M = $id('iaa-entrywin-3m');
       const ENTRYПЕЧАЛБИ_5M = $id('iaa-entrywin-5m');
-      const sniperChop = $id('iaa-sniper-chop');
       const sniperWarmup = $id('iaa-sniper-warmup');
       const sniperMaxSessionLoss = $id('iaa-sniper-max-session-loss');
       const sniperMaxLossStreak = $id('iaa-sniper-max-loss-streak');
@@ -10523,7 +10582,6 @@ setTimeout(() => {
       if (ENTRYПЕЧАЛБИ_1M) ENTRYПЕЧАЛБИ_1M.value = Number.isFinite(S.entryWindowSec1m) ? S.entryWindowSec1m : 15;
       if (ENTRYПЕЧАЛБИ_3M) ENTRYПЕЧАЛБИ_3M.value = Number.isFinite(S.entryWindowSec3m) ? S.entryWindowSec3m : 35;
       if (ENTRYПЕЧАЛБИ_5M) ENTRYПЕЧАЛБИ_5M.value = Number.isFinite(S.entryWindowSec5m) ? S.entryWindowSec5m : 150;
-      if (sniperChop) sniperChop.value = mapChopThresholdToUiPct(S.sniperChopThreshold ?? SNIPER_5S_DEFAULTS.chopThreshold);
       if (sniperWarmup) sniperWarmup.value = S.sniperWarmupMin ?? 10;
       if (sniperMaxSessionLoss) sniperMaxSessionLoss.value = (S.maxSessionLossCents || 0) / 100;
       if (sniperMaxLossStreak) sniperMaxLossStreak.value = S.maxConsecutiveLosses || 0;
@@ -10567,6 +10625,10 @@ setTimeout(() => {
       const killerMinConfluenceSettings = $id('iaa-killer-threshold-mode');
       const killerDomThresholdSettings = $id('iaa-killer-dominance-threshold');
       const killerPerfectTimeSettings = $id('iaa-killer-perfect-time');
+      const ptModeSoftSettings = $id('iaa-pt-mode-soft');
+      const ptModeHardSettings = $id('iaa-pt-mode-hard');
+      const ptModeAdaptiveSettings = $id('iaa-pt-mode-adaptive');
+      const ptModesRowSettings = $id('iaa-pt-modes-row');
       const killerCooldownSettings = $id('iaa-killer-cooldown-sec');
       const killerAdxDynamicSettings = $id('iaa-killer-adx-dynamic');
       const killerCandleHardStopSettings = $id('iaa-killer-candle-hardstop');
@@ -10574,6 +10636,7 @@ setTimeout(() => {
       const killerStrategyAgreementSettings = $id('iaa-killer-strategy-agreement');
       const supportingFiltersEnabledSettings = $id('iaa-supporting-filters-enabled');
       const chopV2EnabledSettings = $id('iaa-chop-v2-enabled');
+      const chopV2StrengthSettings = $id('iaa-chop-v2-strength');
       const biasEnabledSettings = $id('iaa-bias-enabled');
       const biasModeSettings = $id('iaa-bias-mode');
       const biasStrongThresholdSettings = $id('iaa-bias-strong-threshold');
@@ -10581,11 +10644,15 @@ setTimeout(() => {
       const stabilityMaxGapMsSettings = $id('iaa-stability-max-gap-ms');
       const toleranceModeSettings = $id('iaa-tolerance-mode');
       const toleranceConfidenceSettings = $id('iaa-tolerance-confidence');
-      if (killerEnabledSettings) { killerEnabledSettings.checked = true; killerEnabledSettings.disabled = true; killerEnabledSettings.title = "KILLER only runtime"; }
+      if (killerEnabledSettings) { killerEnabledSettings.checked = !!S.killerEnabled; killerEnabledSettings.disabled = false; killerEnabledSettings.title = "Вкл./изкл. KILLER филтъра"; }
       if (killerHudEnabledSettings) killerHudEnabledSettings.checked = !!S.killerHudEnabled;
       if (killerMinConfluenceSettings) killerMinConfluenceSettings.value = ['7of11','8of11','9of11'].includes(S.killerThresholdMode) ? S.killerThresholdMode : '8of11';
       if (killerDomThresholdSettings) killerDomThresholdSettings.value = Math.max(50, Math.min(90, Math.round(S.killerDominanceThreshold || 68)));
       if (killerPerfectTimeSettings) killerPerfectTimeSettings.checked = !!S.killerPerfectTimeEnabled;
+      if (ptModeSoftSettings) ptModeSoftSettings.checked = String(S.killerPerfectTimeMode || 'hard') === 'soft';
+      if (ptModeHardSettings) ptModeHardSettings.checked = String(S.killerPerfectTimeMode || 'hard') === 'hard';
+      if (ptModeAdaptiveSettings) ptModeAdaptiveSettings.checked = String(S.killerPerfectTimeMode || 'hard') === 'adaptive';
+      if (ptModesRowSettings) { const en = !!S.killerPerfectTimeEnabled; ptModesRowSettings.style.opacity = en ? '1' : '0.45'; ptModesRowSettings.style.pointerEvents = en ? 'auto' : 'none'; }
       if (killerCooldownSettings) killerCooldownSettings.value = Math.max(0, Math.min(30, Math.round(S.killerSignalCooldownSec || 5)));
       if (killerAdxDynamicSettings) killerAdxDynamicSettings.checked = !!S.killerAdxDynamicEnabled;
       if (killerCandleHardStopSettings) killerCandleHardStopSettings.checked = !!S.killerCandleAgainstHardStop;
@@ -10593,6 +10660,7 @@ setTimeout(() => {
       if (killerStrategyAgreementSettings) killerStrategyAgreementSettings.value = Math.max(1, Math.min(3, Math.round(S.killerStrategyAgreementMin || 1)));
       if (supportingFiltersEnabledSettings) supportingFiltersEnabledSettings.checked = !!S.supportingFiltersEnabled;
       if (chopV2EnabledSettings) chopV2EnabledSettings.checked = !!S.chopV2Enabled;
+      if (chopV2StrengthSettings) chopV2StrengthSettings.value = Math.max(1, Math.min(100, Math.round(S.chopV2StrengthPct || 50)));
       if (biasEnabledSettings) biasEnabledSettings.checked = !!S.biasEnabled;
       if (biasModeSettings) biasModeSettings.value = ['points','hybrid'].includes(S.biasMode) ? S.biasMode : 'points';
       if (biasStrongThresholdSettings) biasStrongThresholdSettings.value = Number(S.biasStrongThreshold || 0.45).toFixed(2);
@@ -10649,7 +10717,6 @@ setTimeout(() => {
       if (sniperVwapWeight) applyStrictnessColor(sniperVwapWeight, parseNumberFlexible(sniperVwapWeight.value), { min: 1, max: 100, highIsStrict: true });
       if (sniperMomentumWeight) applyStrictnessColor(sniperMomentumWeight, parseNumberFlexible(sniperMomentumWeight.value), { min: 1, max: 100, highIsStrict: false });
       if (sniperVolumeWeight) applyStrictnessColor(sniperVolumeWeight, parseNumberFlexible(sniperVolumeWeight.value), { min: 1, max: 100, highIsStrict: false });
-      if (sniperChop) applyStrictnessColor(sniperChop, parseNumberFlexible(sniperChop.value), { min: 1, max: 100, highIsStrict: true });
       if (sniperVolumeThreshold) applyStrictnessColor(sniperVolumeThreshold, parseNumberFlexible(sniperVolumeThreshold.value), { min: 0, max: 1, highIsStrict: true });
       if (regimeStrength) applyStrictnessColor(regimeStrength, parseNumberFlexible(regimeStrength.value), { min: 0, max: 1, highIsStrict: true });
       if (confirmationStrength) applyStrictnessColor(confirmationStrength, parseNumberFlexible(confirmationStrength.value), { min: 0, max: 1, highIsStrict: true });
@@ -10961,6 +11028,7 @@ const closeSettingsPanel = () => {
               ? Date.now() + Math.max(1, S.analysisWarmupMin) * 60 * 1000
               : 0;
             S.sniperWarmupUntil = Date.now();
+            S.readinessStartedAt = Date.now();
             S.priceHistory = [];
             S.currentAssetPrice = null;
             S.lastPriceAt = 0;
@@ -11139,6 +11207,10 @@ const closeSettingsPanel = () => {
       const killerMinConfluenceSettings = $id('iaa-killer-threshold-mode');
       const killerDomThresholdSettings = $id('iaa-killer-dominance-threshold');
       const killerPerfectTimeSettings = $id('iaa-killer-perfect-time');
+      const ptModeSoftSettings = $id('iaa-pt-mode-soft');
+      const ptModeHardSettings = $id('iaa-pt-mode-hard');
+      const ptModeAdaptiveSettings = $id('iaa-pt-mode-adaptive');
+      const ptModesRowSettings = $id('iaa-pt-modes-row');
       const killerCooldownSettings = $id('iaa-killer-cooldown-sec');
       const killerAdxDynamicSettings = $id('iaa-killer-adx-dynamic');
       const killerCandleHardstopSettings = $id('iaa-killer-candle-hardstop');
@@ -11146,6 +11218,7 @@ const closeSettingsPanel = () => {
       const killerStrategyAgreementSettings = $id('iaa-killer-strategy-agreement');
       const supportingFiltersEnabledSettings = $id('iaa-supporting-filters-enabled');
       const chopV2EnabledSettings = $id('iaa-chop-v2-enabled');
+      const chopV2StrengthSettings = $id('iaa-chop-v2-strength');
       const biasEnabledSettings = $id('iaa-bias-enabled');
       const biasModeSettings = $id('iaa-bias-mode');
       const biasStrongThresholdSettings = $id('iaa-bias-strong-threshold');
@@ -11159,27 +11232,46 @@ const closeSettingsPanel = () => {
       const stabilityPanel = $id('iaa-stability-panel');
 
       bindSettingsListenersOnce();
-      bindOnce(killerEnabledSettings, 'change', () => { S.killerEnabled = true; if (killerEnabledSettings) killerEnabledSettings.checked = true; void persistSettings(); });
+      bindOnce(killerEnabledSettings, 'change', () => { S.killerEnabled = !!killerEnabledSettings.checked; void persistSettings(); });
       if (killerHudEnabledSettings) killerHudEnabledSettings.addEventListener('change', () => { S.killerHudEnabled = !!killerHudEnabledSettings.checked; void persistSettings(); });
       if (killerMinConfluenceSettings) killerMinConfluenceSettings.addEventListener('change', () => { const v = String(killerMinConfluenceSettings.value || '8of11'); S.killerThresholdMode = ['7of11','8of11','9of11'].includes(v) ? v : '8of11'; S.killerMinConfluence = getScoreThresholdPoints(); void persistSettings(); });
       if (killerDomThresholdSettings) killerDomThresholdSettings.addEventListener('input', () => { const v = parseNumberFlexible(killerDomThresholdSettings.value); S.killerDominanceThreshold = Math.max(50, Math.min(90, Math.round(Number.isFinite(v) ? v : 68))); void persistSettings(); });
-      if (killerPerfectTimeSettings) killerPerfectTimeSettings.addEventListener('change', () => { S.killerPerfectTimeEnabled = !!killerPerfectTimeSettings.checked; void persistSettings(); });
+      const syncPtModeUi = () => {
+        const en = !!S.killerPerfectTimeEnabled;
+        if (ptModesRowSettings) { ptModesRowSettings.style.opacity = en ? '1' : '0.45'; ptModesRowSettings.style.pointerEvents = en ? 'auto' : 'none'; }
+        if (!en) return;
+        const mode = ['soft','hard','adaptive'].includes(String(S.killerPerfectTimeMode || 'hard')) ? String(S.killerPerfectTimeMode) : 'hard';
+        if (ptModeSoftSettings) ptModeSoftSettings.checked = mode === 'soft';
+        if (ptModeHardSettings) ptModeHardSettings.checked = mode === 'hard';
+        if (ptModeAdaptiveSettings) ptModeAdaptiveSettings.checked = mode === 'adaptive';
+      };
+      if (killerPerfectTimeSettings) killerPerfectTimeSettings.addEventListener('change', () => { S.killerPerfectTimeEnabled = !!killerPerfectTimeSettings.checked; syncPtModeUi(); void persistSettings(); });
+      const selectPtMode = (mode) => {
+        S.killerPerfectTimeMode = mode;
+        syncPtModeUi();
+        void persistSettings();
+      };
+      if (ptModeSoftSettings) ptModeSoftSettings.addEventListener('change', () => { if (!S.killerPerfectTimeEnabled) return; if (ptModeSoftSettings.checked) selectPtMode('soft'); else syncPtModeUi(); });
+      if (ptModeHardSettings) ptModeHardSettings.addEventListener('change', () => { if (!S.killerPerfectTimeEnabled) return; if (ptModeHardSettings.checked) selectPtMode('hard'); else syncPtModeUi(); });
+      if (ptModeAdaptiveSettings) ptModeAdaptiveSettings.addEventListener('change', () => { if (!S.killerPerfectTimeEnabled) return; if (ptModeAdaptiveSettings.checked) selectPtMode('adaptive'); else syncPtModeUi(); });
+      syncPtModeUi();
       if (killerCooldownSettings) killerCooldownSettings.addEventListener('input', () => { const v = parseNumberFlexible(killerCooldownSettings.value); S.killerSignalCooldownSec = Math.max(0, Math.min(30, Math.round(Number.isFinite(v) ? v : 5))); void persistSettings(); });
       if (killerAdxDynamicSettings) killerAdxDynamicSettings.addEventListener('change', () => { S.killerAdxDynamicEnabled = !!killerAdxDynamicSettings.checked; void persistSettings(); });
       if (killerCandleHardstopSettings) killerCandleHardstopSettings.addEventListener('change', () => { S.killerCandleAgainstHardStop = !!killerCandleHardstopSettings.checked; void persistSettings(); });
       if (killerUseStrategyVotesSettings) killerUseStrategyVotesSettings.addEventListener('change', () => { S.killerUseStrategyVotes = !!killerUseStrategyVotesSettings.checked; void persistSettings(); });
       if (killerStrategyAgreementSettings) killerStrategyAgreementSettings.addEventListener('change', () => { const v = parseNumberFlexible(killerStrategyAgreementSettings.value); S.killerStrategyAgreementMin = Math.max(1, Math.min(3, Math.round(Number.isFinite(v) ? v : 1))); void persistSettings(); });
-      bindOnce(supportingFiltersEnabledSettings, 'change', () => { S.supportingFiltersEnabled = !!supportingFiltersEnabledSettings.checked; void persistSettings(); });
-      bindOnce(chopV2EnabledSettings, 'change', () => { S.chopV2Enabled = !!chopV2EnabledSettings.checked; S.sniperChopEnabled = S.chopV2Enabled; void persistSettings(); });
-      bindOnce(biasEnabledSettings, 'change', () => { S.biasEnabled = !!biasEnabledSettings.checked; void persistSettings(); });
-      bindOnce(biasModeSettings, 'change', () => { const v = String(biasModeSettings.value || 'points'); S.biasMode = ['points','hybrid'].includes(v) ? v : 'points'; void persistSettings(); });
-      bindOnce(biasStrongThresholdSettings, 'input', () => { const v = parseNumberFlexible(biasStrongThresholdSettings.value); S.biasStrongThreshold = Math.max(0.20, Math.min(0.80, Number.isFinite(v) ? v : 0.45)); void persistSettings(); });
-      bindOnce(stabilityEnabledSettings, 'change', () => { S.stabilityEnabled = !!stabilityEnabledSettings.checked; void persistSettings(); });
-      bindOnce(stabilityMaxGapMsSettings, 'input', () => { const v = parseNumberFlexible(stabilityMaxGapMsSettings.value); S.stabilityMaxGapMs = Math.max(1000, Math.min(8000, Math.round(Number.isFinite(v) ? v : 3500))); void persistSettings(); });
-      bindOnce(toleranceModeSettings, 'change', () => { const v = String(toleranceModeSettings.value || 'either'); S.toleranceMode = ['confidence','pt','either','off'].includes(v) ? v : 'either'; void persistSettings(); });
-      bindOnce(toleranceConfidenceSettings, 'input', () => { const v = parseNumberFlexible(toleranceConfidenceSettings.value); S.toleranceConfidence = Math.max(0.60, Math.min(0.95, Number.isFinite(v) ? v : 0.75)); void persistSettings(); });
-      bindOnce(biasToggleBtn, 'click', () => { S.biasPanelOpen = !S.biasPanelOpen; if (biasPanel) biasPanel.style.display = S.biasPanelOpen ? 'block' : 'none'; if (biasToggleBtn) biasToggleBtn.textContent = S.biasPanelOpen ? '▾' : '▸'; });
-      bindOnce(stabilityToggleBtn, 'click', () => { S.stabilityPanelOpen = !S.stabilityPanelOpen; if (stabilityPanel) stabilityPanel.style.display = S.stabilityPanelOpen ? 'block' : 'none'; if (stabilityToggleBtn) stabilityToggleBtn.textContent = S.stabilityPanelOpen ? '▾' : '▸'; });
+      safeBindOnce(supportingFiltersEnabledSettings, 'change', () => { S.supportingFiltersEnabled = !!supportingFiltersEnabledSettings.checked; void persistSettings(); });
+      if (typeof chopV2EnabledSettings !== 'undefined' && chopV2EnabledSettings) safeBindOnce(chopV2EnabledSettings, 'change', () => { S.chopV2Enabled = !!chopV2EnabledSettings.checked; void persistSettings(); });
+      if (chopV2StrengthSettings) safeBindOnce(chopV2StrengthSettings, 'input', () => { const v = parseNumberFlexible(chopV2StrengthSettings.value); S.chopV2StrengthPct = Math.max(1, Math.min(100, Math.round(Number.isFinite(v) ? v : 50))); chopV2StrengthSettings.value = String(S.chopV2StrengthPct); void persistSettings(); });
+      safeBindOnce(biasEnabledSettings, 'change', () => { S.biasEnabled = !!biasEnabledSettings.checked; void persistSettings(); });
+      safeBindOnce(biasModeSettings, 'change', () => { const v = String(biasModeSettings.value || 'points'); S.biasMode = ['points','hybrid'].includes(v) ? v : 'points'; void persistSettings(); });
+      safeBindOnce(biasStrongThresholdSettings, 'input', () => { const v = parseNumberFlexible(biasStrongThresholdSettings.value); S.biasStrongThreshold = Math.max(0.20, Math.min(0.80, Number.isFinite(v) ? v : 0.45)); void persistSettings(); });
+      safeBindOnce(stabilityEnabledSettings, 'change', () => { S.stabilityEnabled = !!stabilityEnabledSettings.checked; void persistSettings(); });
+      safeBindOnce(stabilityMaxGapMsSettings, 'input', () => { const v = parseNumberFlexible(stabilityMaxGapMsSettings.value); S.stabilityMaxGapMs = Math.max(1000, Math.min(8000, Math.round(Number.isFinite(v) ? v : 3500))); void persistSettings(); });
+      safeBindOnce(toleranceModeSettings, 'change', () => { const v = String(toleranceModeSettings.value || 'either'); S.toleranceMode = ['confidence','pt','either','off'].includes(v) ? v : 'either'; void persistSettings(); });
+      safeBindOnce(toleranceConfidenceSettings, 'input', () => { const v = parseNumberFlexible(toleranceConfidenceSettings.value); S.toleranceConfidence = Math.max(0.60, Math.min(0.95, Number.isFinite(v) ? v : 0.75)); void persistSettings(); });
+      safeBindOnce(biasToggleBtn, 'click', () => { S.biasPanelOpen = !S.biasPanelOpen; if (biasPanel) biasPanel.style.display = S.biasPanelOpen ? 'block' : 'none'; if (biasToggleBtn) biasToggleBtn.textContent = S.biasPanelOpen ? '▾' : '▸'; });
+      safeBindOnce(stabilityToggleBtn, 'click', () => { S.stabilityPanelOpen = !S.stabilityPanelOpen; if (stabilityPanel) stabilityPanel.style.display = S.stabilityPanelOpen ? 'block' : 'none'; if (stabilityToggleBtn) stabilityToggleBtn.textContent = S.stabilityPanelOpen ? '▾' : '▸'; });
       applyDynamicUiState();
       const EXP = $id('iaa-expiry-setting');
       const BASE = $id('iaa-base-amount');
@@ -11223,7 +11315,6 @@ const closeSettingsPanel = () => {
       const ENTRYПЕЧАЛБИ_1M = $id('iaa-entrywin-1m');
       const ENTRYПЕЧАЛБИ_3M = $id('iaa-entrywin-3m');
       const ENTRYПЕЧАЛБИ_5M = $id('iaa-entrywin-5m');
-      const SNIPER_CHOP = $id('iaa-sniper-chop');
       const SNIPER_WARMUP = $id('iaa-sniper-warmup');
       const SNIPER_EMA_FAST = $id('iaa-sniper-ema-fast');
       const SNIPER_EMA_SLOW = $id('iaa-sniper-ema-slow');
@@ -11240,6 +11331,7 @@ const closeSettingsPanel = () => {
       const SNIPER_MOMENTUM_ENABLED = $id('iaa-sniper-momentum-enabled');
       const SNIPER_VOLUME_ENABLED = $id('iaa-sniper-volume-enabled');
       const CHOP_V2_ENABLED = $id('iaa-chop-v2-enabled');
+      const CHOP_V2_STRENGTH = $id('iaa-chop-v2-strength');
       const SNIPER_SETTINGS_COLLAPSE = $id('iaa-sniper-collapse');
       const SNIPER_VWAP_TOGGLE = $id('iaa-sniper-vwap-toggle');
       const KEEP_TAB_ACTIVE = $id('iaa-sniper-keep-alive');
@@ -11557,19 +11649,6 @@ if (SNIPER_VOLUME_THRESHOLD) {
           persistSettings();
         });
       }
-      if (SNIPER_CHOP) {
-        const update = () => {
-          const d = parseNumberFlexible(SNIPER_CHOP.value);
-          const normalized = Number.isFinite(d) ? d : 0;
-          const pct = Math.max(1, Math.min(100, Math.round(normalized || 0)));
-          S.sniperChopThreshold = mapChopUiPctToThreshold(pct);
-          SNIPER_CHOP.value = String(pct);
-          applyStrictnessColor(SNIPER_CHOP, pct, { min: 1, max: 100, highIsStrict: true });
-          persistSettings();
-        };
-        SNIPER_CHOP.addEventListener('input', update);
-        SNIPER_CHOP.addEventListener('change', update);
-      }
       if (SNIPER_VWAP_ENABLED) {
         SNIPER_VWAP_ENABLED.addEventListener('change', () => {
           S.sniperVwapEnabled = SNIPER_VWAP_ENABLED.checked;
@@ -11588,11 +11667,20 @@ if (SNIPER_VOLUME_THRESHOLD) {
           persistSettings();
         });
       }
-      bindOnce(CHOP_V2_ENABLED, 'change', () => {
+      safeBindOnce(CHOP_V2_ENABLED, 'change', () => {
         S.chopV2Enabled = !!CHOP_V2_ENABLED.checked;
-        S.sniperChopEnabled = S.chopV2Enabled;
         persistSettings();
       });
+      if (CHOP_V2_STRENGTH) {
+        const update = () => {
+          const d = parseNumberFlexible(CHOP_V2_STRENGTH.value);
+          S.chopV2StrengthPct = Math.max(1, Math.min(100, Math.round(Number.isFinite(d) ? d : 50)));
+          CHOP_V2_STRENGTH.value = String(S.chopV2StrengthPct);
+          persistSettings();
+        };
+        CHOP_V2_STRENGTH.addEventListener('input', update);
+        CHOP_V2_STRENGTH.addEventListener('change', update);
+      }
       if (SNIPER_VWAP_WEIGHT) {
         const update = () => {
           const d = parseNumberFlexible(SNIPER_VWAP_WEIGHT.value);
