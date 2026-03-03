@@ -12668,7 +12668,68 @@ if (SNIPER_VOLUME_THRESHOLD) {
   }
   window.__iaaPopupDelegatesBound = true;
   window.__iaaPopupDelegatesHandler = (e)=>{
-    const killerBtn = e.target && e.target.closest && e.target.closest('#iaa-killer-toggle');
+    
+const mouseBtn = e.target && e.target.closest && e.target.closest('#iaa-mouse-toggle');
+if (mouseBtn) {
+  e.preventDefault(); e.stopImmediatePropagation();
+
+  const panel = document.getElementById('iaa-mouse-panel');
+  if (panel) {
+    // Ensure it's not clipped by the main panel container
+    
+const host = document.getElementById('iaa-panel');
+if (host && panel.parentElement !== host) {
+  try { host.appendChild(panel); } catch(_){ }
+}
+    
+
+// Open OVER the main panel (same behavior as Settings/Debug), not on the chart.
+panel.style.position = 'absolute';
+panel.style.zIndex = '2147483647';
+panel.style.transform = 'none';
+
+const hostEl = document.getElementById('iaa-panel');
+const hostRect = hostEl ? hostEl.getBoundingClientRect() : null;
+
+// Place under header area inside the panel
+let top = 12;
+if (hostEl) {
+  const headerEl =
+    hostEl.querySelector('#iaa-header') ||
+    hostEl.querySelector('.iaa-header') ||
+    hostEl.querySelector('.iaa-top') ||
+    hostEl.querySelector('header');
+  if (headerEl) {
+    const hr = headerEl.getBoundingClientRect();
+    top = Math.max(12, Math.round(hr.bottom - (hostRect ? hostRect.top : 0) + 12));
+  } else {
+    top = 84;
+  }
+  try { if (!hostEl.style.position) hostEl.style.position = 'relative'; } catch(_){}
+  try { hostEl.style.overflow = 'visible'; } catch(_){}
+}
+
+panel.style.left = '12px';
+panel.style.right = '12px';
+panel.style.top = top + 'px';
+panel.style.bottom = '12px';
+panel.style.maxHeight = 'calc(100% - ' + (top + 12) + 'px)';
+panel.style.overflow = 'auto';panel.style.display = 'block';
+    panel.setAttribute('aria-hidden','false');
+
+    try { if (typeof renderMousePanel === 'function') renderMousePanel(); } catch(_){ }
+    try { if (typeof ensureMouseHandlers === 'function') ensureMouseHandlers(); } catch(_){ }
+
+    // Close button (id stays the same after moving to body)
+    const closeBtn = document.getElementById('iaa-mouse-close');
+    if (closeBtn && !closeBtn.dataset.boundClose) {
+      closeBtn.dataset.boundClose = '1';
+      closeBtn.addEventListener('click', (ev)=>{ ev.preventDefault(); ev.stopImmediatePropagation(); panel.style.display='none'; panel.setAttribute('aria-hidden','true'); }, true);
+    }
+  }
+  return;
+}
+const killerBtn = e.target && e.target.closest && e.target.closest('#iaa-killer-toggle');
     if (killerBtn) {
       e.preventDefault(); e.stopPropagation();
       __iaaTogglePopup('iaa-killer-panel');
