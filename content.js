@@ -14,7 +14,44 @@
   const SESSION_KEY = 'IAA_AUTH_SESSION';
   const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
-  const WS_FEED_BUFFER = window.__iaaWsFeedBuffer || (window.__iaaWsFeedBuffer = {
+  
+
+  // === CDP WebSocket fallback (for WS in Worker/iframe) ===
+  // Receives raw WS frames from background (chrome.debugger) and feeds into existing WS parser.
+  function __iaaDecodeMaybeBinary(payloadData, opcode) {
+    try {
+      if (opcode === 2 && typeof payloadData === 'string') {
+        // CDP sends binary frames as base64 payloadData.
+        const b = atob(payloadData);
+        const bytes = new Uint8Array(b.length);
+        for (let i = 0; i < b.length; i++) bytes[i] = b.charCodeAt(i);
+        return new TextDecoder('utf-8').decode(bytes);
+      }
+    } catch {}
+    return payloadData;
+  }
+
+  function installCdpWsFrameReceiver() {
+    if (window.__iaaCdpWsReceiverInstalled) return;
+    window.__iaaCdpWsReceiverInstalled = true;
+
+    try {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (!msg || msg.__iaaType !== 'IAA_CDP_WS_FRAME') return;
+        const text = __iaaDecodeMaybeBinary(msg.payloadData, msg.opcode);
+        if (typeof text !== 'string' || !text) return;
+        try { handleWsPriceSample(text); } catch {}
+      });
+    } catch {}
+  }
+
+  function requestCdpAttach() {
+    try {
+      chrome.runtime.sendMessage({ __iaaType: 'IAA_CDP_ATTACH' }, () => { void chrome.runtime.lastError; });
+    } catch {}
+  }
+
+const WS_FEED_BUFFER = window.__iaaWsFeedBuffer || (window.__iaaWsFeedBuffer = {
     lastPrice: null,
     lastDecimals: null,
     lastAt: 0,
@@ -93,12 +130,15 @@
   const BIAS_STRONG_THRESHOLD_KEY = 'IAA_BIAS_STRONG_THRESHOLD';
   const STABILITY_ENABLED_KEY = 'IAA_STABILITY_ENABLED';
   const STABILITY_MAX_GAP_MS_KEY = 'IAA_STABILITY_MAX_GAP_MS';
+  const STABILITY_PRECHECK_ENABLED_KEY = 'IAA_STABILITY_PRECHECK_ENABLED';
   const TOLERANCE_MODE_KEY = 'IAA_TOLERANCE_MODE';
   const TOLERANCE_CONFIDENCE_KEY = 'IAA_TOLERANCE_CONFIDENCE';
   const KILLER_THRESHOLD_MODE_KEY = 'IAA_KILLER_THRESHOLD_MODE';
   const SUPPORTING_FILTERS_ENABLED_KEY = 'IAA_SUPPORTING_FILTERS_ENABLED';
   const CHOP_V2_ENABLED_KEY = 'IAA_CHOP_V2_ENABLED';
   const CHOP_V2_STRENGTH_KEY = 'IAA_CHOP_V2_STRENGTH';
+  const CHOP_V3_HARD_STOP_KEY = 'IAA_CHOP_V3_HARD_STOP';
+  const CHOP_V3_SENSITIVITY_KEY = 'IAA_CHOP_V3_SENSITIVITY';
   const KILLER_DYNAMIC_COLLAPSED_KEY = 'IAA_KILLER_DYNAMIC_COLLAPSED';
   const DYNAMIC_CORE_COLLAPSED_KEY = 'IAA_DYNAMIC_CORE_COLLAPSED';
   const DYNAMIC_STAKE_COLLAPSED_KEY = 'IAA_DYNAMIC_STAKE_COLLAPSED';
@@ -152,6 +192,10 @@
   const FILTER_FLIPDELAY_SEC_KEY = 'IAA_FILTER_FLIPDELAY_SEC';
   const FILTER_IMPULSECAP_ENABLED_KEY = 'IAA_FILTER_IMPULSECAP_ENABLED';
   const FILTER_IMPULSECAP_MAX_KEY = 'IAA_FILTER_IMPULSECAP_MAX';
+  const FILTER_TRIO_CSEA_ENABLED_KEY = 'IAA_FILTER_TRIO_CSEA_ENABLED';
+  const DEAD_MARKET_FILTER_ENABLED_KEY = 'IAA_DEAD_MARKET_FILTER_ENABLED';
+  const DEAD_MARKET_MIN_MOVE_KEY = 'IAA_DEAD_MARKET_MIN_MOVE';
+  const EARLY_LATENCY_GATE_MS_KEY = 'IAA_EARLY_LATENCY_GATE_MS';
 
 
   const RANGE_OSC_PENALTY_ENABLED_KEY = 'IAA_RANGE_OSC_PENALTY_ENABLED';
@@ -277,25 +321,11 @@
   }
 
   function currentAssetMatchesFeedAsset(feedAsset) {
-    const raw = String(feedAsset ?? '').trim();
-    const candidate = normalizeFeedAssetLabel(raw);
+    const candidate = normalizeFeedAssetLabel(feedAsset);
     if (!candidate) return true;
-
-    // Some PO streams use numeric/instrument ids instead of human-readable symbols.
-    // In that case do not hard-block price ingestion.
-    if (!/[A-Z]/i.test(raw) || candidate.length < 6) return true;
-
     const current = normalizeFeedAssetLabel(getCurrentAssetLabel() || S.lastAssetLabel || '');
     if (!current) return true;
-
-    const a = stripFeedOtcSuffix(candidate);
-    const b = stripFeedOtcSuffix(current);
-
-    // Exact match first, then tolerant contain-match for vendor prefixes/suffixes.
-    if (candidate === current || a === b) return true;
-    if (a && b && (a.includes(b) || b.includes(a))) return true;
-
-    return false;
+    return candidate === current || stripFeedOtcSuffix(candidate) === stripFeedOtcSuffix(current);
   }
 
   function inferPriceFromNumericSample(rawValue, prevPrice = null) {
@@ -342,32 +372,6 @@
     if (!text) return null;
 
     const normalized = String(text).trim();
-
-    // PocketOption Socket.IO direct frame support: 42["updateStream", [[asset,ts,price], ...]]
-    try {
-      const direct = normalized.match(/^4[23](\[.*\])$/);
-      if (direct && direct[1]) {
-        const packet = JSON.parse(direct[1]);
-        if (Array.isArray(packet) && packet.length >= 2 && String(packet[0]) === 'updateStream') {
-          const rows = Array.isArray(packet[1]) ? packet[1] : [];
-          for (const row of rows) {
-            if (!Array.isArray(row) || row.length < 3) continue;
-            const asset = String(row[0] || '').trim();
-            const ts = wsTsToMs(row[1]);
-            const price = Number(row[2]);
-            if (!Number.isFinite(price) || price <= 0) continue;
-            return {
-              value: price,
-              decimals: countPriceDecimals(price),
-              asset,
-              timestamp: ts,
-              scale: 1
-            };
-          }
-        }
-      }
-    } catch {}
-
     const jsonPart = normalized.replace(/^\d+-?/, '');
     let parsed = null;
     if (jsonPart.startsWith('{') || jsonPart.startsWith('[')) {
@@ -491,229 +495,13 @@
     WS_FEED_BUFFER.packetsSeen = (WS_FEED_BUFFER.packetsSeen || 0) + 1;
     const priceInfo = extractPriceFromWsPayload(payload);
     if (!priceInfo) return;
-    const applied = applyPriceFromNumericSample(
+    applyPriceFromNumericSample(
       priceInfo.value,
       priceInfo.decimals,
       'ws',
       priceInfo.asset || '',
       priceInfo.timestamp || Date.now()
     );
-
-    if (!applied && Number.isFinite(Number(priceInfo.value))) {
-      const st = window.InfinityBot?.S || S;
-      const ts = Number.isFinite(Number(priceInfo.timestamp)) ? Number(priceInfo.timestamp) : Date.now();
-      const p = Number(priceInfo.value);
-      st.wsLastPrice = p;
-      st.wsLastPriceDecimals = Number.isFinite(Number(priceInfo.decimals)) ? Number(priceInfo.decimals) : countPriceDecimals(p);
-      st.wsLastPriceAt = ts;
-      st.currentAssetPrice = p;
-      st.currentAssetPriceDecimals = st.wsLastPriceDecimals;
-      st.lastPriceAt = ts;
-      st.feedState = 'READY';
-      st.lastFeedSource = 'ws_forced';
-      appendPriceHistoryTick(st, p, ts, 'feed_ws_forced');
-    }
-  }
-
-  function decodeSocketAttachmentJson(payload) {
-    if (typeof payload !== 'string' || !payload) return null;
-    let text = payload.trim();
-    if (!text) return null;
-    if (text[0] === '{' || text[0] === '[') {
-      try { return JSON.parse(text); } catch {}
-    }
-    try {
-      text = atob(text);
-      return JSON.parse(text);
-    } catch {
-      return null;
-    }
-  }
-
-  function wsTsToMs(ts) {
-    const n = Number(ts);
-    if (!Number.isFinite(n)) return Date.now();
-    if (n > 1e12) return Math.round(n);
-    if (n > 1e10) return Math.round(n / 1000);
-    return Math.round(n * 1000);
-  }
-
-  function countPriceDecimals(value) {
-    if (!Number.isFinite(Number(value))) return 5;
-    const txt = String(value);
-    const dot = txt.indexOf('.');
-    if (dot < 0) return 0;
-    return Math.max(0, Math.min(8, txt.length - dot - 1));
-  }
-
-  function wsCommandToDirection(command) {
-    const c = Number(command);
-    if (c === 0) return 'BUY';
-    if (c === 1) return 'SELL';
-    return null;
-  }
-
-  function findActiveTradeByWsDeal(deal) {
-    const active = Array.isArray(S.activeTrades) ? S.activeTrades : [];
-    if (!active.length || !deal) return null;
-    const wsId = deal.id ? String(deal.id) : '';
-    if (wsId) {
-      const byId = active.find((t) => String(t.wsDealId || '') === wsId);
-      if (byId) return byId;
-    }
-
-    const dir = wsCommandToDirection(deal.command);
-    const asset = String(deal.asset || '').trim();
-    const openTsMs = wsTsToMs(deal.openTimestamp || 0);
-    const closeTsMs = wsTsToMs(deal.closeTimestamp || 0);
-    const expirySec = Math.max(1, Math.round((closeTsMs - openTsMs) / 1000));
-
-    let best = null;
-    for (const t of active) {
-      if (!t || t.outcomeChecked) continue;
-      if (asset && t.asset && String(t.asset).toUpperCase() !== asset.toUpperCase()) continue;
-      if (dir && t.direction && String(t.direction).toUpperCase() !== dir) continue;
-      const tradeOpen = Number(t.startTime || 0);
-      const timeDist = Math.abs(tradeOpen - openTsMs);
-      if (timeDist > 180000) continue;
-      const tradeExp = Number(t.expiryMs || 0) / 1000;
-      const expDist = tradeExp > 0 ? Math.abs(tradeExp - expirySec) : 0;
-      const score = timeDist + expDist * 1000;
-      if (!best || score < best.score) best = { trade: t, score };
-    }
-    return best ? best.trade : null;
-  }
-
-  function handleWsOpenOrderPayload(payload) {
-    const deal = payload && typeof payload === 'object' ? payload : null;
-    if (!deal || !deal.id) return;
-    const trade = findActiveTradeByWsDeal(deal);
-    if (!trade) return;
-    trade.wsDealId = String(deal.id);
-    trade.openConfirmed = true;
-    trade.openConfirmedBy = 'WS_SUCCESS_OPEN';
-    const openTsMs = wsTsToMs(deal.openTimestamp || 0);
-    const closeTsMs = wsTsToMs(deal.closeTimestamp || 0);
-    if (openTsMs > 0) trade.startTime = openTsMs;
-    if (closeTsMs > openTsMs) {
-      trade.expectedEnd = closeTsMs + C.SETTLEMENT_DELAY_MS;
-      trade.expiryMs = Math.max(1000, closeTsMs - openTsMs);
-      const sec = Math.max(1, Math.round((closeTsMs - openTsMs) / 1000));
-      if (sec === 60) trade.expiry = '1M';
-      else if (sec === 180) trade.expiry = '3M';
-      else if (sec === 300) trade.expiry = '5M';
-    }
-  }
-
-  function handleWsCloseOrderPayload(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    const deals = Array.isArray(payload.deals) ? payload.deals : [];
-    for (const deal of deals) {
-      if (!deal || !deal.id) continue;
-      const trade = findActiveTradeByWsDeal(deal);
-      if (!trade) continue;
-      const profit = Number(deal.profit);
-      let profitCents = 0;
-      if (Number.isFinite(profit)) {
-        profitCents = Math.round(profit * 100);
-      } else {
-        const amount = Number(deal.amount || trade.totalAmountCents / 100 || trade.amountCents / 100 || 0);
-        profitCents = Math.round(amount * 100);
-      }
-      const outcome = profitCents > 0 ? 'ПЕЧАЛБИ' : (profitCents < 0 ? 'ЗАГУБИ' : 'EVEN');
-      finalizeTradeOutcome(trade, outcome, profitCents, wsTsToMs(deal.closeTimestamp || Date.now()), 'WS_SUCCESS_CLOSE');
-    }
-  }
-
-  function handleWsBalancePayload(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    const bal = Number(payload.balance);
-    if (!Number.isFinite(bal)) return;
-    const cents = Math.round(bal * 100);
-    if (!Number.isFinite(cents) || cents <= 0) return;
-    S.balance = cents;
-    S.lastBalanceCents = cents;
-    updateBalanceSummary();
-  }
-
-  function handleWsSocketFramePayload(payload) {
-    if (typeof payload !== 'string' || !payload) return;
-    const frame = payload.trim();
-    if (!frame) return;
-
-    if (frame.startsWith('42[') || frame.startsWith('43[')) {
-      try {
-        const parsed = JSON.parse(frame.slice(2));
-        if (Array.isArray(parsed) && parsed.length >= 1) {
-          const eventName = String(parsed[0] || '');
-          const body = parsed.length > 1 ? parsed[1] : null;
-          if (eventName === 'updateStream') {
-            const rows = Array.isArray(body) ? body : [];
-            for (const row of rows) {
-              if (!Array.isArray(row) || row.length < 3) continue;
-              const asset = String(row[0] || '').trim();
-              const tsMs = wsTsToMs(row[1]);
-              const price = Number(row[2]);
-              if (!Number.isFinite(price)) continue;
-              applyPriceFromNumericSample(price, countPriceDecimals(price), 'ws', asset, tsMs);
-            }
-            return;
-          }
-          if (eventName === 'successopenOrder') {
-            handleWsOpenOrderPayload(body);
-            return;
-          }
-          if (eventName === 'successcloseOrder') {
-            handleWsCloseOrderPayload(body);
-            return;
-          }
-          if (eventName === 'successupdateBalance') {
-            handleWsBalancePayload(body);
-            return;
-          }
-        }
-      } catch {}
-    }
-
-    if (frame.startsWith('451-[')) {
-      try {
-        const parsed = JSON.parse(frame.slice(4));
-        const eventName = Array.isArray(parsed) ? String(parsed[0] || '') : '';
-        if (eventName) S.wsPendingSocketEvent = eventName;
-      } catch {}
-      return;
-    }
-
-    const pending = String(S.wsPendingSocketEvent || '');
-    if (!pending) {
-      handleWsMessageData(frame);
-      return;
-    }
-    const decoded = decodeSocketAttachmentJson(frame);
-    if (decoded == null) {
-      handleWsMessageData(frame);
-      return;
-    }
-
-    if (pending === 'updateStream') {
-      const rows = Array.isArray(decoded) ? decoded : [];
-      for (const row of rows) {
-        if (!Array.isArray(row) || row.length < 3) continue;
-        const asset = String(row[0] || '').trim();
-        const tsMs = wsTsToMs(row[1]);
-        const price = Number(row[2]);
-        if (!Number.isFinite(price)) continue;
-        applyPriceFromNumericSample(price, countPriceDecimals(price), 'ws', asset, tsMs);
-      }
-    } else if (pending === 'successopenOrder') {
-      handleWsOpenOrderPayload(decoded);
-    } else if (pending === 'successcloseOrder') {
-      handleWsCloseOrderPayload(decoded);
-    } else if (pending === 'successupdateBalance') {
-      handleWsBalancePayload(decoded);
-    }
-
-    S.wsPendingSocketEvent = null;
   }
 
   function validateFeedPrice(value, decimals = 5, prevPrice = null) {
@@ -862,7 +650,7 @@
       WS_FEED_BUFFER.bridgeFramesSeen = (WS_FEED_BUFFER.bridgeFramesSeen || 0) + 1;
     }
 
-    const botState = window.InfinityBot?.S || S;
+    const botState = window.InfinityBot?.S;
     if (botState) {
       botState.wsPacketsSeen = WS_FEED_BUFFER.packetsSeen;
       botState.wsBridgeFramesSeen = WS_FEED_BUFFER.bridgeFramesSeen || 0;
@@ -885,67 +673,38 @@
     if (window.__iaaBridgeListenerReady) return;
     window.__iaaBridgeListenerReady = true;
     window.addEventListener('message', (event) => {
+      if (event.source !== window) return;
       const data = event.data;
-      if (!data || typeof data.__iaaType !== 'string') return;
-
+      if (!data) return;
+      if (typeof data.__iaaType !== 'string') {
+        // Fallback: some page internals post raw payloads without our marker.
+        // Try to decode an int-based OTC price from generic payload.
+        try {
+          const candidate = extractPriceFromWsPayload(data);
+          if (candidate && Number.isFinite(candidate.value)) {
+            applyPriceFromNumericSample(candidate.value, candidate.decimals || 5, 'bridge', candidate.asset || '', candidate.timestamp || Date.now());
+          }
+        } catch {}
+        return;
+      }
       if (data.__iaaType === 'IAA_WS_BRIDGE_READY') {
         WS_FEED_BUFFER.bridgeReady = true;
-        const st = window.InfinityBot?.S || S;
+        const st = window.InfinityBot?.S;
         if (st) st.wsBridgeReady = true;
         return;
       }
-
-      if (data.__iaaType === 'IAA_WS_BRIDGE_STATUS') {
-        const st = window.InfinityBot?.S || S;
-        if (st) {
-          st.wsBridgeStatus = String(data.status || 'unknown');
-          st.wsBridgeStatusDetail = String(data.detail || '');
-          st.wsBridgeStatusAt = Number.isFinite(Number(data.ts)) ? Number(data.ts) : Date.now();
-        }
-        return;
-      }
-
       if (data.__iaaType === PO_PRICE_EVENT) {
-        const directPrice = Number(data.price);
-        const rawPrice = Number(data.raw);
-        const pickedPrice = Number.isFinite(directPrice) ? directPrice : rawPrice;
-        const inferred = inferPriceFromNumericSample(pickedPrice, Number.isFinite(S.currentAssetPrice) ? S.currentAssetPrice : null);
-        const finalPrice = Number.isFinite(directPrice)
-          ? directPrice
-          : (Number.isFinite(inferred?.value) ? Number(inferred.value) : NaN);
-        const decimals = Number.isFinite(Number(data.decimals))
-          ? Number(data.decimals)
-          : (Number.isFinite(inferred?.decimals) ? Number(inferred.decimals) : countPriceDecimals(finalPrice));
-        const ts = Number.isFinite(Number(data.ts)) ? Number(data.ts) : Date.now();
+        const raw = Number(data.raw);
+        const scaled = Number(data.price);
+        const ts = Number(data.ts) || Date.now();
         const asset = String(data.asset || '').trim();
-        if (Number.isFinite(finalPrice)) {
-          WS_FEED_BUFFER.bridgeFramesSeen = (WS_FEED_BUFFER.bridgeFramesSeen || 0) + 1;
-          WS_FEED_BUFFER.bridgeReady = true;
-          const readyState = window.InfinityBot?.S || S;
-          if (readyState) readyState.wsBridgeReady = true;
-
-          let applied = false;
-          try { applied = !!applyPriceFromNumericSample(finalPrice, decimals, 'ws', asset, ts); } catch {}
-
-          // Emergency fallback for vendor payload mismatches: keep UI/engine fed even if strict validators reject.
-          if (!applied) {
-            const st = window.InfinityBot?.S || S;
-            if (st) {
-              st.wsLastPrice = finalPrice;
-              st.wsLastPriceDecimals = Number.isFinite(decimals) ? decimals : countPriceDecimals(finalPrice);
-              st.wsLastPriceAt = ts;
-              st.currentAssetPrice = finalPrice;
-              st.currentAssetPriceDecimals = st.wsLastPriceDecimals;
-              st.lastPriceAt = ts;
-              st.feedState = 'READY';
-              st.lastFeedSource = 'ws_fallback';
-              appendPriceHistoryTick(st, finalPrice, ts, 'feed_ws_fallback');
-            }
-          }
-        }
+        if (!asset || !Number.isFinite(raw) || !Number.isFinite(scaled)) return;
+        WS_FEED_BUFFER.bridgeReady = true;
+        const readyState = window.InfinityBot?.S;
+        if (readyState) readyState.wsBridgeReady = true;
+        applyPriceFromNumericSample(scaled, 5, 'bridge', asset, ts);
         return;
       }
-
       if (data.__iaaType !== 'IAA_WS_BRIDGE_FRAME' || typeof data.payload !== 'string') return;
       const source = data.source === 'http' ? 'http' : 'ws';
       if (source === 'http') {
@@ -953,13 +712,8 @@
       } else {
         WS_FEED_BUFFER.bridgeFramesSeen = (WS_FEED_BUFFER.bridgeFramesSeen || 0) + 1;
       }
-
-      WS_FEED_BUFFER.bridgeReady = true;
-      const readyState = window.InfinityBot?.S || S;
-      if (readyState) readyState.wsBridgeReady = true;
-
       try {
-        handleWsSocketFramePayload(data.payload);
+        handleWsPriceSample(data.payload);
       } catch {}
     }, false);
   }
@@ -970,103 +724,37 @@
     window.__iaaBridgeInjectOk = false;
     window.__iaaBridgeInjectError = null;
 
-    const setBridgeDiag = (status, detail = '') => {
-      try {
-        const root = document.documentElement;
-        if (root) {
-          root.dataset.iaaBridgeInjectStatus = String(status || 'unknown');
-          root.dataset.iaaBridgeInjectDetail = String(detail || '');
-          root.dataset.iaaBridgeInjectTs = String(Date.now());
-        }
-      } catch {}
-      try {
-        window.postMessage({
-          __iaaType: 'IAA_WS_BRIDGE_STATUS',
-          status: String(status || 'unknown'),
-          detail: String(detail || ''),
-          ts: Date.now()
-        }, '*');
-      } catch {}
-    };
-
-    const src = chrome?.runtime?.getURL?.('inject.js');
-    if (!src) {
-      window.__iaaBridgeInjectError = 'inject_url_unavailable';
-      setBridgeDiag('error', 'inject_url_unavailable');
-      return;
-    }
-
-    const onCspViolation = (event) => {
-      try {
-        const violated = String(event?.violatedDirective || '');
-        if (!violated.includes('script-src')) return;
-        const detail = `csp_block:${String(event?.blockedURI || 'inline')}`;
-        window.__iaaBridgeInjectError = detail;
-        setBridgeDiag('error', detail);
-      } catch {}
-    };
-
-    const injectIntoDocument = (doc) => {
-      if (!doc) return false;
-      const root = doc.documentElement || doc.head || doc.body;
-      if (!root) return false;
-      if (doc.querySelector('script[data-iaa-bridge-mode="inject-js"]')) return true;
-
-      const script = doc.createElement('script');
-      script.type = 'text/javascript';
+    try {
+      const src = chrome?.runtime?.getURL?.('inject.js');
+      if (!src) {
+        window.__iaaBridgeInjectError = 'inject_url_unavailable';
+        return;
+      }
+      if (document.querySelector('script[data-iaa-bridge="inject-js"]')) {
+        window.__iaaBridgeInjectOk = true;
+        return;
+      }
+      const script = document.createElement('script');
       script.src = src;
       script.async = false;
       script.dataset.iaaBridge = '1';
       script.dataset.iaaBridgeMode = 'inject-js';
-      script.dataset.iaaBridgeState = 'loading';
       script.addEventListener('load', () => {
         window.__iaaBridgeInjectOk = true;
         window.__iaaBridgeInjectError = null;
-        script.dataset.iaaBridgeState = 'loaded';
-        setBridgeDiag('ok', 'inject_script_loaded');
+        script.remove();
       }, { once: true });
       script.addEventListener('error', () => {
         window.__iaaBridgeInjectOk = false;
         window.__iaaBridgeInjectError = 'inject_script_load_error';
-        script.dataset.iaaBridgeState = 'error';
-        setBridgeDiag('error', 'inject_script_load_error');
+        script.remove();
       }, { once: true });
-      root.appendChild(script);
-      return true;
-    };
-
-    try {
-      try { window.addEventListener('securitypolicyviolation', onCspViolation, { once: true }); } catch {}
-
-      let injectedAny = false;
-      try { injectedAny = injectIntoDocument(document) || injectedAny; } catch {}
-
-      // Try same-origin iframes as PO can keep feed socket there.
-      try {
-        const frames = Array.from(document.querySelectorAll('iframe'));
-        for (const f of frames) {
-          try {
-            const d = f.contentDocument;
-            if (!d) continue;
-            injectedAny = injectIntoDocument(d) || injectedAny;
-          } catch {}
-        }
-      } catch {}
-
-      if (!injectedAny) {
-        window.__iaaBridgeInjectError = 'inject_no_document_root';
-        setBridgeDiag('error', 'inject_no_document_root');
-        return;
-      }
-
-      setBridgeDiag('loading', 'inject_script_appended_external_only');
+      (document.documentElement || document.head || document.body)?.appendChild(script);
     } catch (err) {
       window.__iaaBridgeInjectOk = false;
       window.__iaaBridgeInjectError = `inject_exception:${String(err?.message || err || 'unknown')}`;
-      setBridgeDiag('error', window.__iaaBridgeInjectError);
     }
   }
-
 
   function installHttpPriceTap() {
     // Disabled: price source is DOM selector only.
@@ -1128,9 +816,48 @@
   }
 
   function installWebSocketPriceTap() {
-    // WS bridge is now the primary feed source.
+    // Disabled: price source is DOM selector only.
+    return;
+
+    if (window.__iaaWsTapped) return;
+    window.__iaaWsTapped = true;
     ensurePageWsBridgeListener();
     ensurePageWsBridgeInjected();
+    const OriginalWebSocket = window.WebSocket;
+    if (!OriginalWebSocket) return;
+
+    try {
+      const proto = OriginalWebSocket.prototype;
+      if (proto && typeof proto.dispatchEvent === 'function' && !proto.__iaaDispatchTapped) {
+        const originalDispatch = proto.dispatchEvent;
+        proto.dispatchEvent = function(event) {
+          if (event?.type === 'message') {
+            try { handleWsMessageData(event.data); } catch {}
+          }
+          return originalDispatch.apply(this, arguments);
+        };
+        proto.__iaaDispatchTapped = true;
+      }
+    } catch {
+      // ignore prototype hook errors
+    }
+
+    window.WebSocket = function (...args) {
+      const ws = new OriginalWebSocket(...args);
+      ws.addEventListener('message', (event) => {
+        try {
+          handleWsMessageData(event?.data);
+        } catch {
+          // ignore ws parse errors
+        }
+      });
+      return ws;
+    };
+    window.WebSocket.prototype = OriginalWebSocket.prototype;
+    window.WebSocket.OPEN = OriginalWebSocket.OPEN;
+    window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
+    window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
+    window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
     const botState = window.InfinityBot?.S;
     if (botState) {
       botState.wsTapInstalled = true;
@@ -1139,7 +866,6 @@
       botState.wsBridgeReady = !!WS_FEED_BUFFER.bridgeReady;
     }
   }
-
 
   const storage = {
     async get(k) { try { return (await chrome.storage?.local?.get(k))[k]; } catch { return undefined; } },
@@ -1183,26 +909,25 @@
     card.innerHTML = `
       <div class="iaa-login-logo-wrap"><img id="iaa-login-logo" class="iaa-login-logo" alt="∞ Infinity AI"/></div>
       <div id="heading">ВХОД</div>
-      <form id="iaa-login-form" class="form" novalidate>
+      <div class="form">
         <div class="field"><input id="iaa-pass" class="input-field" type="password" placeholder="Password" autocomplete="current-password"></div>
         <div class="field"><input id="iaa-uid" class="input-field" type="text" placeholder="PocketOption ID" autocomplete="username"></div>
-        <div class="btn"><button id="iaa-login-btn" class="button" type="submit">ВХОД</button></div>
+        <div class="btn"><button id="iaa-login-btn" class="button">ВХОД</button></div>
         <div id="iaa-err" class="iaa-err"></div>
-      </form>`;
+      </div>`;
     shell.appendChild(card); document.documentElement.appendChild(shell);
 
     const logo = card.querySelector('#iaa-login-logo');
     try { logo.src = chrome.runtime.getURL('logo.png'); } catch { logo.src = 'logo.png'; }
     logo.onerror = () => { logo.src = 'https://i.ibb.co/M5Skh64X/logo.png'; };
 
-    const loginForm = card.querySelector('#iaa-login-form');
     const btnLogin = card.querySelector('#iaa-login-btn');
     const inputPass = card.querySelector('#iaa-pass');
     const inputUid = card.querySelector('#iaa-uid');
     const elErr = card.querySelector('#iaa-err');
 
     let busy = false;
-    const submitLogin = async () => {
+    btnLogin.addEventListener('click', async () => {
       if (busy) return; elErr.textContent = '';
       const pass = (inputPass.value || '').trim();
       const acct = (inputUid.value || '').trim();
@@ -1213,14 +938,7 @@
         if (ok) { await setSession(true); shell.classList.add('iaa-hidden'); window.InfinityBot?.boot(); window.InfinityBot?.logConsole?.(window.InfinityBot?.formatStatus?.('login_accepted') || 'Login accepted.'); }
         else { await clearSession(); elErr.textContent = 'Access denied. Check your credentials.'; window.InfinityBot?.logConsole?.(window.InfinityBot?.formatStatus?.('login_denied') || 'Login denied.'); }
       } finally { busy = false; btnLogin.disabled = false; btnLogin.textContent = 'ВХОД'; }
-    };
-    if (loginForm) loginForm.addEventListener('submit', (e) => { e.preventDefault(); submitLogin(); });
-
-    const onEnter = (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); submitLogin(); }
-    };
-    inputPass.addEventListener('keydown', onEnter);
-    inputUid.addEventListener('keydown', onEnter);
+    });
   }
 
   /* ============================== BOT CORE ============================== */
@@ -1465,7 +1183,6 @@
       wsBridgeListener: false,
       wsBridgeInjected: false,
       wsBridgeReady: false,
-      wsPendingSocketEvent: null,
       httpFramesSeen: 0,
       feedState: 'NO_FEED',
       lastPriceRejectReason: null,
@@ -1575,14 +1292,18 @@
       biasStrongThreshold: 0.45,
       stabilityEnabled: true,
       stabilityMaxGapMs: 3500,
+      stabilityPrecheckEnabled: true,
       toleranceMode: 'either',
       toleranceConfidence: 0.75,
       killerThresholdMode: '8of11',
       supportingFiltersEnabled: true,
       chopV2Enabled: true,
       chopV2StrengthPct: 50,
+      chopV3HardStop: false,
+      chopV3Sensitivity: 'med',
       biasPanelOpen: false,
       stabilityPanelOpen: false,
+      chopV3PanelOpen: false,
       maxTradeAmountCents: 15000,
       maxTradeAmountMultiplier: 1.5,
       analysisWindowSec: 300,
@@ -1660,6 +1381,9 @@
       entryWindowSec1m: 15,
       entryWindowSec3m: 35,
       entryWindowSec5m: 150,
+      deadMarketFilterEnabled: false,
+      deadMarketMinMove: 0.0001,
+      earlyLatencyGateMs: 1500,
       sniperWarmupMin: SNIPER_5S_DEFAULTS.warmupMin,
       sniperVwapDeviation: SNIPER_5S_DEFAULTS.vwapDeviation,
       sniperVwapLookbackMin: SNIPER_5S_DEFAULTS.vwapLookbackMin,
@@ -1712,6 +1436,7 @@
       sniperEngineCollapsed: false,
       sniperRiskCollapsed: false,
       sniperNewFiltersCollapsed: true,
+      deadMarketPanelOpen: false,
       sniperSettingsTab: 'basic',
       debugTab: 'status',
       debugEnabled: false,
@@ -1732,6 +1457,7 @@
       skipReasonCounts: {},
       skipStats: { pass: 0, wait: 0, confluence: 0, dominance: 0, perfectTime: 0, chop: 0, payout: 0, tolerance: 0, strategy: 0, other: 0 },
       lastStatusAt: 0,
+      tickPerfStats: { n: 0, totalMs: 0, maxMs: 0, slowOver1s: 0, p95Ms: 0 },
 
       /* ---------- ENHANCED: Countdown and UI states ---------- */
       countdownActive: false,
@@ -1805,6 +1531,9 @@
       if (!S.strategyConfigs) S.strategyConfigs = { ...STRATEGY_DEFAULTS.configs };
       if (typeof S.candlestickPatternEnabled !== 'boolean') S.candlestickPatternEnabled = true;
       if (!Number.isFinite(S.candlestickPatternWeight)) S.candlestickPatternWeight = 0.25;
+      if (typeof S.deadMarketFilterEnabled !== 'boolean') S.deadMarketFilterEnabled = false;
+      if (!Number.isFinite(S.deadMarketMinMove)) S.deadMarketMinMove = 0.0001;
+      if (!Number.isFinite(S.earlyLatencyGateMs)) S.earlyLatencyGateMs = 1500;
       if (typeof S.phaseCatchMoveEnabled !== 'boolean') S.phaseCatchMoveEnabled = false;
       if (typeof S.phaseReloadSniperEnabled !== 'boolean') S.phaseReloadSniperEnabled = false;
     }
@@ -1894,6 +1623,8 @@
       drift: 'Drift: signal умира',
       flip_delay: 'Flip delay',
       impulse_cap: 'Impulse cap',
+      dead_market_velocity: 'Мъртъв пазар (velocity)',
+      early_latency_budget: 'Ранен latency guard',
 
       Warmup: 'Загряване',
       Interval: 'Интервал',
@@ -2110,6 +1841,8 @@
           tradeIds: Object.create(null),
           lossReports: [],
           strategies: Object.create(null),
+          strategyFlow: Object.create(null),
+          skipReasons: Object.create(null),
           killer: {
             enabledAtStart: false,
             pass: 0,
@@ -2133,6 +1866,8 @@
       sess.trades = [];
       sess.tradeIds = Object.create(null);
       sess.strategies = Object.create(null);
+      sess.strategyFlow = Object.create(null);
+      sess.skipReasons = Object.create(null);
       sess.killer = { enabledAtStart: !!S.killerEnabled, pass: 0, wait: 0, reasons: Object.create(null), lastByTf: Object.create(null) };
       sess.lateStats = { total: 0, byTf: Object.create(null), worstSec: 0, sumSec: 0, samples: [] };
       sess.startBalanceCents = readBalanceCents();
@@ -2244,6 +1979,42 @@
       if (Number.isFinite(entry.confidence)) { st.confSum += entry.confidence; st.confN += 1; }
     }
 
+    function sessionRecordStrategyEvent(strategyKey, stage, meta = {}) {
+      if (!strategyKey || !stage) return;
+      const sess = _sessionEnsure();
+      if (!sess.strategyFlow || typeof sess.strategyFlow !== 'object') sess.strategyFlow = Object.create(null);
+      const key = String(strategyKey || '—');
+      if (!sess.strategyFlow[key]) {
+        sess.strategyFlow[key] = {
+          generated: 0,
+          selected: 0,
+          executed: 0,
+          blocked: 0,
+          blockedReasons: Object.create(null),
+          byRegime: Object.create(null)
+        };
+      }
+      const bucket = sess.strategyFlow[key];
+      const stg = String(stage || '').toLowerCase();
+      if (stg === 'generated') bucket.generated += 1;
+      else if (stg === 'selected') bucket.selected += 1;
+      else if (stg === 'executed') bucket.executed += 1;
+      else if (stg === 'blocked') {
+        bucket.blocked += 1;
+        const reason = String(meta.reason || 'unknown');
+        bucket.blockedReasons[reason] = (bucket.blockedReasons[reason] || 0) + 1;
+      }
+      const regime = String(meta.regime || '').toLowerCase();
+      if (regime) {
+        const rg = (bucket.byRegime[regime] = bucket.byRegime[regime] || { generated: 0, selected: 0, executed: 0, blocked: 0 });
+        if (stg === 'generated') rg.generated += 1;
+        else if (stg === 'selected') rg.selected += 1;
+        else if (stg === 'executed') rg.executed += 1;
+        else if (stg === 'blocked') rg.blocked += 1;
+      }
+    }
+
+
     function sessionRecordKiller(tf, snapshot, verdict, reason) {
       const sess = _sessionEnsure();
       const t = Date.now();
@@ -2297,8 +2068,16 @@
       const cWhy = verdict === 'PASS' ? '#22c55e' : '#f59e0b';
       const cDom = (Number.isFinite(dom) && Number.isFinite(thr) && dom >= thr) ? '#22c55e' : '#f59e0b';
       const cConf = (Number.isFinite(effPts) && Number.isFinite(min) && effPts >= min) ? '#22c55e' : '#f59e0b';
-      const stateValue = `${whyShort}|${Number(effPts).toFixed(1)}|${reason || ''}`;
-      if (!logSpamControlled(`killer:${tf}`, stateValue, verdict === 'PASS' ? 2000 : 15000)) return;
+      const stateTag = verdict === 'PASS' ? 'READY' : `WAIT:${reason || '—'}`;
+      S._killerConsoleByTf = S._killerConsoleByTf || {};
+      const prevConsole = S._killerConsoleByTf[tf] || null;
+      const minIntervalMs = 2500; // per-TF anti-spam floor
+      const heartbeatMs = verdict === 'PASS' ? 7000 : 12000; // periodic refresh without flooding
+      const sameState = !!(prevConsole && prevConsole.stateTag === stateTag);
+      const dt = prevConsole ? (t - Number(prevConsole.t || 0)) : Number.POSITIVE_INFINITY;
+      if (sameState && dt < minIntervalMs) return;
+      if (sameState && dt < heartbeatMs) return;
+      S._killerConsoleByTf[tf] = { t, stateTag };
       logConsoleLine(`🔫 ${tf}|<span style="color:${cWhy};font-weight:800;">${whyShort}</span>|<span style="color:${cConf};font-weight:800;">${confTxt}</span>|<span style="color:${cDom};font-weight:800;">DOM ${domPct}%(thr ${thrPct}%)</span>|<span style="color:#a5b4fc;font-weight:700;">${adxTxt}</span>|<span style="color:#e5e7eb;">${ptTxt}</span>${pointsTxt ? `|<span style="color:#93c5fd;">${pointsTxt}</span>` : ''}`);
     }
 
@@ -2423,7 +2202,7 @@ window.__REPORT_FNAME__ = "${fname}";
       const avgConf = (() => {
         const xs = trades.map(t=>t.confidence).filter(x=>Number.isFinite(x));
         if (!xs.length) return null;
-        return xs.reduce((a,b)=>a+b,0)/xs.length;
+        return (xs.reduce((a,b)=>a+b,0)/xs.length) * 100;
       })();
 
       // Issues: top 6
@@ -2443,7 +2222,7 @@ window.__REPORT_FNAME__ = "${fname}";
       const isWinOutcome = (o) => o === 'ПЕЧАЛБИ';
       const byScore = (thr) => {
         const subset = trades.filter(t => Number.isFinite(t.points) && Number.isFinite(t.maxPoints) && Number.isFinite(t.threshold)
-          && Number(t.maxPoints) === 9 && Number(t.threshold) === thr && (t.outcome === 'ПЕЧАЛБИ' || t.outcome === 'ЗАГУБИ'));
+          && Number(t.maxPoints) === 11 && Number(t.threshold) === thr && (t.outcome === 'ПЕЧАЛБИ' || t.outcome === 'ЗАГУБИ'));
         const winsN = subset.filter(t => isWinOutcome(t.outcome)).length;
         const totalN = subset.length;
         const wr = totalN ? (winsN / totalN * 100) : null;
@@ -2451,10 +2230,11 @@ window.__REPORT_FNAME__ = "${fname}";
       };
       const wr7 = byScore(7);
       const wr8 = byScore(8);
+      const wr9 = byScore(9);
 
       const regimeStrategyRows = Object.values(trades.reduce((acc, t) => {
         const reg = String(t.regime || '—').toUpperCase();
-        if (!['TREND', 'RANGE'].includes(reg)) return acc;
+        if (!['TREND', 'RANGE', 'CHOP'].includes(reg)) return acc;
         const key = `${t.strategyKey || '—'}|${reg}`;
         if (!acc[key]) acc[key] = { strategy: t.strategyKey || '—', regime: reg, total: 0, wins: 0, losses: 0 };
         acc[key].total += 1;
@@ -2463,7 +2243,7 @@ window.__REPORT_FNAME__ = "${fname}";
         return acc;
       }, {})).map((r) => ({ ...r, wr: r.total ? (r.wins / r.total * 100) : 0 }))
         .sort((a, b) => b.wr - a.wr);
-      const thresholdRows = [7, 8].map((thr) => {
+      const thresholdRows = [7, 8, 9].map((thr) => {
         const arr = trades.filter(t => Number(t.threshold) === thr);
         const w = arr.filter(t => t.outcome === 'ПЕЧАЛБИ').length;
         const wr = arr.length ? (w / arr.length * 100) : 0;
@@ -2472,6 +2252,38 @@ window.__REPORT_FNAME__ = "${fname}";
         const avgExp = arr.length ? (arr.reduce((s, t) => s + (Number(t.expirySeconds) || 0), 0) / arr.length) : 0;
         return { thr, trades: arr.length, wr, pnl, avgPts, avgExp };
       });
+
+      const tradeSummary = S.tradeStatsSummary || { total: 0, wins: 0, losses: 0, evens: 0, profitCents: 0 };
+      const tradeNetMoney = _fmtMoney(Number(tradeSummary.profitCents || 0));
+      const realizedTrades = trades.filter(t => ['ПЕЧАЛБИ','ЗАГУБИ','EVEN'].includes(String(t.outcome || '')));
+      const pendingTrades = trades.filter(t => String(t.outcome || '').toUpperCase().includes('PENDING'));
+      const totalStakeCents = realizedTrades.reduce((s,t)=> s + (Number.isFinite(t.stakeCents)?Number(t.stakeCents):0),0);
+      const totalGrossCreditCents = realizedTrades.reduce((s,t)=> { const p=Number.isFinite(t.profitCents)?Number(t.profitCents):0; const stake=Number.isFinite(t.stakeCents)?Number(t.stakeCents):0; return s + (p>0 ? stake + p : 0); },0);
+      const strategyFlowRows = Object.entries((sess.strategyFlow || {})).map(([k,v])=> ({
+        key:k,
+        generated:Number(v.generated||0),
+        selected:Number(v.selected||0),
+        executed:Number(v.executed||0),
+        blocked:Number(v.blocked||0),
+        blockTop:Object.entries(v.blockedReasons||{}).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([r,n])=>`${r}×${n}`).join(' | ')||'—'
+      })).sort((a,b)=>b.generated-a.generated);
+      const finalizedTotal = Number(tradeSummary.total || 0);
+      const finalizedWins = Number(tradeSummary.wins || 0);
+      const finalizedLosses = Number(tradeSummary.losses || 0);
+      const finalizedEvens = Number(tradeSummary.evens || 0);
+      const sessionTotal = trades.length;
+      const unresolvedN = trades.filter(t => String(t.outcomeMethod || '').includes('TIMEOUT_UNRESOLVED') || String(t.outcomeMethod || '').includes('PENDING') || String(t.outcome || '').toUpperCase().includes('PENDING')).length;
+      const methodRows = Object.entries(trades.reduce((acc, t) => {
+        const m = String(t.outcomeMethod || 'UNKNOWN');
+        acc[m] = (acc[m] || 0) + 1;
+        return acc;
+      }, {})).sort((a,b)=>b[1]-a[1]);
+      const consistency = {
+        totalDelta: sessionTotal - finalizedTotal,
+        winsDelta: wins - finalizedWins,
+        lossesDelta: losses - finalizedLosses,
+        evensDelta: neu - finalizedEvens
+      };
 
       const regimeRows = ['TREND', 'RANGE', 'CHOP'].map((regimeName) => {
         const arr = trades.filter(t => String(t.regime || '').toUpperCase() === regimeName);
@@ -2508,6 +2320,25 @@ window.__REPORT_FNAME__ = "${fname}";
       const avgSimWr = simTrades.length ? (simTrades.reduce((s,t)=>s+(Number(t.dynamicSimWinrate)||0),0)/simTrades.length*100) : 0;
       const avgSimSamples = simTrades.length ? (simTrades.reduce((s,t)=>s+(Number(t.dynamicSimSamples)||0),0)/simTrades.length) : 0;
       const hardStopRows = Object.entries((sess.skipReasons || {})).sort((a,b)=>b[1]-a[1]);
+      const filterDiagRaw = (sess.filterDiagnostics && typeof sess.filterDiagnostics === 'object') ? sess.filterDiagnostics : {};
+      const filterDiagMerged = {
+        spread: Number(filterDiagRaw.spread || 0) + Number((sess.skipReasons || {}).spread_low || 0) + Number((sess.skipReasons || {}).Spread || 0),
+        drift: Number(filterDiagRaw.drift || 0) + Number((sess.skipReasons || {}).drift || 0),
+        flipDelay: Number(filterDiagRaw.flipDelay || 0) + Number((sess.skipReasons || {}).flip_delay || 0),
+        impulseCap: Number(filterDiagRaw.impulseCap || 0) + Number((sess.skipReasons || {}).impulse_cap || 0),
+        rangeOscPenalty: Number(filterDiagRaw.rangeOscPenalty || 0),
+        deadMarketVelocity: Number(filterDiagRaw.deadMarketVelocity || 0) + Number((sess.skipReasons || {}).dead_market_velocity || 0),
+        earlyLatency: Number(filterDiagRaw.earlyLatency || 0) + Number((sess.skipReasons || {}).early_latency_budget || 0)
+      };
+      const filterDiagRows = [
+        ['Spread/Liquidity (skip)', filterDiagMerged.spread],
+        ['Drift спад увереност (skip)', filterDiagMerged.drift],
+        ['Flip delay (skip)', filterDiagMerged.flipDelay],
+        ['Impulse cap (skip)', filterDiagMerged.impulseCap],
+        ['Range osc penalty (apply)', filterDiagMerged.rangeOscPenalty],
+        ['Dead market velocity (skip)', filterDiagMerged.deadMarketVelocity],
+        ['Early latency guard (skip)', filterDiagMerged.earlyLatency]
+      ];
       const pointKeys = ['Стратегия','Режим','Killer','Структура','Волатилност','Тайминг','Spread/Liquidity','Pattern'];
       const missingPointRows = pointKeys.map((k)=>{
         const missing = trades.filter(t => Array.isArray(t.breakdown) && t.breakdown.some(b => String(b).includes(k) && String(b).includes(': 0'))).length;
@@ -2600,6 +2431,7 @@ window.__REPORT_FNAME__ = "${fname}";
         <div class="pill"><span>AVG CONF</span><b>${Number.isFinite(avgConf)?avgConf.toFixed(0)+'%':'—'}</b></div>
         <div class="pill"><span>WR 7/11</span><b>${wr7.wr!=null?wr7.wr.toFixed(1)+'%':'—'} (${wr7.totalN})</b></div>
         <div class="pill"><span>WR 8/11</span><b>${wr8.wr!=null?wr8.wr.toFixed(1)+'%':'—'} (${wr8.totalN})</b></div>
+        <div class="pill"><span>WR 9/11</span><b>${wr9.wr!=null?wr9.wr.toFixed(1)+'%':'—'} (${wr9.totalN})</b></div>
       </div>
       <div class="muted" style="margin-top:10px;">
         Начало: ${started ? started.toLocaleTimeString() : '—'} | Край: ${stopped ? stopped.toLocaleTimeString() : '—'} | Продължителност: ${started ? Math.max(0, Math.round(((stopped||now)-started)/60000)) : 0} мин
@@ -2613,11 +2445,41 @@ window.__REPORT_FNAME__ = "${fname}";
     </div>
   </div>
 
+  <h2>КОНСИСТЕНТНОСТ НА ОТЧЕТА</h2>
+  <div class="card">
+    <div class="grid2">
+      <div>
+        <div class="muted">Session vs Finalized</div>
+        <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+          <div class="pill"><span>Session trades</span><b>${sessionTotal}</b></div>
+          <div class="pill"><span>Finalized trades</span><b>${finalizedTotal}</b></div>
+          <div class="pill"><span>Δ Total</span><b>${consistency.totalDelta}</b></div>
+          <div class="pill"><span>Unresolved</span><b>${unresolvedN}</b></div>
+          <div class="pill"><span>Δ Wins</span><b>${consistency.winsDelta}</b></div>
+          <div class="pill"><span>Δ Losses</span><b>${consistency.lossesDelta}</b></div>
+          <div class="pill"><span>Δ Evens</span><b>${consistency.evensDelta}</b></div>
+        </div>
+      </div>
+      <div>
+        <div class="muted">Outcome methods</div>
+        <table style="margin-top:8px;"><thead><tr><th>METHOD</th><th>COUNT</th></tr></thead><tbody>
+          ${methodRows.length ? methodRows.map(([m,c])=>`<tr><td>${escapeHtml(m)}</td><td>${c}</td></tr>`).join('') : '<tr><td colspan="2" class="muted">Няма данни.</td></tr>'}
+        </tbody></table>
+      </div>
+      <div>
+        <div class="muted">Filter diagnostics</div>
+        <table style="margin-top:8px;"><thead><tr><th>FILTER</th><th>COUNT</th></tr></thead><tbody>
+          ${filterDiagRows.map(([name,val])=>`<tr><td>${escapeHtml(name)}</td><td>${Number(val||0)}</td></tr>`).join('')}
+        </tbody></table>
+      </div>
+    </div>
+  </div>
+
   <h2>СДЕЛКИ</h2>
   <div class="card">
     <table>
       <thead><tr>
-        <th>ВРЕМЕ</th><th>АКТИВ</th><th>TF</th><th>ПОСОКА</th><th>УВЕР.</th><th>ТОЧКИ</th><th>РЕЖИМ</th><th>PAYOUT</th><th>MODE</th><th>EXPIRY</th><th>РЕЗУЛТАТ</th><th>PNL</th><th>STRATEGY</th>
+        <th>ВРЕМЕ</th><th>АКТИВ</th><th>TF</th><th>ПОСОКА</th><th>УВЕР.</th><th>ТОЧКИ</th><th>РЕЖИМ</th><th>PAYOUT</th><th>MODE</th><th>EXPIRY</th><th>РЕЗУЛТАТ</th><th>PNL</th><th>METHOD</th><th>STRATEGY</th>
       </tr></thead>
       <tbody>
         ${trades.slice(-80).reverse().map(t=>{
@@ -2628,7 +2490,7 @@ window.__REPORT_FNAME__ = "${fname}";
             <td>${t.asset||''}</td>
             <td>${t.tf||''}</td>
             <td><span class="tag ${dirTag}">${t.direction||'—'}</span></td>
-            <td>${Number.isFinite(t.confidence)?`${Math.round(t.confidence)}%`:'—'}</td>
+            <td>${Number.isFinite(t.confidence)?`${Math.round(t.confidence * 100)}%`:'—'}</td>
             <td>${Number.isFinite(t.points)&&Number.isFinite(t.maxPoints)?`${t.points}/${t.maxPoints} (праг ${Number.isFinite(t.threshold)?t.threshold:'—'})`:'—'}</td>
             <td>${t.regime||'—'}</td>
             <td>${Number.isFinite(t.payoutPercent)?`${Math.round(t.payoutPercent)}%`:'—'}</td>
@@ -2636,12 +2498,14 @@ window.__REPORT_FNAME__ = "${fname}";
             <td>${t.expiry||''}</td>
             <td class="${resCls}"><b>${t.outcome||''}</b></td>
             <td class="${resCls}">${_fmtMoney(t.profitCents)}</td>
+            <td>${escapeHtml(t.outcomeMethod||'—')}</td>
             <td>${t.strategyKey||'—'}</td>
           </tr>`;
         }).join('')}
       </tbody>
     </table>
-    <div class="muted" style="margin-top:8px;">Сделки: ${trades.length} | Winrate: ${winrate.toFixed(1)}% | Result(balance): ${netMoney}</div>
+    <div class="muted" style="margin-top:8px;">Сделки: ${trades.length} | Winrate: ${winrate.toFixed(1)}% | Trade Net PnL: ${tradeNetMoney} | Result(balance): ${netMoney} | Реализирани: ${realizedTrades.length} | Pending: ${pendingTrades.length}</div>
+    <div class="muted" style="margin-top:4px;">Финансова разбивка: Общо залози ${_fmtMoney(totalStakeCents)} | Общо изплатено (gross) ${_fmtMoney(totalGrossCreditCents)} | Реализиран net ${_fmtMoney(realizedTrades.reduce((s,t)=>s+(Number.isFinite(t.profitCents)?t.profitCents:0),0))}</div>
   </div>
 
   <h2>WR ПО СТРАТЕГИЯ И РЕЖИМ</h2>
@@ -2691,6 +2555,11 @@ window.__REPORT_FNAME__ = "${fname}";
   <h2>ПОСЛЕДНИ 30 СДЕЛКИ</h2>
   <div class="card"><table><thead><tr><th>Time</th><th>Strategy</th><th>Regime</th><th>Points/Thr</th><th>Dir</th><th>ExpSec</th><th>DynMode</th><th>Stake</th><th>Outcome</th><th>PnL</th></tr></thead><tbody>
   ${trades.slice(-30).reverse().map(t=>`<tr><td>${t.time||'—'}</td><td>${t.strategyKey||'—'}</td><td>${t.regime||'—'}</td><td>${t.points||'—'}/${t.threshold||'—'}${Number(t.threshold)===8?` <span style="color:#f59e0b;font-weight:700;">STRICT</span>`:''}</td><td>${t.direction||'—'}</td><td>${t.expirySeconds||'—'}</td><td>${t.dynamicMode||'fixed'}</td><td>${Number.isFinite(t.stakeCents)?_fmtMoney(t.stakeCents):'—'}</td><td>${t.outcome||'—'}</td><td>${_fmtMoney(t.profitCents)}</td></tr>`).join('')}
+  </tbody></table></div>
+
+  <h2>ДИАГНОСТИКА НА СТРАТЕГИИ (Генериран → Избран → Изпълнен)</h2>
+  <div class="card"><table><thead><tr><th>Стратегия</th><th>Генерирани</th><th>Избрани (в режим)</th><th>Изпълнени</th><th>Блокирани</th><th>Топ причина за блок</th></tr></thead><tbody>
+  ${strategyFlowRows.length ? strategyFlowRows.map(r=>`<tr><td>${r.key}</td><td>${r.generated}</td><td>${r.selected}</td><td>${r.executed}</td><td>${r.blocked}</td><td>${escapeHtml(r.blockTop)}</td></tr>`).join('') : `<tr><td colspan="6" class="muted">Няма данни.</td></tr>`}
   </tbody></table></div>
 
   <h2>СТРАТЕГИИ (Partner mode)</h2>
@@ -2747,7 +2616,7 @@ window.__REPORT_FNAME__ = "${fname}";
   <h2>АНАЛИЗ НА ЗАГУБИ</h2>
   ${(() => {
     const arr = Array.isArray(sess.lossReports) ? sess.lossReports : [];
-    const losses = arr.filter(x => x && (x.outcome || '').toUpperCase().includes('LOSS') || (x.pnlCents||0) < 0);
+    const losses = arr.filter(x => x && (((x.outcome || '').toUpperCase().includes('LOSS')) || ((x.pnlCents||0) < 0)));
     if (!losses.length) return `<div class="muted">Няма записани загуби.</div>`;
     const rows = losses.slice(0, 30).map((x, i) => {
       const t = x.timeStr || x.time || '';
@@ -3295,20 +3164,30 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
   };
 
   const tfLabel = (trade.tfLabel || trade.tf || trade.expiryLabel || trade.expiry || '').toString().toUpperCase();
+  const idTag = trade?.decisionId ? ` | id=${trade.decisionId}` : '';
 
+  const stake = Number.isFinite(trade?.stakeCents) ? Number(trade.stakeCents) : null;
+  const gross = (Number.isFinite(stake) && Number.isFinite(pc) && pc > 0) ? (stake + pc) : null;
+  const settleTag = trade?.outcomeMethod ? ` | method=${trade.outcomeMethod}` : '';
   if (out === 'ПЕЧАЛБИ') {
-    logConsoleLine(`🎉 <span style="font-weight:900;color:#22c55e;">СДЕЛКА !!! ПЕЧАЛБА</span> <span style="color:#86efac;font-weight:800;">(${money(pc)})</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
+    logConsoleLine(`✅ ПЕЧЕЛИВША СДЕЛКА (net=${money(pc)}${Number.isFinite(gross)?` | gross=${money(gross)}`:''}${Number.isFinite(stake)?` | stake=${money(-stake)}`:''}) [${tfLabel}]${idTag}${settleTag}`);
   } else if (out === 'ЗАГУБИ') {
-    logConsoleLine(`🛑 <span style="font-weight:900;color:#ef4444;">СДЕЛКА !!! ЗАГУБА</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
+    logConsoleLine(`❌ ГУБЕЩА СДЕЛКА (net=${money(pc)}${Number.isFinite(stake)?` | stake=${money(-stake)}`:''}) [${tfLabel}]${idTag}${settleTag}`);
   } else if (out === 'EVEN') {
-    logConsoleLine(`➖ <span style="font-weight:900;color:#eab308;">СДЕЛКА !!! НЕУТРАЛНА</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
+    // Neutral trade should never print stake or 100x amounts; it is 0 PnL by definition.
+    logConsoleLine(`➖ НЕУТРАЛНА СДЕЛКА (net=$0.00${Number.isFinite(stake)?` | stake=${money(-stake)}`:''}) [${tfLabel}]${idTag}${settleTag}`);
   } else {
-    logConsoleLine(`ℹ <span style="font-weight:800;color:#e5e7eb;">РЕЗУЛТАТ: ${out}</span> <span style="color:#86efac;">(${money(pc)})</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
+    // Fallback
+    logConsoleLine(`ℹ РЕЗУЛТАТ: ${out} (${money(pc)}) [${tfLabel}]${idTag}`);
   }
 }
 
     function detectOutcomeByResultDelta(trade, epsilonCents = 3) {
       if (!trade) return null;
+      // Result delta is unsafe when trades overlap; use only for isolated trades.
+      if (!trade.balanceEligible) return null;
+      const openCount = Array.isArray(S.activeTrades) ? S.activeTrades.length : 0;
+      if (openCount > 1) return null;
       const startBalance = Number.isFinite(S.botStartBalance) ? S.botStartBalance : null;
       const resultBefore = Number.isFinite(trade.resultBeforeCents) ? trade.resultBeforeCents : null;
       const currentBalance = readBalanceCents();
@@ -3367,7 +3246,6 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
         const rate = total > 0 ? Math.round((S.tradeStats.wins / total) * 100) : 0;
         rateEl.textContent = `${rate}%`;
       }
-      renderSessionMiniStats();
       if (startEl) {
         startEl.textContent = S.botStartAt
           ? new Date(S.botStartAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -4554,48 +4432,17 @@ function getMinHistoryWindowForReadinessMs() {
     }
 
     function getCurrentAssetPrice() {
-      const now = Date.now();
-
-      // 1) WS first (if still fresh)
-      const ttl = (typeof WS_PRICE_SAMPLE_TTL_MS === 'number' && WS_PRICE_SAMPLE_TTL_MS > 0)
-        ? WS_PRICE_SAMPLE_TTL_MS
-        : 2000;
-
-      if (Number.isFinite(S.wsLastPrice) && Number.isFinite(S.wsLastPriceAt) && (now - S.wsLastPriceAt) <= ttl) {
-        S.currentAssetPrice = S.wsLastPrice;
-        S.lastPriceAt = S.wsLastPriceAt;
-        S.feedState = 'READY';
-        S.lastFeedSource = 'ws';
-        return S.wsLastPrice;
-      }
-
-      // 2) Keep recent in-memory value briefly instead of dropping to NO_FEED immediately.
-      const memFreshMs = 5000;
-      if (Number.isFinite(S.currentAssetPrice) && Number.isFinite(S.lastPriceAt) && (now - S.lastPriceAt) <= memFreshMs) {
-        S.feedState = 'READY';
-        S.lastFeedSource = S.lastFeedSource || 'cache';
-        return S.currentAssetPrice;
-      }
-
-      // 3) DOM fallback chain
-      const candidates = [
-        { value: getRealtimeOpenPriceMenuValue(), source: 'dom_open_price' },
-        { value: getOrderPanelLivePrice(), source: 'dom_order_panel' },
-        { value: getGeoZoneDomPrice(), source: 'dom_chart_lane' }
-      ];
-
-      for (const c of candidates) {
-        const p = c?.value;
-        if (!Number.isFinite(p)) continue;
+      // Single source of truth for live price:
+      // #pending-trades_open-price > div.current-time > span
+      const p = getRealtimeOpenPriceMenuValue();
+      if (Number.isFinite(p)) {
         S.currentAssetPrice = p;
-        S.lastPriceAt = now;
+        S.lastPriceAt = Date.now();
         S.feedState = 'READY';
-        S.lastFeedSource = c.source;
-        appendPriceHistoryTick(S, p, S.lastPriceAt, c.source || 'dom');
+        S.lastFeedSource = 'dom_open_price';
+        appendPriceHistoryTick(S, p, S.lastPriceAt, 'dom_open_price');
         return p;
       }
-
-      // 4) No source available
       S.feedState = 'NO_FEED';
       S.lastFeedSource = null;
       return null;
@@ -4870,10 +4717,20 @@ function getMinHistoryWindowForReadinessMs() {
         .toUpperCase();
     }
 
+    function bumpFilterDiagnostic(key) {
+      try {
+        const sess = _sessionEnsure();
+        if (!sess.filterDiagnostics || typeof sess.filterDiagnostics !== 'object') sess.filterDiagnostics = {};
+        const k = String(key || 'unknown');
+        sess.filterDiagnostics[k] = (sess.filterDiagnostics[k] || 0) + 1;
+      } catch (e) {}
+    }
+
     function bumpSkipReasonCounter(reason) {
       if (!reason) return;
       if (!S.skipReasonCounts || typeof S.skipReasonCounts !== 'object') S.skipReasonCounts = {};
       S.skipReasonCounts[reason] = (S.skipReasonCounts[reason] || 0) + 1;
+      try { const sess = _sessionEnsure(); if (!sess.skipReasons || typeof sess.skipReasons !== 'object') sess.skipReasons = Object.create(null); sess.skipReasons[reason] = (sess.skipReasons[reason] || 0) + 1; } catch (e) {}
     }
 
     function getTopSkipReasonsLabel(limit = 3) {
@@ -5083,6 +4940,11 @@ function getMinHistoryWindowForReadinessMs() {
           const maxEv = Math.max(2000, Number(S.maxBalanceEvents || 0) || 0);
           if (S.balanceEvents.length > maxEv) S.balanceEvents.splice(0, S.balanceEvents.length - maxEv);
         }
+
+        // Enforce stop-loss / loss-streak limits in real-time (independent of trade finalization path).
+        if (S.running) {
+          try { applyRiskLimits(); } catch (e) {}
+        }
       }, 250);
     }
 
@@ -5140,7 +5002,6 @@ function getMinHistoryWindowForReadinessMs() {
       el.style.color = p > 0 ? '#4ade80' : (p < 0 ? '#f87171' : '#e88565');
     }
 
-
     function updateBalanceSummary(){
       const startTimeEl = $id('iaa-balance-start-time');
       const startEl = $id('iaa-balance-start');
@@ -5165,21 +5026,6 @@ function getMinHistoryWindowForReadinessMs() {
         diffEl.classList.toggle('iaa-balance-positive', diffCents != null && diffCents > 0);
         diffEl.classList.toggle('iaa-balance-negative', diffCents != null && diffCents < 0);
       }
-      renderSessionMiniStats();
-    }
-
-    function renderSessionMiniStats() {
-      const el = $id('iaa-session-mini');
-      if (!el) return;
-      const stats = S.tradeStatsSummary || { total: 0, wins: 0, losses: 0, profitCents: 0 };
-      const total = Number(stats.total || 0);
-      const wins = Number(stats.wins || 0);
-      const losses = Number(stats.losses || 0);
-      const wr = total > 0 ? Math.round((wins / total) * 100) : 0;
-      const pnl = Number(stats.profitCents || 0);
-      const pnlTxt = (pnl >= 0 ? '+' : '-') + '$' + (Math.abs(pnl) / 100).toFixed(2);
-      const pnlCls = pnl > 0 ? 'pos' : (pnl < 0 ? 'neg' : '');
-      el.innerHTML = `<span class="mini-pnl ${pnlCls}">PnL ${pnlTxt}</span> • <span class="mini-w">W ${wins}</span> • <span class="mini-l">L ${losses}</span> • WR ${wr}% • T ${total}`;
     }
 
     /* ========================= KEEP ALIVE SYSTEM ========================= */
@@ -5378,6 +5224,7 @@ function getMinHistoryWindowForReadinessMs() {
       }
 
       const execKey = signalExecKey(signal);
+      const signalIdTag = signal?.decisionId ? ` | id=${signal.decisionId}` : '';
       if (!isSniperMode() && S.lastExecutedKey === execKey && Date.now() < S.tradeLockUntil) return false;
       if (!S.baseAmount) {
         setSkipReason('Amount');
@@ -5599,7 +5446,7 @@ function getMinHistoryWindowForReadinessMs() {
                 asset: signal.asset,
                 direction: signal.direction.toUpperCase(),
                 expiry: `DYN ${finalSeconds}s`
-              }));
+              }) + signalIdTag);
               const clickTarget = (dir === 'buy' || dir === 'call' || dir === 'up') ? up : dn;
               if (!clickTarget) return false;
               simulateClick(clickTarget);
@@ -5635,7 +5482,8 @@ function getMinHistoryWindowForReadinessMs() {
                 dynamicSimWinrate: Number(dynamicPlanUsed?.best?.stats?.winrate || 0),
                 dynamicSimSamples: Number(dynamicPlanUsed?.best?.stats?.samples || 0),
                 stakeMultiplier,
-                stakeReasonBg
+                stakeReasonBg,
+                decisionId: signal?.decisionId || null
               };
 
       // --- normalize trade context for reporting/debug ---
@@ -5656,13 +5504,15 @@ function getMinHistoryWindowForReadinessMs() {
               dynamicApplied = true;
               {
                 const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
-                logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
+                logConsoleLine((confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage) + signalIdTag);
               }
               await delay(140);
             }
             if (dynamicApplied && plan.best?.breakdown) {
               const b = plan.best.breakdown;
               logConsoleLine(`[DYNAMIC SIM] ${plan.best.seconds}s | score=${(b.total * 100).toFixed(1)}% | WR=${((b.winrate || 0) * 100).toFixed(1)}% | chop-${((b.penaltyChop || 0) * 100).toFixed(1)} late-${((b.penaltyLate || 0) * 100).toFixed(1)}`);
+              const top3 = (plan.scored || []).slice(0, 3).map((x) => `${x.seconds}s:${((x?.breakdown?.total || 0) * 100).toFixed(1)}%`).join(' | ');
+              if (top3) logConsoleLine(`[DYNAMIC SIM] top3: ${top3}`);
             }
           } else {
             if (!plan.expiries.length) return false;
@@ -5676,7 +5526,7 @@ function getMinHistoryWindowForReadinessMs() {
                 asset: signal.asset,
                 direction: signal.direction.toUpperCase(),
                 expiry
-              }));
+              }) + signalIdTag);
               const clickTarget = (dir === 'buy' || dir === 'call' || dir === 'up') ? up : dn;
               if (!clickTarget) return false;
               simulateClick(clickTarget);
@@ -5712,19 +5562,20 @@ function getMinHistoryWindowForReadinessMs() {
                 dynamicSimWinrate: Number(dynamicPlanUsed?.best?.stats?.winrate || 0),
                 dynamicSimSamples: Number(dynamicPlanUsed?.best?.stats?.samples || 0),
                 stakeMultiplier,
-                stakeReasonBg
+                stakeReasonBg,
+                decisionId: signal?.decisionId || null
               };
               S.activeTrades.push(trade);
               S.pendingTradeConfirmations.push({ trade, at: Date.now() });
               {
                 const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
-                logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
+                logConsoleLine((confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage) + signalIdTag);
               }
               await delay(140);
             }
           }
         } else {
-          logConsoleLine(formatStatus('trade_attempt', { asset: signal.asset, direction: signal.direction.toUpperCase(), expiry: resolvedExpiry }));
+          logConsoleLine(formatStatus('trade_attempt', { asset: signal.asset, direction: signal.direction.toUpperCase(), expiry: resolvedExpiry }) + signalIdTag);
           let clicked = false;
           if ((dir === 'buy' || dir === 'call' || dir === 'up') && up) {
             for (let i = 0; i < burstCount; i++) {
@@ -5779,13 +5630,14 @@ function getMinHistoryWindowForReadinessMs() {
             dynamicSimWinrate: Number(dynamicPlanUsed?.best?.stats?.winrate || 0),
             dynamicSimSamples: Number(dynamicPlanUsed?.best?.stats?.samples || 0),
             stakeMultiplier,
-            stakeReasonBg
+            stakeReasonBg,
+            decisionId: signal?.decisionId || null
           };
           S.activeTrades.push(trade);
           S.pendingTradeConfirmations.push({ trade, at: Date.now() });
           {
             const clickMessage = formatStatus('trade_clicked', { direction: dir.toUpperCase(), amount: `$${(amountCents / 100).toFixed(2)}` });
-            logConsoleLine(confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage);
+            logConsoleLine((confidenceLabel ? `${clickMessage} | ${confidenceLabel}` : clickMessage) + signalIdTag);
           }
         }
 
@@ -5958,6 +5810,7 @@ function getMinHistoryWindowForReadinessMs() {
 
         const ok = await confirmTradeByBalance(item.trade, item.at);
         if (ok) {
+          try { sessionRecordStrategyEvent(item.trade?.strategyKey || item.trade?.entryContext?.strategyKey || '—', 'executed', { regime: item.trade?.entryContext?.regime?.state || item.trade?.entryContext?.regime || '' }); } catch(e) {}
           logConsoleLine(formatStatus('trade_executed'));
           continue;
         }
@@ -6049,12 +5902,27 @@ function getMinHistoryWindowForReadinessMs() {
         // 4) If window exceeded and no credit → ЗАГУБИ
         if (now > settleEnd) {
           const timeoutDelta = detectOutcomeByResultDelta(trade, 1);
-          if (timeoutDelta && Number.isFinite(timeoutDelta.profitCents) && Math.abs(timeoutDelta.profitCents) >= 1) {
+          if (trade.balanceEligible && timeoutDelta && Number.isFinite(timeoutDelta.profitCents) && Math.abs(timeoutDelta.profitCents) >= 1) {
             finalizeTradeOutcome(trade, timeoutDelta.outcome, timeoutDelta.profitCents, now, 'TIMEOUT_DELTA_FALLBACK');
             continue;
           }
-          logConsoleLine('⚠️ Неуспешно потвърждение на резултат (timeout) → маркирам като EVEN, за да избегна фалшива загуба.');
-          finalizeTradeOutcome(trade, 'EVEN', 0, now, 'TIMEOUT_UNRESOLVED');
+          if (!trade.reconcilePending) {
+            trade.reconcilePending = true;
+            trade.reconcilePendingSince = now;
+            trade.reconcileAttempts = Number(trade.reconcileAttempts || 0) + 1;
+            logConsoleLine('⏳ Нееднозначен резултат (timeout) → PENDING_RECONCILE, ще пробвам повторно.');
+            remaining.push(trade);
+            continue;
+          }
+
+          const pendingForMs = now - Number(trade.reconcilePendingSince || now);
+          if (pendingForMs < 45000) {
+            remaining.push(trade);
+            continue;
+          }
+
+          logConsoleLine('⚠️ Неуспешно потвърждение и след reconcile window → маркирам като PENDING (без фалшив EVEN).');
+          finalizeTradeOutcome(trade, 'PENDING', 0, now, 'TIMEOUT_UNRESOLVED_PENDING');
 
           continue;
         }
@@ -6830,6 +6698,47 @@ function getRecentPrices(count) {
       return ((close - low) / (high - low)) * 100;
     }
 
+    function calcCustomSupertrendSignal(windowMs) {
+      const prices = getRecentPrices(windowMs, 55);
+      if (prices.length < 21) return { direction: null, strength: 0 };
+      const fast = calcEma(prices, 10);
+      const slow = calcEma(prices, 21);
+      const last = prices[prices.length - 1];
+      if (!Number.isFinite(fast) || !Number.isFinite(slow) || !Number.isFinite(last) || !last) return { direction: null, strength: 0 };
+      const deltaPct = (fast - slow) / Math.max(Math.abs(last), 1e-8);
+      const abs = Math.abs(deltaPct);
+      const direction = deltaPct > 0 ? 'BUY' : deltaPct < 0 ? 'SELL' : null;
+      const strength = clamp01(abs * 220);
+      return { direction, strength };
+    }
+
+    function calcEmaAlignmentSignal(windowMs) {
+      const prices = getRecentPrices(windowMs, 90);
+      if (prices.length < 50) return { direction: null, aligned: false };
+      const emaFast = calcEma(prices, 9);
+      const emaMid = calcEma(prices, 21);
+      const emaSlow = calcEma(prices, 50);
+      if (![emaFast, emaMid, emaSlow].every(Number.isFinite)) return { direction: null, aligned: false };
+      if (emaFast > emaMid && emaMid > emaSlow) return { direction: 'BUY', aligned: true };
+      if (emaFast < emaMid && emaMid < emaSlow) return { direction: 'SELL', aligned: true };
+      return { direction: null, aligned: false };
+    }
+
+    function calcStochasticExtremeSignal(windowMs, direction) {
+      const prices = getRecentPrices(windowMs, 40);
+      const stoch = calcStochastic(prices, 14);
+      if (!Number.isFinite(stoch)) return { state: 'neutral', value: null };
+      if (direction === 'BUY') {
+        if (stoch <= 35) return { state: 'good', value: stoch };
+        if (stoch >= 85) return { state: 'bad', value: stoch };
+      }
+      if (direction === 'SELL') {
+        if (stoch >= 65) return { state: 'good', value: stoch };
+        if (stoch <= 15) return { state: 'bad', value: stoch };
+      }
+      return { state: 'neutral', value: stoch };
+    }
+
     function calcSharpeScore(windowMs) {
       const endTs = Date.now();
       const startTs = endTs - windowMs;
@@ -7016,6 +6925,12 @@ if (!weights.length) return 0;
         if (tfDir && dir && tfDir === dir) aligned += 1;
       }
       if (aligned >= 2) { bonus += 0.5; details.push('MTF +0.5'); }
+
+      const tf = ctx.tf;
+      if (S.candlestickPatternEnabled && tf && SNIPER_TF_MS[tf] && dir) {
+        const pat = calcCandlestickPatternDecision(SNIPER_TF_MS[tf]);
+        if (pat?.direction === dir) { bonus += 0.5; details.push('PAT +0.5'); }
+      }
       return { bonus, details };
     }
 
@@ -7023,7 +6938,7 @@ if (!weights.length) return 0;
       if (!decision || !decision.direction) return null;
       const dir = decision.direction;
       const trendDir = decision.trendDir || calcTrendDirection(SNIPER_TF_MS[tf]);
-      const candle = getCandleAt(Date.now(), SNIPER_TF_MS[tf]);
+      const candle = getCandleAtOffset(SNIPER_TF_MS[tf], 1, { closed: true }) || getCandleAt(Date.now(), SNIPER_TF_MS[tf]);
       const candleDir = candle ? (candle.close > candle.open ? 'BUY' : candle.close < candle.open ? 'SELL' : null) : null;
       const stoch = calcStochDecision(SNIPER_TF_MS[tf]);
       const momentum = Number.isFinite(decision.momentum) ? decision.momentum : 0;
@@ -7047,6 +6962,22 @@ if (!weights.length) return 0;
       const stoSell = stoch?.direction === 'SELL';
       const stoOk = dir === 'BUY' ? stoBuy : stoSell;
       checks.push({ key: 'STO', ok: stoOk, points: stoOk ? 1 : 0, buy: stoBuy, sell: stoSell });
+
+      if (S.filterTrioCseaEnabled) {
+        const supertrend = calcCustomSupertrendSignal(SNIPER_TF_MS[tf]);
+        let csPoints = 0;
+        if (supertrend.direction === dir) csPoints = supertrend.strength >= 0.2 ? 1 : 0;
+        else if (supertrend.direction && supertrend.direction !== dir) csPoints = -1;
+        checks.push({ key: 'CS', ok: csPoints >= 0, points: csPoints, buy: csPoints >= 0, sell: csPoints >= 0 });
+
+        const emaAlign = calcEmaAlignmentSignal(SNIPER_TF_MS[tf]);
+        const eaPoints = !emaAlign.aligned ? 0 : (emaAlign.direction === dir ? 1 : -1);
+        checks.push({ key: 'EA', ok: eaPoints >= 0, points: eaPoints, buy: eaPoints >= 0, sell: eaPoints >= 0 });
+
+        const stochExtreme = calcStochasticExtremeSignal(SNIPER_TF_MS[tf], dir);
+        const sePoints = stochExtreme.state === 'good' ? 1 : (stochExtreme.state === 'bad' ? -1 : 0);
+        checks.push({ key: 'SE', ok: sePoints >= 0, points: sePoints, buy: sePoints >= 0, sell: sePoints >= 0 });
+      }
 
       const volOk = !!decision.volumeOk;
       checks.push({ key: 'VOL', ok: volOk, points: volOk ? 1 : 0, buy: volOk, sell: volOk });
@@ -7093,15 +7024,19 @@ if (!weights.length) return 0;
       checks.push({ key: 'STAB', ok: stabilityPoints >= 0, points: stabilityPoints, buy: stabilityPoints >= 0, sell: stabilityPoints >= 0 });
 
       let chopPenalty = 0;
+      let chopHardFail = false;
       if (S.chopV2Enabled) {
         const isChop = String(regime?.state || '').toLowerCase() === 'chop' || ((Number(regime?.rangePct || 0) < 0.0035) && Number(regime?.trendScore || 0) < 0.4);
         if (isChop) {
           const strength = Math.max(1, Math.min(100, Math.round(S.chopV2StrengthPct || 50)));
-          const penaltyAbs = 0.2 + ((strength - 1) / 99) * 1.8;
-          chopPenalty = -penaltyAbs;
+          const sens = String(S.chopV3Sensitivity || 'med').toLowerCase();
+          const scale = sens === 'low' ? 0.75 : sens === 'high' ? 1.3 : 1;
+          const penaltyAbs = (0.2 + ((strength - 1) / 99) * 1.8) * scale;
+          chopPenalty = -Math.max(0.1, Math.min(2.5, penaltyAbs));
+          chopHardFail = !!S.chopV3HardStop;
         }
       }
-      checks.push({ key: 'CHOP', ok: chopPenalty >= 0, points: chopPenalty, buy: chopPenalty >= 0, sell: chopPenalty >= 0 });
+      checks.push({ key: 'CHOP', ok: chopPenalty >= 0 && !chopHardFail, points: chopPenalty, buy: chopPenalty >= 0 && !chopHardFail, sell: chopPenalty >= 0 && !chopHardFail });
 
       const strategyVotes = { buy: 0, sell: 0 };
       for (const st of strategyDecisions || []) {
@@ -7114,7 +7049,7 @@ if (!weights.length) return 0;
       let basePoints = checks.reduce((acc, c) => acc + (Number.isFinite(c.points) ? c.points : (c.ok ? 1 : 0)), 0);
       if (S.killerUseStrategyVotes && strategyAgreement > 0) basePoints += 1;
 
-      const supporting = getKillerSupportingBonus({ decision, regime });
+      const supporting = getKillerSupportingBonus({ decision, regime, tf });
       const supportingBonus = Number(supporting.bonus || 0);
       const maxPoints = 11;
       const threshold = getScoreThresholdPoints();
@@ -7143,6 +7078,7 @@ if (!weights.length) return 0;
         strategyVotes,
         strategyAgreement,
         stabilityState,
+        chopHardFail,
         candleAgainst,
         passConfluence,
         passDominance,
@@ -7709,23 +7645,38 @@ if (!weights.length) return 0;
       if (scalpMicrotrend?.direction && isStrategyEnabled(scalpMicrotrend.strategyKey)) {
         scalpMicrotrend.tfKey = tfKey;
         decisions.push(applyConfirmationBoost(scalpMicrotrend, windowMs));
+        try { sessionRecordStrategyEvent(scalpMicrotrend.strategyKey, 'generated', { regime: detectMarketRegime(windowMs)?.state || '' }); } catch(e) {}
       }
       const emaRsiPullback = calcEmaRsiPullbackDecision(windowMs);
       if (emaRsiPullback?.direction && isStrategyEnabled(emaRsiPullback.strategyKey)) {
         emaRsiPullback.tfKey = tfKey;
         decisions.push(applyConfirmationBoost(emaRsiPullback, windowMs));
+        try { sessionRecordStrategyEvent(emaRsiPullback.strategyKey, 'generated', { regime: detectMarketRegime(windowMs)?.state || '' }); } catch(e) {}
       }
       const candlePattern = S.candlestickPatternEnabled ? calcCandlestickPatternDecision(windowMs) : null;
       if (candlePattern?.direction && isStrategyEnabled(candlePattern.strategyKey)) {
         candlePattern.tfKey = tfKey;
         decisions.push(applyConfirmationBoost(candlePattern, windowMs));
+        try { sessionRecordStrategyEvent(candlePattern.strategyKey, 'generated', { regime: detectMarketRegime(windowMs)?.state || '' }); } catch(e) {}
       }
       return decisions;
     }
 
-    function selectBestStrategyDecision(decisions) {
+    function getAllowedStrategyKeysForRegime(regimeState = '') {
+      const mode = String(regimeState || '').toLowerCase();
+      if (mode === 'trend') return new Set(['ema_rsi_pullback', 'candlestick_pattern']);
+      if (mode === 'range') return new Set(['scalp_microtrend', 'candlestick_pattern']);
+      if (mode === 'chop') return new Set(['scalp_microtrend']);
+      return null;
+    }
+
+
+    function selectBestStrategyDecision(decisions, regimeState = '') {
       if (!decisions.length) return null;
-      return decisions.reduce((best, decision) => {
+      const allowed = getAllowedStrategyKeysForRegime(regimeState);
+      const pool = allowed ? decisions.filter((d) => d && allowed.has(String(d.strategyKey || ''))) : decisions;
+      if (!pool.length) return null;
+      return pool.reduce((best, decision) => {
         if (!isStrategyEnabled(decision.strategyKey)) return best;
         const weight = getStrategyPerformanceWeight(decision.strategyKey);
         const priority = getStrategyPriority(decision.strategyKey);
@@ -7864,6 +7815,28 @@ if (!weights.length) return 0;
       }
       return { slope, last: last.c, peak: peak.c, peakDir: peak.d, peakT: peak.t, troughAfterPeak };
     }
+    function handleTfNewCandle(tf, candleStart) {
+      if (!tf || !Number.isFinite(candleStart)) return;
+      S.tfCandleState = S.tfCandleState || {};
+      const prev = S.tfCandleState[tf] || { start: null };
+      if (prev.start === candleStart) return;
+      S.tfCandleState[tf] = { start: candleStart, switchedAt: Date.now() };
+
+      // Reset only ephemeral per-candle execution memory (keep indicator history intact).
+      S.__tfDirStreak = S.__tfDirStreak || {};
+      if (S.__tfDirStreak[tf]) S.__tfDirStreak[tf] = { dir: null, streak: 0, lastT: Date.now() };
+
+      S.__tfDirHist = S.__tfDirHist || {};
+      if (Array.isArray(S.__tfDirHist[tf])) S.__tfDirHist[tf] = [];
+
+      S._tfConfSeries = S._tfConfSeries || {};
+      if (Array.isArray(S._tfConfSeries[tf])) S._tfConfSeries[tf] = [];
+
+      if (S.sniperInFlightKey && String(S.sniperInFlightKey).includes(`|${tf}|`)) {
+        S.sniperInFlightUntil = 0;
+      }
+    }
+
     async function runSniperTick() {
       S.engineState = 'ANALYZE';
       const now = Date.now();
@@ -7941,6 +7914,18 @@ if (!weights.length) return 0;
       S.feedState = 'READY';
       const canTrade = S.autoTrade && !S.executing;
 
+      // Killer-only execution policy: sniper decisions must always pass Killer gates.
+      if (!S.killerEnabled) {
+        S.analysisUpdatedAt = now;
+        S.analysisConfidence = 0;
+        S.analysisDirection = null;
+        S.tradeQualityScore = 0;
+        setStatusOverlay('Снайпер: Killer е задължителен (включи Killer)', '', false);
+        renderSniperMatrix();
+        renderPendingTrades();
+        return;
+      }
+
       const timeframes = getSniperTimeframes();
       if (!timeframes.length) {
         const tfStatus = {};
@@ -7983,7 +7968,8 @@ if (!weights.length) return 0;
             : 0;
           entryWindowLimit = Math.min(999, Math.max(0, Math.round(baseLimit)));
         }
-        const candleStart = getCandleStart(windowMs);  
+        const candleStart = getCandleStart(windowMs);
+        handleTfNewCandle(tf, candleStart);
         const readiness = partnerReady.details?.[tf];
         if (readiness && !readiness.ready) {
           const confPrev = getPrevStatus(tf)?.confidence ?? null;
@@ -7993,8 +7979,8 @@ if (!weights.length) return 0;
         }
 
         const strategyDecisions = getStrategyDecisions(tf);
-        const decision = selectBestStrategyDecision(strategyDecisions);
         const regime = detectMarketRegime(windowMs);
+        const decision = selectBestStrategyDecision(strategyDecisions, regime?.state || '');
         const biasDir = getBiasDirection();
         const biasDirection = biasDir > 0 ? 'BUY' : biasDir < 0 ? 'SELL' : null;
         const confirmation = decision?.direction ? getConfirmationSummary(tf, decision.direction) : { total: 0, matched: 0, details: [] };
@@ -8036,6 +8022,8 @@ if (!weights.length) return 0;
           };
           continue;
         }
+
+        try { sessionRecordStrategyEvent(decision.strategyKey, 'selected', { regime: regime?.state || '' }); } catch(e) {}
 
         // Smooth TF direction for UI (avoid rapid BUY↔SELL flicker in the matrix).
         // We keep the real trade direction in decision.direction; the UI uses decision._smoothedDirection when present.
@@ -8087,7 +8075,9 @@ if (!weights.length) return 0;
           const osc = (confirmation?.details || []).find((d) => typeof d === 'string' && d.startsWith('osc:'));
           const oscDir = osc ? osc.split(':')[1] : null;
           if (oscDir && decision.direction && oscDir !== decision.direction) {
-            decision.confidence = Math.max(0, decision.confidence - (S.rangeOscPenaltyEnabled ? (clamp(parseNumberFlexible(S.rangeOscPenaltyPct) || 0, 0, 50) / 100) : 0));
+            const oscPenalty = (S.rangeOscPenaltyEnabled ? (clamp(parseNumberFlexible(S.rangeOscPenaltyPct) || 0, 0, 50) / 100) : 0);
+            if (oscPenalty > 0) bumpFilterDiagnostic('rangeOscPenalty');
+            decision.confidence = Math.max(0, decision.confidence - oscPenalty);
           }
           if (regime.trendDir !== 0) {
             const regimePref = regime.trendDir > 0 ? 'SELL' : 'BUY';
@@ -8178,7 +8168,8 @@ if (!weights.length) return 0;
         const patternSupport = !S.candlestickPatternEnabled || decision.strategyKey === 'candlestick_pattern';
         const confidenceGatePass = Number(decision.confidence || 0) + 1e-9 >= Number(requiredThreshold || 0);
           S.engineState = 'KILLER';
-        const killerGatePass = !!(killerAlignmentOk && perfectTimeOk && entryWindowOk && confidenceGatePass);
+        const chopHardStopFail = !!killerSnapshotTf?.chopHardFail;
+        const killerGatePass = !!(killerAlignmentOk && perfectTimeOk && entryWindowOk && confidenceGatePass && spreadOk && !decision.counterCandleHardStop && !chopHardStopFail);
         const killerThreshold = Number(killerSnapshotTf?.threshold || getScoreThresholdPoints());
         const killerPts = Number(killerSnapshotTf?.effectivePoints || killerSnapshotTf?.confluence || 0);
         const scoreCard = {
@@ -8192,7 +8183,17 @@ if (!weights.length) return 0;
         if (!killerGatePass) {
           const reason = !confidenceGatePass
             ? `Killer gate: WAIT (УВЕР ${Math.round(Number(decision.confidence || 0) * 100)}% < праг ${Math.round(Number(requiredThreshold || 0) * 100)}%)`
-            : `Killer gate: WAIT (CONF ${killerPts.toFixed(1)}/${scoreCard.maxPoints}, мин ${killerThreshold})`;
+            : (!spreadOk
+              ? `Killer gate: WAIT (Spread/Liquidity под праг)`
+              : (decision.counterCandleHardStop
+                ? `Killer gate: WAIT (Свещ срещу входа — твърд стоп)`
+                : (chopHardStopFail
+                  ? `Killer gate: WAIT (CHOP hard-stop)`
+                  : `Killer gate: WAIT (CONF ${killerPts.toFixed(1)}/${scoreCard.maxPoints}, мин ${killerThreshold})`)));
+          if (!spreadOk) { bumpSkipReasonCounter('Spread'); bumpFilterDiagnostic('spread'); }
+          if (decision.counterCandleHardStop) bumpSkipReasonCounter('CounterCandle');
+          if (chopHardStopFail) { bumpSkipReasonCounter('Chop'); bumpFilterDiagnostic('chop'); }
+          try { sessionRecordStrategyEvent(decision.strategyKey, 'blocked', { regime: regime?.state || '', reason: reason }); } catch(e) {}
           S.lastScoreSnapshot = {
             result: 'SKIP(KILLER)',
             points: scoreCard.points,
@@ -8229,7 +8230,7 @@ if (!weights.length) return 0;
       }
 
       const readySignalsForVote = Object.keys(tfStatus)
-        .filter((tf) => ['ready', 'risk'].includes(tfStatus[tf]?.state) && decisionsByTf[tf]?.direction)
+        .filter((tf) => tfStatus[tf]?.state === 'ready' && decisionsByTf[tf]?.direction)
         .map((tf) => decisionsByTf[tf]);
       if (readySignalsForVote.length >= minReadyCount) {
         let buyScore = 0;
@@ -8351,12 +8352,17 @@ if (!weights.length) return 0;
     S.lastGlobalSellAvg = sellAvg;
     S.lastGlobalSpread = spreadPct;
 const readySignals = Object.keys(tfStatus)
-        .filter(tf => ['ready', 'risk'].includes(tfStatus[tf]?.state))
+        // Execute only strictly READY signals.
+        // "risk" means a gate has failed (e.g. Killer confluence/dominance),
+        // so it must stay visible in UI but never reach order execution.
+        .filter(tf => tfStatus[tf]?.state === 'ready')
         .map(tf => {
           const decision = decisionsByTf[tf];
           const windowMs = SNIPER_TF_MS[tf];
           return {
             ...decision,
+            // keep raw executable direction; smoothed direction is UI-only
+            direction: decision.direction,
             windowMs,
             candleStart: getCandleStart(windowMs)
           };
@@ -8377,17 +8383,63 @@ const readySignals = Object.keys(tfStatus)
       for (let i = 0; i < signalsToExecute.length; i += 1) {
         const decision = signalsToExecute[i];
 
-        // Fixed pre-trade recheck delay (anti-fake-signal)
-        const preDelayMs = Math.max(600, Number.isFinite(S.preTradeRecheckDelayMs) ? S.preTradeRecheckDelayMs : 1200);
-        await new Promise(r => setTimeout(r, preDelayMs));
+        // Fixed pre-trade recheck delay (anti-fake-signal), but bounded by remaining entry-window budget.
+        const configuredPreDelayMs = Math.max(600, Number.isFinite(S.preTradeRecheckDelayMs) ? S.preTradeRecheckDelayMs : 1200);
+        const entryBudgetSec = Number.isFinite(decision?.entryWindowSec) ? Number(decision.entryWindowSec) : 0;
+        const timeInCandleNow = Number.isFinite(decision?.windowMs) ? getTimeInCandleSec(decision.windowMs) : null;
+        let preDelayMs = configuredPreDelayMs;
+        if (S.entryWindowTfEnabled && entryBudgetSec > 0 && Number.isFinite(timeInCandleNow)) {
+          const remainMs = Math.max(0, Math.round((entryBudgetSec - timeInCandleNow) * 1000));
+          if (remainMs <= 250) {
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Няма latency budget преди pre-check (${decision.tfKey} remain=${Math.round(remainMs)}ms)`);
+            continue;
+          }
+          preDelayMs = Math.max(0, Math.min(configuredPreDelayMs, remainMs - 250));
+        }
+        if (preDelayMs > 0) {
+          await new Promise(r => setTimeout(r, preDelayMs));
+        }
         // Recompute decision using the currently enabled strategy (not a fixed strategy),
         // and use the same threshold scaling as the main scan (0..1).
         const assetScopePre = getExpiryScopeFromAsset(getCurrentAssetLabel());
         const requiredThresholdPre = clamp01(getSniperThresholdForScope(assetScopePre));
         const strategyDecisionsPre = getStrategyDecisions(decision.tfKey);
-        const latestPre = selectBestStrategyDecision(strategyDecisionsPre);
+        const regimePreForSelect = detectMarketRegime(decision.windowMs || SNIPER_TF_MS[decision.tfKey]);
+        const latestPre = selectBestStrategyDecision(strategyDecisionsPre, regimePreForSelect?.state || '');
 
-        if (!latestPre || !latestPre.direction || latestPre.direction !== decision.direction || Number(latestPre.confidence || 0) < requiredThresholdPre) {
+        let killerGatePrePass = true;
+        if (S.killerEnabled && latestPre && latestPre.direction) {
+          const regimePre = detectMarketRegime(decision.windowMs || SNIPER_TF_MS[decision.tfKey]);
+          const confirmationPre = getConfirmationSummary(decision.tfKey, latestPre.direction);
+          const killerSnapshotPre = computeKillerSnapshot(decision.tfKey, latestPre, regimePre, confirmationPre, strategyDecisionsPre);
+          if (!killerSnapshotPre) {
+            killerGatePrePass = false;
+          } else {
+            const minAgreement = Math.max(1, Math.min(3, Math.round(S.killerStrategyAgreementMin || 1)));
+            const strategyGateOk = !S.killerUseStrategyVotes || killerSnapshotPre.strategyAgreement >= minAgreement;
+            const thresholdPre = Number(killerSnapshotPre.threshold || getScoreThresholdPoints());
+            const nearMissPre = Math.abs(Number(killerSnapshotPre.effectivePoints || 0) - (thresholdPre - 1)) < 0.0001;
+            const modePre = String(S.toleranceMode || 'either');
+            const confOkNearPre = !!killerSnapshotPre.confOkNear;
+            const ptRuntimeModePre = getPtModeForRuntime(regimePre?.state);
+            const prevEdgeState = { ...(S.killerEdgeState || {}) };
+            const ptEdgeHitPre = killerEdgeTriggered(decision.tfKey, latestPre.direction, true);
+            S.killerEdgeState = prevEdgeState;
+            const perfectTimeOkPre = ptRuntimeModePre === 'hard' ? !!ptEdgeHitPre : true;
+            const ptOkNearPre = !!perfectTimeOkPre;
+            const allowNearMissPre = modePre === 'confidence'
+              ? confOkNearPre
+              : modePre === 'pt'
+                ? ptOkNearPre
+                : modePre === 'either'
+                  ? (confOkNearPre || ptOkNearPre)
+                  : false;
+            const confluenceWithTolerancePre = !!(killerSnapshotPre.passConfluence || (nearMissPre && allowNearMissPre));
+            killerGatePrePass = !!(confluenceWithTolerancePre && killerSnapshotPre.passDominance && strategyGateOk && perfectTimeOkPre);
+          }
+        }
+
+        if (!latestPre || !latestPre.direction || latestPre.direction !== decision.direction || Number(latestPre.confidence || 0) < requiredThresholdPre || !killerGatePrePass) {
                     const preReasonParts = [];
           if (!latestPre || !latestPre.direction) preReasonParts.push('няма сигнал');
           else {
@@ -8397,6 +8449,7 @@ const readySignals = Object.keys(tfStatus)
             if (preConf + 1e-9 < requiredThresholdPre) preReasonParts.push(`увереност ${Math.round(preConf*100)}% < праг ${Math.round(requiredThresholdPre*100)}%`);
             if (Math.abs(preConf - oldConf) >= 0.08) preReasonParts.push(`увереност ${Math.round(oldConf*100)}%→${Math.round(preConf*100)}%`);
           }
+          if (!killerGatePrePass) preReasonParts.push('killer gate fail (confluence/dominance/strategy)');
           const preReason = preReasonParts.length ? preReasonParts.join(', ') : 'промяна след повторна проверка';
           logConsoleLine(`[SCAN V5] ПРОПУСК: ${decision.tfKey} повторна проверка (${preReason})`);
           continue;
@@ -8411,12 +8464,28 @@ const readySignals = Object.keys(tfStatus)
         const assetLabel = getCurrentAssetLabel() || '—';
         const assetSearch = assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim();
         
+      // --- EARLY LATENCY GATE ---
+      const earlyBudgetMs = Math.max(200, Math.min(5000, Math.round(Number(S.earlyLatencyGateMs || 1500))));
+      if (S.entryWindowTfEnabled) {
+        const inCandleSec = Number.isFinite(decision.timeInCandle) ? Number(decision.timeInCandle) : null;
+        const budgetSec = Number.isFinite(decision.entryWindowSec) ? Number(decision.entryWindowSec) : null;
+        if (inCandleSec != null && budgetSec != null) {
+          const remainMsEarly = Math.round((budgetSec - inCandleSec) * 1000);
+          if (remainMsEarly < earlyBudgetMs) {
+            setSkipReason('early_latency_budget');
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Ранен latency guard (${decision.tfKey} остава ${remainMsEarly}ms < ${earlyBudgetMs}ms)`);
+            continue;
+          }
+        }
+      }
+
       // --- NEW FILTERS (Advanced) ---
       // Spread filter (global BUY vs SELL bias)
       if (S.filterSpreadEnabled && typeof S.filterSpreadThreshold === 'number') {
         const sp = (typeof S.lastGlobalSpread === 'number') ? S.lastGlobalSpread : 0;
         if (sp < S.filterSpreadThreshold) {
           setSkipReason('spread_low');
+          bumpFilterDiagnostic('spread');
           continue;
         }
       }
@@ -8426,6 +8495,7 @@ const readySignals = Object.keys(tfStatus)
         const dt = Date.now() - (S.lastTradeAt || 0);
         if (dt >= 0 && dt < (S.filterFlipDelaySec * 1000)) {
           setSkipReason('flip_delay');
+          bumpFilterDiagnostic('flipDelay');
           continue;
         }
       }
@@ -8441,6 +8511,32 @@ const readySignals = Object.keys(tfStatus)
           const driftThreshold = Math.max(0, (Number(S.filterDriftThreshold) || 0) / 100);
           if (driftThreshold > 0 && isDown && drop >= driftThreshold) {
             setSkipReason('drift');
+            bumpFilterDiagnostic('drift');
+            continue;
+          }
+        }
+      }
+
+      // OTC dead market velocity filter (single asset session friendly)
+      if (S.deadMarketFilterEnabled && /OTC/i.test(assetLabel || '')) {
+        const nowTs = Date.now();
+        const windowMs = 10000;
+        const ticks = (S.priceHistory || []).filter((p) => p && Number.isFinite(p.timestamp) && nowTs - p.timestamp <= windowMs);
+        if (ticks.length >= 5) {
+          let high = -Infinity;
+          let low = Infinity;
+          for (const t of ticks) {
+            const px = Number(t.price);
+            if (!Number.isFinite(px)) continue;
+            if (px > high) high = px;
+            if (px < low) low = px;
+          }
+          const move = Number.isFinite(high) && Number.isFinite(low) ? (high - low) : 0;
+          const minMove = Math.max(0, Number(S.deadMarketMinMove || 0.0001));
+          if (move < minMove) {
+            setSkipReason('dead_market_velocity');
+            bumpFilterDiagnostic('deadMarketVelocity');
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Мъртъв пазар (velocity ${move.toFixed(5)} < ${minMove.toFixed(5)} за 10s)`);
             continue;
           }
         }
@@ -8458,12 +8554,12 @@ const readySignals = Object.keys(tfStatus)
           if (obj.candleId !== candleId) { obj.candleId = candleId; obj.count = 0; }
           if (obj.count >= S.impulseCapMaxPerCandle) {
             setSkipReason('impulse_cap');
+            bumpFilterDiagnostic('impulseCap');
             continue;
           }
-          // reserve slot (increment only when trade actually starts sending)
-          obj.count++;
         }
       }
+        const decisionId = `D${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 8)}_${decision.tfKey}_${decision.direction}`;
 const signal = {
           asset: assetLabel,
           assetSearch,
@@ -8488,8 +8584,14 @@ const signal = {
           minute: getCurrentMinute(),
           time: fmtHHMMSSUTCm3(new Date()),
           targetTsMs: now,
-          rawText: `[sniper:${decision.tfKey}]`
+          rawText: `[sniper:${decision.tfKey}]`,
+          decisionId
         };
+        if (S.impulseCapEnabled) {
+          const tf = decision.tfKey || decision.timeframe;
+          const tfMs = (tf === '1m') ? 60_000 : (tf === '3m') ? 180_000 : (tf === '5m') ? 300_000 : 0;
+          if (tfMs) signal._impulseCapMeta = { key: tf + '|' + decision.direction, candleId: Math.floor(Date.now() / tfMs) };
+        }
         if (S.burstEnabled && decision.confidence >= S.burstConfidenceThreshold) {
           signal.burstCount = Math.max(1, Math.min(S.burstTradeCount, 5));
         }
@@ -8506,7 +8608,7 @@ const signal = {
         }
         S.sniperInFlightKey = inFlightKey;
         S.sniperInFlightUntil = Date.now() + 1500;
-        logConsoleLine(`[SCAN V5] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%)`);
+        logConsoleLine(`[SCAN V5] READY → ${signal.direction} ${signal.expiry} (${Math.round((signal.confidence || 0) * 100)}%) | id=${signal.decisionId}`);
         if (decision.aiVision?.pattern) logConsoleLine(`[AI VISION] Patterns: ${decision.aiVision.pattern}`);
         
         // -------- Confirm Delay (delay_ms) + stability check (NO cooldown) --------
@@ -8536,7 +8638,20 @@ const signal = {
           continue;
         }
 
-        const confirmDelayMs = Math.max(0, Math.min(2000, Number.isFinite(S.confirmDelayMs) ? S.confirmDelayMs : 600));
+        const configuredConfirmDelayMs = Math.max(0, Math.min(2000, Number.isFinite(S.confirmDelayMs) ? S.confirmDelayMs : 600));
+        let confirmDelayMs = configuredConfirmDelayMs;
+        if (S.entryWindowTfEnabled) {
+          const tBudget = getTimeInCandleSec(decision.windowMs);
+          const baseLimitBudget = (decision.tfKey === '1m') ? (S.entryWindowSec1m ?? 15)
+            : (decision.tfKey === '3m') ? (S.entryWindowSec3m ?? 35)
+            : (decision.tfKey === '5m') ? (S.entryWindowSec5m ?? 0)
+            : 0;
+          const limitBudget = Math.min(999, Math.max(0, Math.round(baseLimitBudget)));
+          if (limitBudget > 0 && Number.isFinite(tBudget)) {
+            const remainBudgetMs = Math.max(0, Math.round((limitBudget - tBudget) * 1000));
+            confirmDelayMs = Math.max(0, Math.min(configuredConfirmDelayMs, Math.max(0, remainBudgetMs - 200)));
+          }
+        }
         if (confirmDelayMs > 0) {
           await new Promise(r => setTimeout(r, confirmDelayMs));
 
@@ -8560,15 +8675,19 @@ const signal = {
 
           // Re-check direction & confidence after delay (dogonvane само ако не е flip).
           const strategyDecisions2 = getStrategyDecisions(decision.tfKey);
-          let decision2 = selectBestStrategyDecision(strategyDecisions2);
+          const regime2 = detectMarketRegime(decision.windowMs || SNIPER_TF_MS[decision.tfKey]);
+          let decision2 = selectBestStrategyDecision(strategyDecisions2, regime2?.state || '');
 
           // OPTION 2 (по‑практична): ако след delay няма сигнал, НЕ режем автоматично.
           // При бинарна търговия 0.3–0.8s често са шум в детектора; ако посоката не е flip‑нала,
           // оставяме предишния сигнал, но пазим останалите гейтове (Entry Window + праг + anti‑flip + drop guard).
           if (!decision2 || !decision2.direction) {
-            // Ползваме предишния сигнал като fallback (без "догонване" при липсващ сигнал).
-            decision2 = { ...decision };
-            logConsoleLine(`[SCAN V5] INFO: Няма сигнал след delay (${decision.tfKey}) → fallback към предишния сигнал`);
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Няма сигнал след delay (${decision.tfKey})`);
+            S.sniperInFlightUntil = 0;
+            S.baseAmount = prevBase;
+            S.assetSelectedForSignal = false;
+            S.assetSelectionAttempted = false;
+            continue;
           }
           if (decision2.direction !== decision.direction) {
             logConsoleLine(`[SCAN V5] ПРОПУСК: Flip след delay (${decision.tfKey} ${decision.direction}→${decision2.direction})`);
@@ -8603,12 +8722,33 @@ const signal = {
           }
         }
         // ------------------------------------------------------------------------
+if (S.stabilityPrecheckEnabled) {
+          const histPre = (S.__tfDirHist && S.__tfDirHist[decision.tfKey]) ? S.__tfDirHist[decision.tfKey] : [];
+          const preState = computeSignalStability(histPre, S.stabilityMaxGapMs);
+          if (preState !== '2/2') {
+            logConsoleLine(`[SCAN V5] ПРОПУСК: Проверка стабилност преди вход (${decision.tfKey}=${preState})`);
+            S.sniperInFlightUntil = 0;
+            S.baseAmount = prevBase;
+            S.assetSelectedForSignal = false;
+            S.assetSelectionAttempted = false;
+            continue;
+          }
+        }
 const ok = await executeTradeOrder(signal);
         S.sniperInFlightUntil = 0;
         S.baseAmount = prevBase;
         S.assetSelectedForSignal = false;
         S.assetSelectionAttempted = false; 
         if (ok) {
+          if (signal && signal._impulseCapMeta) {
+            try {
+              S._impulseCap = S._impulseCap || {};
+              const m = signal._impulseCapMeta;
+              const slot = (S._impulseCap[m.key] = S._impulseCap[m.key] || { candleId: m.candleId, count: 0 });
+              if (slot.candleId !== m.candleId) { slot.candleId = m.candleId; slot.count = 0; }
+              slot.count += 1;
+            } catch (e) {}
+          }
           setStatusOverlay(formatStatus('sniper_ready'), '', false);
         }
 }
@@ -8628,7 +8768,7 @@ const ok = await executeTradeOrder(signal);
       if (S.__tickBusy) {
         const nowBusy = Date.now();
         const stuckFor = nowBusy - (S.__tickBusyAt || 0);
-        if (stuckFor > 4000 && nowBusy - (S.lastTickBusyWarnAt || 0) > 4000) {
+        if (stuckFor > 1500 && nowBusy - (S.lastTickBusyWarnAt || 0) > 2000) {
           S.lastTickBusyWarnAt = nowBusy;
           logConsoleLine(`[ENGINE] Изчакване: предишният tick още работи (${Math.round(stuckFor)}ms)`);
         }
@@ -8636,6 +8776,7 @@ const ok = await executeTradeOrder(signal);
       }
       S.__tickBusy = true;
       S.__tickBusyAt = Date.now();
+      const tickStartAt = Date.now();
       try {
 
 
@@ -8657,6 +8798,15 @@ const ok = await executeTradeOrder(signal);
 
       const curBal = await readBalanceWithRetry();
       if (curBal != null) S.balance = curBal;
+      if (S.running) {
+        try {
+          if (applyRiskLimits()) {
+            renderPendingTrades();
+            updateProfitDisplay();
+            return;
+          }
+        } catch (e) {}
+      }
 
       if (S.running) {
         const currentAssetLabel = getCurrentAssetLabel();
@@ -8848,6 +8998,22 @@ const ok = await executeTradeOrder(signal);
       updateProfitDisplay();
     
       } finally {
+        const elapsedMs = Math.max(0, Date.now() - tickStartAt);
+        const perf = S.tickPerfStats || (S.tickPerfStats = { n: 0, totalMs: 0, maxMs: 0, slowOver1s: 0, p95Ms: 0, samples: [] });
+        perf.n += 1;
+        perf.totalMs += elapsedMs;
+        perf.maxMs = Math.max(perf.maxMs || 0, elapsedMs);
+        if (elapsedMs > 1000) perf.slowOver1s += 1;
+        perf.samples = Array.isArray(perf.samples) ? perf.samples : [];
+        perf.samples.push(elapsedMs);
+        if (perf.samples.length > 200) perf.samples.shift();
+        const sorted = [...perf.samples].sort((a,b)=>a-b);
+        perf.p95Ms = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 0;
+        if (elapsedMs > 1200 && Date.now() - (S.lastTickSlowWarnAt || 0) > 3000) {
+          S.lastTickSlowWarnAt = Date.now();
+          logConsoleLine(`[ENGINE] Бавен цикъл (LOOP_SLOW): ${Math.round(elapsedMs)}ms`);
+        }
+        S.tickPerfStats = perf;
         S.__tickBusy = false;
         S.__tickBusyAt = 0;
       }
@@ -9167,11 +9333,6 @@ const ok = await executeTradeOrder(signal);
         .k{ font-size:11px; color:#9ca3af } .v{ font-size:12px; text-align:right } .blue{ color:#60a5fa } .strong{ font-weight:bold; color:#fff } .wr{ color:#e88565 }
         #iaa-warm{ font-size:10px; text-align:center; margin-top:6px } .red{ color:#f87171 }
         #iaa-feed-cloud{ align-self:flex-end; font-size:10px; color:#d1d5db; background:rgba(17,24,39,.9); border:1px solid rgba(96,165,250,.35); border-radius:999px; padding:4px 8px; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        #iaa-session-mini{ align-self:flex-end; font-size:10px; color:#cbd5e1; margin-top:2px; white-space:nowrap; opacity:.95; }
-        #iaa-session-mini .mini-pnl.pos{ color:#22c55e; font-weight:700; }
-        #iaa-session-mini .mini-pnl.neg{ color:#ef4444; font-weight:700; }
-        #iaa-session-mini .mini-w{ color:#22c55e; font-weight:700; }
-        #iaa-session-mini .mini-l{ color:#ef4444; font-weight:700; }
 
         /* Settings Panel */
         #iaa-settings-panel{
@@ -9216,6 +9377,11 @@ const ok = await executeTradeOrder(signal);
         .iaa-field-hint{ font-size:10px; color:#6b7280; margin-left:6px; }
         .iaa-subtitle{ margin-top:10px; font-size:11px; color:#9ca3af; font-weight:700; }
         .iaa-checkbox{ display:flex; align-items:center; gap:6px; margin:6px 0; font-size:12px; color:#e5e7eb; }
+
+        #iaa-pt-modes-row{ display:flex; justify-content:flex-start; align-items:center; flex-wrap:nowrap; gap:6px; overflow:hidden; margin:6px 0 8px; }
+        #iaa-pt-modes-row .iaa-field-label{ white-space:nowrap; margin-right:2px; flex:0 0 auto; }
+        #iaa-pt-modes-row .iaa-pt-opt{ display:inline-flex; align-items:center; gap:2px; margin:0; padding:0; white-space:nowrap; font-size:12px; line-height:1.1; }
+        #iaa-pt-modes-row .iaa-pt-opt input{ margin:0; }
         .iaa-checkbox-grid{ display:grid; grid-template-columns:repeat(2, 1fr); gap:6px 10px; font-size:12px; color:#e5e7eb; }
         .iaa-action-row{ display:flex; gap:8px; margin-top:12px; }
         .iaa-action-row button{ flex:1; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.12); background:#111; color:#e5e7eb; font-size:11px; cursor:pointer; }
@@ -9367,7 +9533,6 @@ const ok = await executeTradeOrder(signal);
         </div>
         <div id="iaa-warm" class="warmup red">ENGINE 0% ЗАГРЯВА</div>
         <div id="iaa-feed-cloud">Цена: — • История: 0</div>
-        <div id="iaa-session-mini">PnL — • W 0 • L 0 • WR 0% • T 0</div>
 
         <div class="iaa-controls">
           <button id="iaa-mouse-toggle" class="iaa-control-btn" title="Mouse Mapping">🖱</button>
@@ -9553,6 +9718,7 @@ const ok = await executeTradeOrder(signal);
                                   <div id="iaa-stability-panel" style="display:none;">
                                     <div class="iaa-field-row iaa-field-toggle" title="Включва/изключва STABILITY филтъра за стабилност на сигнала."><span class="iaa-field-label">STABILITY активен</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-stability-enabled"></label></div>
                                     <div class="iaa-field-row" title="Максимален допустим интервал между валидни обновявания (в ms) преди сигналът да се счита нестабилен."><span class="iaa-field-label">Макс. gap (ms)</span><input type="number" id="iaa-stability-max-gap-ms" min="1000" max="8000" step="100"></div>
+                                    <div class="iaa-field-row iaa-field-toggle" title="Преди реален вход проверява дали сигналът е стабилен (2/2). Ако не е стабилен, сделката се пропуска."><span class="iaa-field-label" style="color:#fff6bf;">Проверка за стабилност преди вход</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-stability-precheck-enabled"></label></div>
                                     <div class="iaa-field-row" title="Определя как да се допусне near-miss: по увереност, по Perfect Time, или по който и да е от двата сигнала."><span class="iaa-field-label" style="color:${UI_WARM_RED};">Режим толеранс</span><select id="iaa-tolerance-mode"><option value="either">Увереност ИЛИ PT</option><option value="confidence">Само увереност</option><option value="pt">Само PT</option><option value="off">Изключен</option></select></div>
                                     <div class="iaa-field-row" title="Минимална увереност за near-miss при режим толеранс."><span class="iaa-field-label">Праг толеранс</span><input type="number" id="iaa-tolerance-confidence" min="0.60" max="0.95" step="0.01"></div>
                                   </div>
@@ -9593,8 +9759,21 @@ const ok = await executeTradeOrder(signal);
           <span class="iaa-mini-bar" id="iaa-impulsecap-bar"></span>
         </div>
 
+        <div class="iaa-field-row iaa-inline-newfilter" title="НОВИ ФИЛТРИ (CS+EA+SE): Custom Supertrend, EMA Alignment, Stochastic Extreme. On: трите филтъра участват в точковата система. Off: не се прилагат.">
+          <label class="iaa-checkbox iaa-new-setting" style="color:#fff6bf;font-weight:700;"><input type="checkbox" id="iaa-filter-trio-csea-enabled"> НОВИ ФИЛТРИ (CS + EA + SE)</label>
+          <span class="iaa-field-label iaa-new-setting" style="color:#fff6bf;">on/off</span>
+        </div>
 
         </div>
+
+                <div id="iaa-deadmarket-body">
+                  <div class="iaa-field-row" title="Филтри за избягване на мъртъв пазар и късни входове."><span class="iaa-field-label" style="color:${UI_WARM_RED};">Филтри Мъртъв пазар</span><button id="iaa-deadmarket-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
+                  <div id="iaa-deadmarket-panel" style="display:none;">
+                    <div class="iaa-field-row iaa-field-toggle" title="Включва проверка за мъртъв пазар (dead market) по движение на цената в последните секунди."><span class="iaa-field-label">Velocity филтър</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-deadmarket-enabled"></label></div>
+                    <div class="iaa-field-row" title="Минимално движение на цената за последния прозорец. Ако движението е по-малко -> пропуск на вход."><span class="iaa-field-label">Мин. движение</span><input type="number" id="iaa-deadmarket-minmove" min="0.00001" max="0.05000" step="0.00001" value="0.00010"></div>
+                    <div class="iaa-field-row" title="Минимално оставащо време до края на прозореца за вход. Под тази стойност входът се пропуска рано."><span class="iaa-field-label">Мин. latency budget (ms)</span><input type="number" id="iaa-early-latency-ms" min="200" max="5000" step="50" value="1500"></div>
+                  </div>
+                </div>
 
                 <div class="iaa-field-row" title="Лимит за максимална загуба за сесия.">
                   <span class="iaa-field-label">Стоп при загуба (€)</span>
@@ -9604,7 +9783,6 @@ const ok = await executeTradeOrder(signal);
                   <span class="iaa-field-label">Поредни загуби</span>
                   <input type="number" id="iaa-sniper-max-loss-streak" min="0" step="1" value="0">
                 </div>
-              </div>
               </div>
 
               <div id="iaa-tab-features" class="iaa-tab-body" style="display:none;">
@@ -9619,13 +9797,17 @@ const ok = await executeTradeOrder(signal);
 
                 
                 <label class="iaa-checkbox"><input type="checkbox" id="iaa-candle-pattern-enabled"> Candlestick Pattern On/Off</label>
-                <div class="iaa-field-row iaa-field-toggle" title="Penalty only: при chop се прилага наказание, но не е hard stop.">
-                  <span class="iaa-field-label">Chop v2 (анти-chop penalty)</span>
-                  <label class="iaa-checkbox"><input type="checkbox" id="iaa-chop-v2-enabled"></label>
-                </div>
-                <div class="iaa-field-row" title="Сила на наказанието при chop. 1 = най-слабо, 50 = средно, 100 = най-силно.">
-                  <span class="iaa-field-label">Сила Chop v2 (1–100)</span>
-                  <input type="number" id="iaa-chop-v2-strength" min="1" max="100" step="1" value="50">
+                <div id="iaa-chopv3-body">
+                  <div class="iaa-field-row" title="Настройки за Chop V3 филтър."><span class="iaa-field-label" style="color:${UI_WARM_RED};">Chop V3.</span><button id="iaa-chopv3-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
+                  <div id="iaa-chopv3-panel" style="display:none;">
+                    <div class="iaa-field-row iaa-inline-newfilter" title="При chop режим намалява оценката. Сила 1-100.">
+                      <label class="iaa-checkbox"><input type="checkbox" id="iaa-chop-v2-enabled"> Chop</label>
+                      <span class="iaa-field-label iaa-new-setting">сила</span>
+                      <input type="number" id="iaa-chop-v2-strength" min="1" max="100" step="1" value="50">
+                    </div>
+                    <div class="iaa-field-row iaa-field-toggle" title="Когато е ON и пазарът е chop, ботът блокира входа (hard stop)."><span class="iaa-field-label">Hard Stop в Chop режим</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-chop-v3-hardstop"></label></div>
+                    <div class="iaa-field-row" title="Ниво на чувствителност за Chop V3."><span class="iaa-field-label">Чувствителност Chop</span><select id="iaa-chop-v3-sensitivity" style="font-size:11px;"><option value="low">Low</option><option value="med">Med</option><option value="high">High</option></select></div>
+                  </div>
                 </div>
                 <div class="iaa-field-row iaa-field-toggle" title="Ако последната свещ е срещу посоката на входа, сигналът се блокира.">
                     <span class="iaa-field-label">Свещ срещу входа = твърд стоп</span>
@@ -9652,11 +9834,11 @@ const ok = await executeTradeOrder(signal);
                     <span class="iaa-field-label">Perfect Time (първо задействане)</span>
                     <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-perfect-time"></label>
                   </div>
-                  <div class="iaa-field-row" id="iaa-pt-modes-row" title="Режими за Perfect Time. Активен е само един режим.">
+                  <div id="iaa-pt-modes-row" title="Режими за Perfect Time. Активен е само един режим.">
                     <span class="iaa-field-label">PT Режими:</span>
-                    <label class="iaa-checkbox" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="iaa-pt-mode-soft"> Soft</label>
-                    <label class="iaa-checkbox" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="iaa-pt-mode-hard"> Hard</label>
-                    <label class="iaa-checkbox" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="iaa-pt-mode-adaptive"> Adaptive</label>
+                    <label class="iaa-pt-opt"><input type="checkbox" id="iaa-pt-mode-soft">Soft</label>
+                    <label class="iaa-pt-opt"><input type="checkbox" id="iaa-pt-mode-hard">Hard</label>
+                    <label class="iaa-pt-opt"><input type="checkbox" id="iaa-pt-mode-adaptive">Adaptive</label>
                   </div>
                   <div class="iaa-field-row" title="Минимална пауза между две Perfect Time задействания за същия TF.">
                     <span class="iaa-field-label">Пауза след сигнал (сек)</span>
@@ -9989,19 +10171,8 @@ const ok = await executeTradeOrder(signal);
       };
 
 
-      // Robust binding: ensure Mouse Mapping toggle always works even after UI re-renders
-      if (!S._mouseToggleDelegated) {
-        S._mouseToggleDelegated = true;
-        document.addEventListener('click', (event) => {
-          const t = event && event.target;
-          const btn = t && t.closest ? t.closest('#iaa-mouse-toggle') : null;
-          if (!btn) return;
-          event.preventDefault();
-          event.stopPropagation();
-          if (S.mousePanelOpen) hidePopups();
-          else openMousePanel();
-        }, true);
-      }
+      // Mouse toggle delegation is handled centrally in ensurePanelHandlers()/__iaaPopupDelegatesBound.
+      // Keep this area free from extra document-level toggle listeners to avoid double-toggles.
       if (settingsToggle) {
         settingsToggle.addEventListener('click', (event) => {
           event.preventDefault();
@@ -10336,6 +10507,7 @@ setTimeout(() => {
       const biasStrongThreshold = await storage.get(BIAS_STRONG_THRESHOLD_KEY); if (typeof biasStrongThreshold === 'number') S.biasStrongThreshold = Math.max(0.20, Math.min(0.80, biasStrongThreshold));
       const stabilityEnabled = await storage.get(STABILITY_ENABLED_KEY); if (typeof stabilityEnabled === 'boolean') S.stabilityEnabled = stabilityEnabled;
       const stabilityMaxGapMs = await storage.get(STABILITY_MAX_GAP_MS_KEY); if (typeof stabilityMaxGapMs === 'number') S.stabilityMaxGapMs = Math.max(1000, Math.min(8000, Math.round(stabilityMaxGapMs)));
+      const stabilityPrecheckEnabled = await storage.get(STABILITY_PRECHECK_ENABLED_KEY); if (typeof stabilityPrecheckEnabled === 'boolean') S.stabilityPrecheckEnabled = stabilityPrecheckEnabled;
       const toleranceMode = await storage.get(TOLERANCE_MODE_KEY); if (typeof toleranceMode === 'string') S.toleranceMode = ['confidence','pt','either','off'].includes(toleranceMode) ? toleranceMode : 'either';
       const toleranceConfidence = await storage.get(TOLERANCE_CONFIDENCE_KEY); if (typeof toleranceConfidence === 'number') S.toleranceConfidence = Math.max(0.60, Math.min(0.95, toleranceConfidence));
       const killerThresholdMode = await storage.get(KILLER_THRESHOLD_MODE_KEY); if (typeof killerThresholdMode === 'string') S.killerThresholdMode = ['7of11','8of11','9of11'].includes(killerThresholdMode) ? killerThresholdMode : '8of11';
@@ -10343,6 +10515,8 @@ setTimeout(() => {
       const supportingFiltersEnabled = await storage.get(SUPPORTING_FILTERS_ENABLED_KEY); if (typeof supportingFiltersEnabled === 'boolean') S.supportingFiltersEnabled = supportingFiltersEnabled;
       const chopV2Enabled = await storage.get(CHOP_V2_ENABLED_KEY); if (typeof chopV2Enabled === 'boolean') S.chopV2Enabled = chopV2Enabled;
       const chopV2Strength = await storage.get(CHOP_V2_STRENGTH_KEY); if (typeof chopV2Strength === 'number') S.chopV2StrengthPct = Math.max(1, Math.min(100, Math.round(chopV2Strength)));
+      const chopV3HardStop = await storage.get(CHOP_V3_HARD_STOP_KEY); if (typeof chopV3HardStop === 'boolean') S.chopV3HardStop = chopV3HardStop;
+      const chopV3Sensitivity = await storage.get(CHOP_V3_SENSITIVITY_KEY); if (typeof chopV3Sensitivity === 'string' && ['low','med','high'].includes(chopV3Sensitivity)) S.chopV3Sensitivity = chopV3Sensitivity;
       const killerHudPos = await storage.get(KILLER_HUD_POS_KEY);
       if (killerHudPos && Number.isFinite(killerHudPos.x) && Number.isFinite(killerHudPos.y)) {
         S.killerHudPos = { x: killerHudPos.x, y: killerHudPos.y };
@@ -10522,6 +10696,10 @@ setTimeout(() => {
 
     S.rangeOscPenaltyEnabled = !!(await storage.get(RANGE_OSC_PENALTY_ENABLED_KEY, true));
     S.rangeOscPenaltyPct = clamp(parseNumberFlexible(await storage.get(RANGE_OSC_PENALTY_PCT_KEY, 20)) || 20, 0, 50);
+    S.filterTrioCseaEnabled = !!(await storage.get(FILTER_TRIO_CSEA_ENABLED_KEY, false));
+    S.deadMarketFilterEnabled = !!(await storage.get(DEAD_MARKET_FILTER_ENABLED_KEY, false));
+    S.deadMarketMinMove = Math.max(0, Number(parseNumberFlexible(await storage.get(DEAD_MARKET_MIN_MOVE_KEY, 0.0001)) || 0.0001));
+    S.earlyLatencyGateMs = clamp(parseNumberFlexible(await storage.get(EARLY_LATENCY_GATE_MS_KEY, 1500)) || 1500, 200, 5000);
     // paint UI (if present)
     const SPREAD_ENABLED = $id('iaa-spread-enabled');
     const SPREAD_THRESHOLD = $id('iaa-spread-threshold');
@@ -10541,6 +10719,12 @@ setTimeout(() => {
 
     const RANGE_OSC_PENALTY_ENABLED = $id('iaa-range-osc-penalty-enabled');
     const RANGE_OSC_PENALTY = $id('iaa-range-osc-penalty');
+    const FILTER_TRIO_CSEA_ENABLED = $id('iaa-filter-trio-csea-enabled');
+    const DEADMARKET_TOGGLE = $id('iaa-deadmarket-toggle');
+    const DEADMARKET_PANEL = $id('iaa-deadmarket-panel');
+    const DEADMARKET_ENABLED = $id('iaa-deadmarket-enabled');
+    const DEADMARKET_MINMOVE = $id('iaa-deadmarket-minmove');
+    const EARLY_LATENCY_MS = $id('iaa-early-latency-ms');
     const paintBar = (el, v, min, max)=>{
       if (!el) return;
       const pct = Math.max(0, Math.min(1, (v-min)/(max-min)));
@@ -10573,6 +10757,14 @@ setTimeout(() => {
 
     if (RANGE_OSC_PENALTY_ENABLED) RANGE_OSC_PENALTY_ENABLED.checked = !!S.rangeOscPenaltyEnabled;
     if (RANGE_OSC_PENALTY) RANGE_OSC_PENALTY.value = String(S.rangeOscPenaltyPct);
+    if (FILTER_TRIO_CSEA_ENABLED) FILTER_TRIO_CSEA_ENABLED.checked = !!S.filterTrioCseaEnabled;
+    if (DEADMARKET_ENABLED) DEADMARKET_ENABLED.checked = !!S.deadMarketFilterEnabled;
+    if (DEADMARKET_MINMOVE) DEADMARKET_MINMOVE.value = String(Number(S.deadMarketMinMove || 0.0001).toFixed(5));
+    if (EARLY_LATENCY_MS) EARLY_LATENCY_MS.value = String(Math.round(Number(S.earlyLatencyGateMs || 1500)));
+    if (DEADMARKET_TOGGLE && DEADMARKET_PANEL) {
+      DEADMARKET_PANEL.style.display = S.deadMarketPanelOpen ? '' : 'none';
+      DEADMARKET_TOGGLE.textContent = S.deadMarketPanelOpen ? '▾' : '▸';
+    }
     const hookCheckbox = (el, onChange)=>{
       if (!el) return;
       el.addEventListener('change', ()=>{ onChange(); persistSettings(); });
@@ -10618,11 +10810,22 @@ setTimeout(() => {
     hookCheckbox(IMPULSECAP_ENABLED, ()=>{ S.impulseCapEnabled = !!IMPULSECAP_ENABLED.checked; });
     hookInput(IMPULSECAP_MAX, ()=>{
       S.impulseCapMaxPerCandle = clamp(parseNumberFlexible(IMPULSECAP_MAX.value) || 2, 1, 5);
-
+      paintBar(IMPULSECAP_BAR, S.impulseCapMaxPerCandle, 1, 5);
+    });
 
     hookCheckbox(RANGE_OSC_PENALTY_ENABLED, ()=>{ S.rangeOscPenaltyEnabled = !!RANGE_OSC_PENALTY_ENABLED.checked; });
     hookInput(RANGE_OSC_PENALTY, ()=>{ S.rangeOscPenaltyPct = clamp(parseNumberFlexible(RANGE_OSC_PENALTY.value) || 0, 0, 50); });
-      paintBar(IMPULSECAP_BAR, S.impulseCapMaxPerCandle, 1, 5);
+    hookCheckbox(FILTER_TRIO_CSEA_ENABLED, ()=>{ S.filterTrioCseaEnabled = !!FILTER_TRIO_CSEA_ENABLED.checked; });
+    hookCheckbox(DEADMARKET_ENABLED, ()=>{ S.deadMarketFilterEnabled = !!DEADMARKET_ENABLED.checked; });
+    hookInput(DEADMARKET_MINMOVE, ()=>{
+      const v = parseNumberFlexible(DEADMARKET_MINMOVE.value);
+      S.deadMarketMinMove = Math.max(0, Number.isFinite(v) ? v : 0.0001);
+      DEADMARKET_MINMOVE.value = String(Number(S.deadMarketMinMove).toFixed(5));
+    });
+    hookInput(EARLY_LATENCY_MS, ()=>{
+      const v = parseNumberFlexible(EARLY_LATENCY_MS.value);
+      S.earlyLatencyGateMs = clamp(Number.isFinite(v) ? v : 1500, 200, 5000);
+      EARLY_LATENCY_MS.value = String(Math.round(S.earlyLatencyGateMs));
     });
 }
 
@@ -10680,12 +10883,15 @@ setTimeout(() => {
       storage.set(BIAS_STRONG_THRESHOLD_KEY, Math.max(0.20, Math.min(0.80, Number(S.biasStrongThreshold || 0.45))));
       storage.set(STABILITY_ENABLED_KEY, !!S.stabilityEnabled);
       storage.set(STABILITY_MAX_GAP_MS_KEY, Math.max(1000, Math.min(8000, Math.round(Number(S.stabilityMaxGapMs || 3500)))));
+      storage.set(STABILITY_PRECHECK_ENABLED_KEY, !!S.stabilityPrecheckEnabled);
       storage.set(TOLERANCE_MODE_KEY, ['confidence','pt','either','off'].includes(S.toleranceMode) ? S.toleranceMode : 'either');
       storage.set(TOLERANCE_CONFIDENCE_KEY, Math.max(0.60, Math.min(0.95, Number(S.toleranceConfidence || 0.75))));
       storage.set(KILLER_THRESHOLD_MODE_KEY, ['7of11','8of11','9of11'].includes(S.killerThresholdMode) ? S.killerThresholdMode : '8of11');
       storage.set(SUPPORTING_FILTERS_ENABLED_KEY, !!S.supportingFiltersEnabled);
       storage.set(CHOP_V2_ENABLED_KEY, !!S.chopV2Enabled);
       storage.set(CHOP_V2_STRENGTH_KEY, Math.max(1, Math.min(100, Math.round(S.chopV2StrengthPct || 50))));
+      storage.set(CHOP_V3_HARD_STOP_KEY, !!S.chopV3HardStop);
+      storage.set(CHOP_V3_SENSITIVITY_KEY, ['low','med','high'].includes(String(S.chopV3Sensitivity || 'med')) ? String(S.chopV3Sensitivity) : 'med');
       storage.set(KILLER_HUD_POS_KEY, S.killerHudPos || { x: null, y: null });
       storage.set(IDLE_SWITCH_ENABLED_KEY, S.idleSwitchEnabled);
       storage.set(IDLE_SWITCH_MIN_KEY, S.idleSwitchMinutes);
@@ -10776,6 +10982,10 @@ setTimeout(() => {
 
       await storage.set(RANGE_OSC_PENALTY_ENABLED_KEY, !!S.rangeOscPenaltyEnabled);
       await storage.set(RANGE_OSC_PENALTY_PCT_KEY, Number(S.rangeOscPenaltyPct || 0));
+      await storage.set(FILTER_TRIO_CSEA_ENABLED_KEY, !!S.filterTrioCseaEnabled);
+      await storage.set(DEAD_MARKET_FILTER_ENABLED_KEY, !!S.deadMarketFilterEnabled);
+      await storage.set(DEAD_MARKET_MIN_MOVE_KEY, Number(S.deadMarketMinMove || 0.0001));
+      await storage.set(EARLY_LATENCY_GATE_MS_KEY, Math.round(Number(S.earlyLatencyGateMs || 1500)));
     }
     function captureSettingsSnapshot(){}
 
@@ -10794,6 +11004,8 @@ setTimeout(() => {
       const sniperWeightsBody = $id('iaa-sniper-weights-body');
       const newFiltersBody = $id('iaa-newfilters-body');
       const newFiltersToggle = $id('iaa-newfilters-toggle');
+      const deadMarketToggle = $id('iaa-deadmarket-toggle');
+      const deadMarketPanel = $id('iaa-deadmarket-panel');
 
       const dynamicCoreBody = $id('iaa-dynamic-core-body');
       const dynamicStakeToggle = $id('iaa-dynamic-stake-toggle');
@@ -10811,6 +11023,17 @@ setTimeout(() => {
         // Initial paint
         newFiltersBody.style.display = S.sniperNewFiltersCollapsed ? 'none' : '';
         newFiltersToggle.textContent = S.sniperNewFiltersCollapsed ? '▸' : '▾';
+      }
+
+      if (deadMarketToggle && deadMarketPanel) {
+        deadMarketToggle.onclick = () => {
+          S.deadMarketPanelOpen = !S.deadMarketPanelOpen;
+          persistSettings();
+          deadMarketPanel.style.display = S.deadMarketPanelOpen ? '' : 'none';
+          deadMarketToggle.textContent = S.deadMarketPanelOpen ? '▾' : '▸';
+        };
+        deadMarketPanel.style.display = S.deadMarketPanelOpen ? '' : 'none';
+        deadMarketToggle.textContent = S.deadMarketPanelOpen ? '▾' : '▸';
       }
 
       if (dynamicCoreBody) dynamicCoreBody.style.display = '';
@@ -11016,11 +11239,16 @@ setTimeout(() => {
       const supportingFiltersEnabledSettings = $id('iaa-supporting-filters-enabled');
       const chopV2EnabledSettings = $id('iaa-chop-v2-enabled');
       const chopV2StrengthSettings = $id('iaa-chop-v2-strength');
+      const chopV3HardStopSettings = $id('iaa-chop-v3-hardstop');
+      const chopV3SensitivitySettings = $id('iaa-chop-v3-sensitivity');
+      const chopV3ToggleBtn = $id('iaa-chopv3-toggle');
+      const chopV3Panel = $id('iaa-chopv3-panel');
       const biasEnabledSettings = $id('iaa-bias-enabled');
       const biasModeSettings = $id('iaa-bias-mode');
       const biasStrongThresholdSettings = $id('iaa-bias-strong-threshold');
       const stabilityEnabledSettings = $id('iaa-stability-enabled');
       const stabilityMaxGapMsSettings = $id('iaa-stability-max-gap-ms');
+      const stabilityPrecheckEnabledSettings = $id('iaa-stability-precheck-enabled');
       const toleranceModeSettings = $id('iaa-tolerance-mode');
       const toleranceConfidenceSettings = $id('iaa-tolerance-confidence');
       if (killerEnabledSettings) { killerEnabledSettings.checked = !!S.killerEnabled; killerEnabledSettings.disabled = false; killerEnabledSettings.title = "Вкл./изкл. KILLER филтъра"; }
@@ -11040,15 +11268,20 @@ setTimeout(() => {
       if (supportingFiltersEnabledSettings) supportingFiltersEnabledSettings.checked = !!S.supportingFiltersEnabled;
       if (chopV2EnabledSettings) chopV2EnabledSettings.checked = !!S.chopV2Enabled;
       if (chopV2StrengthSettings) chopV2StrengthSettings.value = Math.max(1, Math.min(100, Math.round(S.chopV2StrengthPct || 50)));
+      if (chopV3HardStopSettings) chopV3HardStopSettings.checked = !!S.chopV3HardStop;
+      if (chopV3SensitivitySettings) chopV3SensitivitySettings.value = ['low','med','high'].includes(String(S.chopV3Sensitivity || 'med')) ? String(S.chopV3Sensitivity) : 'med';
       if (biasEnabledSettings) biasEnabledSettings.checked = !!S.biasEnabled;
       if (biasModeSettings) biasModeSettings.value = ['points','hybrid'].includes(S.biasMode) ? S.biasMode : 'points';
       if (biasStrongThresholdSettings) biasStrongThresholdSettings.value = Number(S.biasStrongThreshold || 0.45).toFixed(2);
       if (stabilityEnabledSettings) stabilityEnabledSettings.checked = !!S.stabilityEnabled;
       if (stabilityMaxGapMsSettings) stabilityMaxGapMsSettings.value = Math.max(1000, Math.min(8000, Math.round(Number(S.stabilityMaxGapMs || 3500))));
+      if (stabilityPrecheckEnabledSettings) stabilityPrecheckEnabledSettings.checked = !!S.stabilityPrecheckEnabled;
       if (toleranceModeSettings) toleranceModeSettings.value = ['confidence','pt','either','off'].includes(S.toleranceMode) ? S.toleranceMode : 'either';
       if (toleranceConfidenceSettings) toleranceConfidenceSettings.value = Number(S.toleranceConfidence || 0.75).toFixed(2);
       const biasBody = $id('iaa-bias-body'); const biasPanel = $id('iaa-bias-panel'); const biasToggle = $id('iaa-bias-toggle');
       const stabBody = $id('iaa-stability-body'); const stabPanel = $id('iaa-stability-panel'); const stabToggle = $id('iaa-stability-toggle');
+      if (chopV3Panel) chopV3Panel.style.display = (S.chopV3PanelOpen ? 'block' : 'none');
+      if (chopV3ToggleBtn) chopV3ToggleBtn.textContent = S.chopV3PanelOpen ? '▾' : '▸';
       if (biasBody) biasBody.style.display = ''; if (stabBody) stabBody.style.display = '';
       if (biasPanel) biasPanel.style.display = (S.biasPanelOpen ? 'block' : 'none'); if (biasToggle) biasToggle.textContent = S.biasPanelOpen ? '▾' : '▸';
       if (stabPanel) stabPanel.style.display = (S.stabilityPanelOpen ? 'block' : 'none'); if (stabToggle) stabToggle.textContent = S.stabilityPanelOpen ? '▾' : '▸';
@@ -11260,7 +11493,6 @@ function handlePanelPopupAction(action) {
           const target = event.target;
           if (!(target instanceof Element)) return;
           if (target.closest('#iaa-settings-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('settings'); return; }
-          if (target.closest('#iaa-mouse-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('mouse'); return; }
           if (target.closest('#iaa-debug-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('debug'); return; }
           if (target.closest('#iaa-killer-toggle')) { event.preventDefault(); event.stopImmediatePropagation(); handlePanelPopupAction('killer'); }
         }, true);
@@ -11276,9 +11508,9 @@ function handlePanelPopupAction(action) {
         });
       }
 
+
       const mouseToggleBtn = $id('iaa-mouse-toggle');
-      if (mouseToggleBtn && !mouseToggleBtn.dataset.boundPopupClick) {
-        mouseToggleBtn.dataset.boundPopupClick = '1';
+      if (mouseToggleBtn) {
         mouseToggleBtn.onclick = (event) => {
           if (event) {
             event.preventDefault();
@@ -11288,6 +11520,7 @@ function handlePanelPopupAction(action) {
           return false;
         };
       }
+
       const killerToggleBtn = $id('iaa-killer-toggle');
       if (killerToggleBtn && !killerToggleBtn.dataset.boundPopupClick) {
         killerToggleBtn.dataset.boundPopupClick = '1';
@@ -11598,11 +11831,16 @@ const closeSettingsPanel = () => {
       const supportingFiltersEnabledSettings = $id('iaa-supporting-filters-enabled');
       const chopV2EnabledSettings = $id('iaa-chop-v2-enabled');
       const chopV2StrengthSettings = $id('iaa-chop-v2-strength');
+      const chopV3HardStopSettings = $id('iaa-chop-v3-hardstop');
+      const chopV3SensitivitySettings = $id('iaa-chop-v3-sensitivity');
+      const chopV3ToggleBtn = $id('iaa-chopv3-toggle');
+      const chopV3Panel = $id('iaa-chopv3-panel');
       const biasEnabledSettings = $id('iaa-bias-enabled');
       const biasModeSettings = $id('iaa-bias-mode');
       const biasStrongThresholdSettings = $id('iaa-bias-strong-threshold');
       const stabilityEnabledSettings = $id('iaa-stability-enabled');
       const stabilityMaxGapMsSettings = $id('iaa-stability-max-gap-ms');
+      const stabilityPrecheckEnabledSettings = $id('iaa-stability-precheck-enabled');
       const toleranceModeSettings = $id('iaa-tolerance-mode');
       const toleranceConfidenceSettings = $id('iaa-tolerance-confidence');
       const biasToggleBtn = $id('iaa-bias-toggle');
@@ -11642,10 +11880,14 @@ const closeSettingsPanel = () => {
       safeBindOnce(supportingFiltersEnabledSettings, 'change', () => { S.supportingFiltersEnabled = !!supportingFiltersEnabledSettings.checked; void persistSettings(); });
       if (typeof chopV2EnabledSettings !== 'undefined' && chopV2EnabledSettings) safeBindOnce(chopV2EnabledSettings, 'change', () => { S.chopV2Enabled = !!chopV2EnabledSettings.checked; void persistSettings(); });
       if (chopV2StrengthSettings) safeBindOnce(chopV2StrengthSettings, 'input', () => { const v = parseNumberFlexible(chopV2StrengthSettings.value); S.chopV2StrengthPct = Math.max(1, Math.min(100, Math.round(Number.isFinite(v) ? v : 50))); chopV2StrengthSettings.value = String(S.chopV2StrengthPct); void persistSettings(); });
+      if (chopV3HardStopSettings) safeBindOnce(chopV3HardStopSettings, 'change', () => { S.chopV3HardStop = !!chopV3HardStopSettings.checked; void persistSettings(); });
+      if (chopV3SensitivitySettings) safeBindOnce(chopV3SensitivitySettings, 'change', () => { const mode = String(chopV3SensitivitySettings.value || 'med'); S.chopV3Sensitivity = ['low','med','high'].includes(mode) ? mode : 'med'; void persistSettings(); });
+      if (chopV3ToggleBtn && chopV3Panel) safeBindOnce(chopV3ToggleBtn, 'click', () => { const hidden = chopV3Panel.style.display === 'none'; chopV3Panel.style.display = hidden ? 'block' : 'none'; chopV3ToggleBtn.textContent = hidden ? '▾' : '▸'; S.chopV3PanelOpen = hidden; });
       safeBindOnce(biasEnabledSettings, 'change', () => { S.biasEnabled = !!biasEnabledSettings.checked; void persistSettings(); });
       safeBindOnce(biasModeSettings, 'change', () => { const v = String(biasModeSettings.value || 'points'); S.biasMode = ['points','hybrid'].includes(v) ? v : 'points'; void persistSettings(); });
       safeBindOnce(biasStrongThresholdSettings, 'input', () => { const v = parseNumberFlexible(biasStrongThresholdSettings.value); S.biasStrongThreshold = Math.max(0.20, Math.min(0.80, Number.isFinite(v) ? v : 0.45)); void persistSettings(); });
       safeBindOnce(stabilityEnabledSettings, 'change', () => { S.stabilityEnabled = !!stabilityEnabledSettings.checked; void persistSettings(); });
+      if (stabilityPrecheckEnabledSettings) safeBindOnce(stabilityPrecheckEnabledSettings, 'change', () => { S.stabilityPrecheckEnabled = !!stabilityPrecheckEnabledSettings.checked; void persistSettings(); });
       safeBindOnce(stabilityMaxGapMsSettings, 'input', () => { const v = parseNumberFlexible(stabilityMaxGapMsSettings.value); S.stabilityMaxGapMs = Math.max(1000, Math.min(8000, Math.round(Number.isFinite(v) ? v : 3500))); void persistSettings(); });
       safeBindOnce(toleranceModeSettings, 'change', () => { const v = String(toleranceModeSettings.value || 'either'); S.toleranceMode = ['confidence','pt','either','off'].includes(v) ? v : 'either'; void persistSettings(); });
       safeBindOnce(toleranceConfidenceSettings, 'input', () => { const v = parseNumberFlexible(toleranceConfidenceSettings.value); S.toleranceConfidence = Math.max(0.60, Math.min(0.95, Number.isFinite(v) ? v : 0.75)); void persistSettings(); });
@@ -11709,8 +11951,6 @@ const closeSettingsPanel = () => {
       const SNIPER_VWAP_ENABLED = $id('iaa-sniper-vwap-enabled');
       const SNIPER_MOMENTUM_ENABLED = $id('iaa-sniper-momentum-enabled');
       const SNIPER_VOLUME_ENABLED = $id('iaa-sniper-volume-enabled');
-      const CHOP_V2_ENABLED = $id('iaa-chop-v2-enabled');
-      const CHOP_V2_STRENGTH = $id('iaa-chop-v2-strength');
       const SNIPER_SETTINGS_COLLAPSE = $id('iaa-sniper-collapse');
       const SNIPER_VWAP_TOGGLE = $id('iaa-sniper-vwap-toggle');
       const KEEP_TAB_ACTIVE = $id('iaa-sniper-keep-alive');
@@ -12045,20 +12285,6 @@ if (SNIPER_VOLUME_THRESHOLD) {
           S.sniperVolumeEnabled = SNIPER_VOLUME_ENABLED.checked;
           persistSettings();
         });
-      }
-      safeBindOnce(CHOP_V2_ENABLED, 'change', () => {
-        S.chopV2Enabled = !!CHOP_V2_ENABLED.checked;
-        persistSettings();
-      });
-      if (CHOP_V2_STRENGTH) {
-        const update = () => {
-          const d = parseNumberFlexible(CHOP_V2_STRENGTH.value);
-          S.chopV2StrengthPct = Math.max(1, Math.min(100, Math.round(Number.isFinite(d) ? d : 50)));
-          CHOP_V2_STRENGTH.value = String(S.chopV2StrengthPct);
-          persistSettings();
-        };
-        CHOP_V2_STRENGTH.addEventListener('input', update);
-        CHOP_V2_STRENGTH.addEventListener('change', update);
       }
       if (SNIPER_VWAP_WEIGHT) {
         const update = () => {
@@ -12430,6 +12656,10 @@ if (SNIPER_VOLUME_THRESHOLD) {
 
     /* ========================= BOOT ========================= */
     api.boot = async function(){
+    // CDP WS fallback init (must be early)
+    installCdpWsFrameReceiver();
+    requestCdpAttach();
+
       installWebSocketPriceTap();
       installHttpPriceTap();
       await restoreSettings();
@@ -12465,31 +12695,45 @@ if (SNIPER_VOLUME_THRESHOLD) {
     }
     // sync UI values right before showing settings
     if (popupId === 'iaa-settings-panel') {
-      try { if (typeof applyDynamicUiState === 'function') applyDynamicUiState(); } catch(_){}
-      try { if (typeof applyAnalysisUiState === 'function') applyAnalysisUiState(); } catch(_){}
-      try { if (typeof applyStrategyUiState === 'function') applyStrategyUiState(); } catch(_){}
+      try { if (typeof applyDynamicUiState === 'function') applyDynamicUiState(); } catch(_){ }
+      try { if (typeof applyAnalysisUiState === 'function') applyAnalysisUiState(); } catch(_){ }
+      try { if (typeof applyStrategyUiState === 'function') applyStrategyUiState(); } catch(_){ }
     }
     el.style.display = 'block';
     el.setAttribute('aria-hidden','false');
   }
 
-  if (false && !window.__iaaPopupDelegatesBound) {
-    window.__iaaPopupDelegatesBound = true;
-    document.addEventListener('click', (e)=>{
-      const mouseBtn = e.target && e.target.closest && e.target.closest('#iaa-mouse-toggle');
-      if (mouseBtn) {
-        e.preventDefault(); e.stopPropagation();
-        __iaaTogglePopup('iaa-mouse-panel');
-        return;
-      }
-      const killerBtn = e.target && e.target.closest && e.target.closest('#iaa-killer-toggle');
-      if (killerBtn) {
-        e.preventDefault(); e.stopPropagation();
-        __iaaTogglePopup('iaa-killer-panel');
-        return;
-      }
-    }, true);
+  // Robust delegated popup handlers (survive re-renders / overwritten onclick handlers)
+  if (window.__iaaPopupDelegatesBound && window.__iaaPopupDelegatesHandler) {
+    try { document.removeEventListener('click', window.__iaaPopupDelegatesHandler, true); } catch(_){ }
   }
+  window.__iaaPopupDelegatesBound = true;
+  window.__iaaPopupDelegatesHandler = (e)=>{
+    
+
+const mouseBtn = e.target && e.target.closest && e.target.closest('#iaa-mouse-toggle');
+if (mouseBtn) {
+  e.preventDefault(); e.stopImmediatePropagation();
+
+  // Open like Settings/Debug: keep the mouse panel inside #iaa-panel so its CSS positioning matches.
+  try {
+    const host = document.getElementById('iaa-panel');
+    const panel = document.getElementById('iaa-mouse-panel');
+    if (host && panel && panel.parentElement !== host) host.appendChild(panel);
+  } catch(_){}
+
+  try { handlePanelPopupAction('mouse'); } catch(_) { __iaaTogglePopup('iaa-mouse-panel'); }
+  return;
+}
+
+const killerBtn = e.target && e.target.closest && e.target.closest('#iaa-killer-toggle');
+    if (killerBtn) {
+      e.preventDefault(); e.stopPropagation();
+      __iaaTogglePopup('iaa-killer-panel');
+      return;
+    }
+  };
+  document.addEventListener('click', window.__iaaPopupDelegatesHandler, true);
 
       ensureMouseHandlers();
       installPageDebugBridge();
@@ -12554,3 +12798,128 @@ if (SNIPER_VOLUME_THRESHOLD) {
     }
 
 ;
+
+
+// Show CDP counters in feed UI (non-invasive)
+setInterval(() => {
+  try {
+    const el = document.getElementById('iaa-feed-cloud');
+    if (!el) return;
+    const s = window.__iaaCdp;
+    if (!s) return;
+    el.title = (el.title || '') + ` | CDP:${s.attached ? 'on' : 'off'} frames:${s.frames||0} text:${s.text||0} bin:${s.bin||0}`;
+  } catch {}
+}, 1500);
+
+
+
+// ===== CDP Price Apply Patch (v3) =====
+(function(){
+  function countDecimals(n){
+    try {
+      const s = String(n);
+      const i = s.indexOf('.');
+      return i>=0 ? (s.length - i - 1) : 0;
+    } catch { return 0; }
+  }
+  function applyTick(asset, ts, price){
+    if (!Number.isFinite(price)) return;
+    const S = (window.InfinityBot && window.InfinityBot.S) ? window.InfinityBot.S : null;
+    if (!S) return;
+    const now = Date.now();
+    const ms = Number.isFinite(ts) ? Math.round(ts*1000) : now;
+    const dec = countDecimals(price);
+
+    // Update the core fields UI depends on
+    S.wsLastPrice = price;
+    S.wsLastPriceAt = now;
+    S.wsLastPriceDecimals = dec;
+    S.currentAssetPrice = price;
+    S.currentAssetPriceDecimals = dec;
+    S.lastPriceAt = now;
+    S.feedState = 'READY';
+    S.lastFeedSource = 'cdp_ws';
+
+    // history tick if helper exists
+    try {
+      if (typeof appendPriceHistoryTick === 'function') appendPriceHistoryTick(S, price, ms, 'cdp_ws');
+      else if (Array.isArray(S.priceHistory)) S.priceHistory.push({ t: ms, p: price, src: 'cdp_ws' });
+    } catch {}
+  }
+
+  function parseAndApply(text){
+    if (typeof text !== 'string') return;
+    const s = text.trim();
+    // 1) raw batch [[asset, ts, price], ...]
+    if (s.startsWith('[[')) {
+      try {
+        const arr = JSON.parse(s);
+        if (Array.isArray(arr)) {
+          for (const row of arr) {
+            if (Array.isArray(row) && row.length >= 3) {
+              const asset = String(row[0] || '');
+              const ts = Number(row[1]);
+              const price = Number(row[2]);
+              applyTick(asset, ts, price);
+              break;
+            }
+          }
+        }
+      } catch {}
+      return;
+    }
+    // 2) socket.io event: ["updateStream", [[...]]]
+    if (s.startsWith('[')) {
+      try {
+        const arr = JSON.parse(s);
+        if (Array.isArray(arr) && arr.length >= 2) {
+          const payload = arr[1];
+          if (Array.isArray(payload) && Array.isArray(payload[0]) && payload[0].length >= 3) {
+            const row = payload[0];
+            applyTick(String(row[0]||''), Number(row[1]), Number(row[2]));
+          }
+        }
+      } catch {}
+      return;
+    }
+    // 3) framed like 451-42["updateStream",...]
+    const idx = s.indexOf('42[');
+    if (idx >= 0) {
+      const json = s.slice(idx+2);
+      parseAndApply(json);
+      return;
+    }
+  }
+
+  // Hook into existing CDP receiver block by wrapping handleWsSocketFramePayload if present
+  const orig = window.handleWsSocketFramePayload;
+  if (typeof orig === 'function' && !orig.__iaaWrapped) {
+    const wrapped = function(payload){
+      try { parseAndApply(payload); } catch {}
+      return orig.apply(this, arguments);
+    };
+    wrapped.__iaaWrapped = true;
+    window.handleWsSocketFramePayload = wrapped;
+  } else {
+    // If no handleWsSocketFramePayload, listen to runtime messages directly
+    try {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (msg && msg.__iaaType === 'IAA_CDP_WS_FRAME') {
+          let text = null;
+          if (msg.opcode === 1 && typeof msg.payloadData === 'string') text = msg.payloadData;
+          else if (msg.opcode === 2 && typeof msg.payloadData === 'string') {
+            // try base64 decode
+            try {
+              const bin = atob(msg.payloadData.trim());
+              const bytes = new Uint8Array(bin.length);
+              for (let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+              text = new TextDecoder("utf-8", { fatal:false }).decode(bytes);
+            } catch {}
+          }
+          if (text) parseAndApply(text);
+        }
+      });
+    } catch {}
+  }
+})();
+
