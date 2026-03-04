@@ -17,9 +17,7 @@
     }
   },
   "permissions": [
-    "debugger",
-    "storage",
-    "tabs"
+    "storage"
   ],
   "host_permissions": [
     "https://pocketoption.com/*",
@@ -58,8 +56,5 @@
         "https://*.pocketoption.com/*"
       ]
     }
-  ],
-  "background": {
-    "service_worker": "background_ws_cdp_v2.js"
-  }
+  ]
 }
