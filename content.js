@@ -1,4 +1,61 @@
 
+/* IAA GLOBAL dealKey SAFETY */
+(function(){
+      // Sync WS outcome into the existing session/report pipeline (single source of truth for HTML)
+      try{
+        const outcomeStr = isWin ? 'ПЕЧАЛБИ' : (isLoss ? 'ЗАГУБИ' : 'НЕУТРАЛНИ');
+        const profitCents = Math.round(Number(pnl) * 100);
+        const settledAt = closeMs || Date.now();
+
+        // Prefer matching to an active bot trade (keeps strategy/regime/confidence/etc. for HTML)
+        const activeTrade = (typeof findActiveTradeByWsDeal === 'function') ? findActiveTradeByWsDeal(d) : null;
+        if (activeTrade) {
+          finalizeTradeOutcome(activeTrade, outcomeStr, profitCents, settledAt, 'WS');
+          wsRecordTradeToSessionReport(S, d, tf, outcomeStr, profitCents, settledAt);
+        } else {
+          // Manual / unmatched trade fallback so HTML totals are never zero
+          wsRecordTradeToSessionReport(S, d, tf, outcomeStr, profitCents, settledAt);
+          const dir2 = (typeof wsCommandToDirection === 'function') ? wsCommandToDirection(d.command) : (d.direction || d.side || '');
+          const asset2 = (d.asset || d.symbol || d.pair || S.lastAssetLabel || '');
+          const stake = Number(d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount);
+          const stakeCents = Number.isFinite(stake) ? Math.round(stake*100) : null;
+          sessionRecordTrade({ asset: asset2, direction: dir2, tf: tf, timeframe: tf, startTime: settledAt, stakeCents, mode: 'MANUAL', outcomeMethod: 'WS_FALLBACK' }, outcomeStr, profitCents);
+        }
+      }catch(e){}
+
+  try{
+    if (typeof window.dealKey === "function") return;
+    window.dealKey = function(d, pnl){
+      try{
+        const id = d && (d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? "");
+        if (id) return "id:" + String(id);
+        const asset = d && (d.asset ?? d.symbol ?? d.pair ?? "");
+        const closeTs = Number(d && (d.closeTimestamp ?? d.closeTime ?? d.close_time ?? d.closedAt ?? d.finishedAt ?? d.ts ?? d.timestamp) || 0) || 0;
+        const stake = Number(d && (d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount) || 0) || 0;
+        const pnlCents = Number.isFinite(Number(pnl)) ? Math.round(Number(pnl)*100) : 0;
+        return `g:${asset}|${closeTs}|${pnlCents}|${Math.round(stake*100)}`;
+      }catch(e){ return "g:0"; }
+    };
+  }catch(e){}
+})();
+
+
+/* IAA LEGACY PNL HIDE CSS */
+(function(){
+  try{
+    const id = "iaa-hide-legacy-pnl-css";
+    if (document.getElementById(id)) return;
+    const st = document.createElement("style");
+    st.id = id;
+    st.textContent = `
+      #iaa-session-mini { display:none !important; }
+      #iaa-pnl-line { display:none !important; }
+    `;
+    (document.documentElement || document.head).appendChild(st);
+  }catch(e){}
+})();
+
+
 /* IAA EARLY INJECT BOOT (no inline, CSP-safe) */
 (function(){
   try{
@@ -2478,6 +2535,8 @@ window.__REPORT_FNAME__ = "${fname}";
       const startMoney = _fmtMoney(ctx.startBalanceCents);
       const stopMoney = _fmtMoney(ctx.stopBalanceCents);
       const netMoney = _fmtMoney(ctx.netCents);
+      const tradesNetCents = trades.reduce((s,t)=>s + (Number.isFinite(t.profitCents)?t.profitCents:0), 0);
+      const tradesNetMoney = _fmtMoney(tradesNetCents);
 
       return `<!doctype html>
 <html lang="bg">
@@ -2542,7 +2601,7 @@ window.__REPORT_FNAME__ = "${fname}";
       <div class="kpi" style="margin-top:10px;">
         <div class="pill"><span>START</span><b>${startMoney}</b></div>
         <div class="pill"><span>STOP/NOW</span><b>${stopMoney}</b></div>
-        <div class="pill"><span>RESULT</span><b>${netMoney}</b></div>
+        <div class="pill"><span>RESULT</span><b>${tradesNetMoney}</b></div>
         <div class="pill"><span>СДЕЛКИ</span><b>${trades.length}</b></div>
         <div class="pill"><span class="win">ПЕЧАЛБИ</span><b class="win">${wins}</b></div>
         <div class="pill"><span class="loss">ЗАГУБИ</span><b class="loss">${losses}</b></div>
@@ -2592,7 +2651,7 @@ window.__REPORT_FNAME__ = "${fname}";
         }).join('')}
       </tbody>
     </table>
-    <div class="muted" style="margin-top:8px;">Сделки: ${trades.length} | Winrate: ${winrate.toFixed(1)}% | Result(balance): ${netMoney}</div>
+    <div class="muted" style="margin-top:8px;">Сделки: ${trades.length} | Winrate: ${winrate.toFixed(1)}% | Result(trades): ${tradesNetMoney} | Balance: ${netMoney}</div>
   </div>
 
   <h2>WR ПО СТРАТЕГИЯ И РЕЖИМ</h2>
@@ -3248,9 +3307,9 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
   const tfLabel = (trade.tfLabel || trade.tf || trade.expiryLabel || trade.expiry || '').toString().toUpperCase();
 
   if (out === 'ПЕЧАЛБИ') {
-    logConsoleLine(`🎉 <span style="font-weight:900;color:#22c55e;">СДЕЛКА !!! ПЕЧАЛБА</span> <span style="color:#86efac;font-weight:800;">(${money(pc)})</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
+    if (!S.running) { /* bot not running */ } else if (S.wsDealPnLEnabled) { /* skip legacy */ } else logConsoleLine(`🎉 <span style="font-weight:900;color:#22c55e;">СДЕЛКА !!! ПЕЧАЛБА</span> <span style="color:#86efac;font-weight:800;">(${money(pc)})</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
   } else if (out === 'ЗАГУБИ') {
-    logConsoleLine(`🛑 <span style="font-weight:900;color:#ef4444;">СДЕЛКА !!! ЗАГУБА</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
+    if (!S.running) { } else if (S.wsDealPnLEnabled) { } else logConsoleLine(`🛑 <span style="font-weight:900;color:#ef4444;">СДЕЛКА !!! ЗАГУБА</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
   } else if (out === 'EVEN') {
     logConsoleLine(`➖ <span style="font-weight:900;color:#eab308;">СДЕЛКА !!! НЕУТРАЛНА</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
   } else {
@@ -3274,6 +3333,10 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
     function finalizeTradeOutcome(trade, outcome, profitCents, settledAt = Date.now(), method = '') {
       if (!trade || !outcome) return;
       if (trade.outcomeChecked) return;
+      // When WS deal outcomes are enabled, treat WS as the single source of truth to avoid DOM/balance mismatches.
+      if (S.wsDealPnLEnabled && method !== 'WS' && method !== 'WS_FALLBACK') {
+        return;
+      }
       trade.outcomeChecked = true;
       trade.outcome = outcome;
       trade.settledAt = settledAt;
@@ -11313,7 +11376,21 @@ const closeSettingsPanel = () => {
       if (toggleBtn) {
         toggleBtn.addEventListener('click', () => {
           S.running = !S.running;
-          toggleBtn.classList.toggle('stop', S.running);
+          
+          /* IAA_SESSION_RESET_ON_START */
+          try{
+            S.sessionStats = S.sessionStats || { pnl:0, w:0, l:0, t:0, ws:0, deals:0 };
+            if (S.running){
+              // session begins when bot STARTs
+              S.sessionStartMs = Date.now();
+              S.sessionStats.pnl = 0; S.sessionStats.w = 0; S.sessionStats.l = 0; S.sessionStats.t = 0;
+              S.wsDealSeen = Object.create(null);
+        S.wsDealSeenId = Object.create(null);
+        S.wsDealCloseSigSeen = Object.create(null); // id->1
+              S.wsDealSeenCount = 0;
+            }
+          }catch(e){}
+toggleBtn.classList.toggle('stop', S.running);
           toggleBtn.classList.toggle('is-running', S.running);
           toggleBtn.classList.toggle('is-stopped', !S.running);
           const dotEl = $id('iaa-dot');
@@ -12507,7 +12584,632 @@ if (SNIPER_VOLUME_THRESHOLD) {
     bot.lastPriceAt = now;
     bot.feedState = "READY";
     bot.lastFeedSource = "ws";
-    try { bot.wsPacketsSeen = (bot.wsPacketsSeen||0) + 1; } catch {}
+    try { bot.wsPacketsSeen = (bot.wsPacketsSeen||0) + 1;
+    try{ bot.sessionStats = bot.sessionStats || {pnl:0,w:0,l:0,t:0,ws:0}; bot.sessionStats.ws = (bot.sessionStats.ws||0)+1; }catch(e){} } catch {}
   }, false);
+})();
+
+
+// sessionStats
+
+
+/* IAA PNL LINE (separate element) */
+(function(){
+  if (window.__iaaPnlLineInstalled) return;
+  window.__iaaPnlLineInstalled = true;
+
+  function n(x){ x = Number(x); return Number.isFinite(x) ? x : 0; }
+  function fmtMoney(x){ return (Math.round(n(x)*100)/100).toFixed(2); }
+  function wr(w,t){ return t>0 ? Math.round((w/t)*1000)/10 : 0; }
+
+  function ensure(){
+    const feed = document.getElementById("iaa-feed-cloud");
+    if (!feed) return null;
+    let pnl = document.getElementById("iaa-pnl-cloud");
+    if (pnl) return pnl;
+
+    pnl = document.createElement("div");
+    pnl.id = "iaa-pnl-cloud";
+    pnl.style.marginTop = "6px";
+    pnl.style.fontSize = "12px";
+    pnl.style.lineHeight = "1.2";
+    pnl.style.userSelect = "text";
+    feed.insertAdjacentElement("afterend", pnl);
+    return pnl;
+  }
+
+  setInterval(() => {
+    const S = window.InfinityBot && window.InfinityBot.S ? window.InfinityBot.S : null;
+    if (!S) return;
+
+    // gate WS PnL until START
+    if (!S.wsDealPnLEnabled) return;
+    const el = ensure();
+    if (!el) return;
+
+    S.sessionStats = S.sessionStats || { pnl:0, w:0, l:0, t:0, ws:0 };
+
+    const pnl = n(S.sessionStats.pnl);
+    const w = n(S.sessionStats.w);
+    const l = n(S.sessionStats.l);
+    const t = n(S.sessionStats.t);
+    const ws = n(S.wsPacketsSeen || S.sessionStats.ws || 0);
+    const wrp = wr(w,t);
+
+    const pnlColor = pnl >= 0 ? "#22c55e" : "#ef4444";
+    const wrColor = "#60a5fa";
+    const tColor = "#eab308";
+    const wsColor = "#9ca3af";
+
+    el.innerHTML =
+      `<span style="color:${pnlColor};font-weight:800;">PnL ${(pnl>=0?"+":"-")}$${fmtMoney(Math.abs(pnl))}</span>` +
+      ` • <span style="color:#22c55e;font-weight:800;">W ${w}</span>` +
+      ` • <span style="color:#ef4444;font-weight:800;">L ${l}</span>` +
+      ` • <span style="color:${wrColor};font-weight:800;">WR ${wrp}%</span>` +
+      ` • <span style="color:${tColor};font-weight:800;">T ${t}</span>` +
+      ` • <span style="color:${wsColor};font-weight:800;">WS ${ws}</span>`;
+  }, 800);
+})();
+
+
+
+
+/* IAA PNL KILL OBSERVER */
+(function(){
+  try{
+    if (window.__iaaPnlKillObserver) return;
+    window.__iaaPnlKillObserver = true;
+
+    const kill = ()=>{
+      const a = document.getElementById("iaa-session-mini");
+      if (a) a.remove();
+      const b = document.getElementById("iaa-pnl-line");
+      if (b) b.remove();
+    };
+    kill();
+
+    const mo = new MutationObserver(()=>kill());
+    mo.observe(document.documentElement || document.body, { childList:true, subtree:true });
+  }catch(e){}
+})();
+
+
+
+
+/* IAA PO DEAL BRIDGE v3 (WS, session-gated, deduped) */
+(function(){
+  if (window.__iaaDealBridgeInstalledV3) return;
+  window.__iaaDealBridgeInstalledV3 = true;
+
+  function fmtMoney(x){
+    const n = Number(x);
+    if (!Number.isFinite(n)) return "0.00";
+    return (Math.round(n*100)/100).toFixed(2);
+  }
+
+  function logOutcome(isWin, pnl, tf, tradeId){
+    const sign = pnl >= 0 ? "+" : "-";
+    const abs = Math.abs(pnl);
+    const emoji = isWin ? "✅" : "❌";
+    const word = isWin ? "ПЕЧАЛБА !!!" : "ЗАГУБА";
+    const wordStyle = isWin ? "color:#22c55e;font-weight:900" : "color:#ef4444;font-weight:900";
+    const metaStyle = "color:#9ca3af";
+    const id = tradeId ? String(tradeId) : "";
+    try{
+      console.log(
+        `%c${emoji} ${word}%c  ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${id ? " | #"+id : ""}`,
+        wordStyle,
+        metaStyle
+      );
+    }catch(e){}
+  }
+
+  function toArray(payload){
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+    if (payload.deals && Array.isArray(payload.deals)) return payload.deals;
+    if (payload.data && Array.isArray(payload.data)) return payload.data;
+    if (payload.items && Array.isArray(payload.items)) return payload.items;
+    return [payload];
+  }
+
+  function extractTf(d){
+    const v = d.period ?? d.tf ?? d.timeframe ?? d.duration ?? d.expiry ?? d.exp ?? "";
+    if (v === 60) return "1m";
+    if (v === 180) return "3m";
+    if (v === 300) return "5m";
+    if (v === 900) return "15m";
+    return String(v || "");
+  }
+
+  // Prefer PO's profit field (net profit). If only payout+stake present, use payout-stake.
+  function extractNetPnl(d){
+    const profit = Number(d.profit ?? d.pnl ?? d.profit_amount ?? d.win_amount ?? d.winAmount ?? d.result_amount ?? d.resultAmount);
+    if (Number.isFinite(profit)) return profit;
+
+    const stake  = Number(d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount);
+    const payout = Number(d.payout ?? d.payout_amount ?? d.payoutAmount ?? d.close_amount ?? d.closeAmount);
+    if (Number.isFinite(payout) && Number.isFinite(stake)) return payout - stake;
+
+    // flags fallback
+    const winFlag = (d.isWin === true) || (d.win === 1) || (String(d.result||"").toLowerCase()==="win");
+    const loseFlag = (d.isWin === false) || (d.win === 0) || (String(d.result||"").toLowerCase()==="lose");
+    if (winFlag && Number.isFinite(stake)) return stake;
+    if (loseFlag && Number.isFinite(stake)) return -stake;
+
+    return null;
+  }
+
+  function getCloseMs(d){
+    const v = d.closeTimestamp ?? d.closeTime ?? d.close_time ?? d.closedAt ?? d.finishedAt ?? d.ts ?? d.timestamp ?? null;
+    const n = Number(v);
+    // normalize seconds to ms if needed
+    if (!Number.isFinite(n)) return null;
+    if (n > 0 && n < 2e10) return n; // ms
+    if (n > 0 && n < 2e10/1000) return n*1000; // sec -> ms (rare)
+    return n;
+  }
+
+  function dealKey(d, pnl){
+    const id = d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? "";
+    if (id) return "id:" + String(id);
+
+    const asset = d.asset ?? d.symbol ?? d.pair ?? "";
+    const closeMs = getCloseMs(d) || 0;
+    const openMs = Number(d.openTimestamp ?? d.openTime ?? d.open_time ?? d.openedAt ?? d.createdAt ?? 0) || 0;
+    const stake  = Number(d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount);
+    const pnlCents = Number.isFinite(pnl) ? Math.round(pnl*100) : 0;
+    const stakeCents = Number.isFinite(stake) ? Math.round(stake*100) : 0;
+    const dir = d.direction ?? d.side ?? d.action ?? d.type ?? "";
+
+    return `k:${asset}|${openMs}|${closeMsEff}|${pnlCents}|${stakeCents}|${dir}`;
+  }
+
+  function getS(){
+    return (window.InfinityBot && window.InfinityBot.S) ? window.InfinityBot.S : null;
+  }
+
+  
+  function ensureSessionReportOn(S){
+    if (!S.sessionReport){
+      S.sessionReport = {
+        active:false,
+        startedAtMs:0,
+        stoppedAtMs:0,
+        startBalanceCents:null,
+        stopBalanceCents:null,
+        logs:[],
+        issues:Object.create(null),
+        trades:[],
+        tradeIds:Object.create(null),
+        lossReports:[],
+        strategies:Object.create(null),
+        killer:{ enabledAtStart:false, pass:0, wait:0, reasons:Object.create(null) }
+      };
+    }
+    return S.sessionReport;
+  }
+
+  function wsRecordTradeToSessionReport(S, deal, tf, outcomeStr, profitCents, settledAtMs){
+    try{
+      const sess = ensureSessionReportOn(S);
+      const now = Date.now();
+      if (!sess.active){
+        sess.active = true;
+        sess.startedAtMs = sess.startedAtMs || (S.sessionStartMs || now);
+        if (!Number.isFinite(sess.startBalanceCents)) sess.startBalanceCents = readBalanceCents();
+      }
+      const tradeId = deal && (deal.id ?? deal.deal_id ?? deal.dealId ?? deal.ticket ?? deal.order_id ?? deal.orderId ?? deal.uid);
+      const tradeIdStr = (tradeId!=null && tradeId!=="") ? String(tradeId) : null;
+      if (tradeIdStr){
+        if (sess.tradeIds && sess.tradeIds[tradeIdStr]) return;
+        if (sess.tradeIds) sess.tradeIds[tradeIdStr] = true;
+      }
+
+      const stake = Number(deal?.stake ?? deal?.amount ?? deal?.bet ?? deal?.invest ?? deal?.sum ?? deal?.open_amount ?? deal?.openAmount);
+      const stakeCents = Number.isFinite(stake) ? Math.round(stake*100) : null;
+
+      const dir = deal?.direction || deal?.side || deal?.cmd || deal?.command || '';
+      const entry = {
+        tradeId: tradeIdStr,
+        t: Number.isFinite(settledAtMs) ? settledAtMs : now,
+        time: new Date(Number.isFinite(settledAtMs) ? settledAtMs : now).toLocaleTimeString(),
+        asset: deal?.asset || deal?.symbol || deal?.pair || S.lastAssetLabel || '',
+        tf: tf || '',
+        direction: dir,
+        confidence: null,
+        mode: 'WS',
+        expiry: '',
+        strategyKey: null,
+        regime: null,
+        points: null,
+        maxPoints: null,
+        threshold: null,
+        breakdown: [],
+        payoutPercent: null,
+        expirySeconds: null,
+        dynamicMode: null,
+        dynamicSimWinrate: null,
+        dynamicSimSamples: null,
+        stakeCents: stakeCents,
+        stakeMultiplier: null,
+        scoreBreakdown: [],
+        hardStopsHit: [],
+        outcome: outcomeStr,
+        outcomeMethod: 'WS',
+        profitCents: Number.isFinite(profitCents) ? profitCents : null
+      };
+      sess.trades.push(entry);
+    }catch(e){}
+  }
+
+function ensureSessionDefaults(S){
+    if (!S.sessionStats) S.sessionStats = { pnl:0, w:0, l:0, t:0, ws:(S.wsPacketsSeen||0), deals:0 };
+    if (typeof S.wsDealPnLEnabled !== "boolean") S.wsDealPnLEnabled = false;
+    if (!S.wsDealSeen) S.wsDealSeen = Object.create(null);
+        S.wsDealSeenId = Object.create(null);
+        S.wsDealCloseSigSeen = Object.create(null);
+  }
+
+  // Reset on START click
+  (function(){
+    if (window.__iaaWsDealStartHookV3) return;
+    window.__iaaWsDealStartHookV3 = true;
+
+    document.addEventListener("click", function(ev){
+      const t = ev && ev.target;
+      if (!t) return;
+      const id = t.id || "";
+      const txt = (t.textContent || "").trim().toUpperCase();
+      if (id === "iaa-toggle" || txt === "START") {
+        const S = getS(); if (!S) return;
+        S.sessionStartMs = Date.now();
+        S.wsDealPnLEnabled = true;
+        S.wsDealSeen = Object.create(null);
+        S.wsDealSeenId = Object.create(null);
+        S.wsDealCloseSigSeen = Object.create(null);
+        S.wsDealSeenIdV17 = Object.create(null);
+        S.sessionStats = { pnl:0, w:0, l:0, t:0, ws:(S.wsPacketsSeen||0), deals:0 };
+      }
+    }, true);
+  })();
+
+  window.addEventListener("message", function(e){
+    const msg = e && e.data;
+    if (!msg || msg.__iaaType !== "IAA_PO_DEAL_EVENT") return;
+
+    const S = getS();
+    if (!S) return;
+    ensureSessionDefaults(S);
+    S.wsDealSeenIdV17 = S.wsDealSeenIdV17 || Object.create(null);
+
+    // gate until START
+    if (!S.wsDealPnLEnabled) return;
+
+    const ev = String(msg.event || "");
+    const evLower = ev.toLowerCase();
+    // accept all deal events; we filter by payload fields instead of event name
+    const arr = toArray(msg.payload);
+    for (const d of arr){
+      const pnl = extractNetPnl(d);
+      if (pnl == null) continue;
+
+      const closeMs = getCloseMs(d);
+      const closeMsEff = closeMs || Date.now();
+      if (!closeMs) { /* no close time in payload */ }
+      const now = Date.now();
+      if (closeMs) { if (closeMs < now - 24*60*60*1000 || closeMs > now + 60*1000) continue; }
+      if (S.sessionStartMs && closeMs && closeMs < S.sessionStartMs) continue;
+
+      const key = dealKey(d, pnl);
+
+      // DEDUPE v22 (kill x2 close notifications)
+      S.wsDealSeen = S.wsDealSeen || Object.create(null);
+      S.wsDealSeenId = S.wsDealSeenId || Object.create(null);
+      S.wsDealCloseSigSeen = S.wsDealCloseSigSeen || Object.create(null);
+
+      const _id = d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? "";
+      if (_id) {
+        if (S.wsDealSeenId[_id]) continue;
+        S.wsDealSeenId[_id] = true;
+      }
+
+      const stake = Number(d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount);
+      const stakeC = Number.isFinite(stake) ? Math.round(stake*100) : 0;
+      const pnlC = Number.isFinite(pnl) ? Math.round(pnl*100) : 0;
+      const asset = d.asset ?? d.symbol ?? d.pair ?? "";
+      const closeSig = `c:${asset}|${stakeC}|${pnlC}`;
+      const prevAt = Number(S.wsDealCloseSigSeen[closeSig] || 0);
+      if (prevAt && (now2 - prevAt) < 20000) continue; // 20s window kills duplicates
+      S.wsDealCloseSigSeen[closeSig] = now2;
+
+      if (S.wsDealSeen[key]) continue;
+      S.wsDealSeen[key] = true;
+
+      const tf = extractTf(d);
+      const tradeId = d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? "";
+      const isWin = pnl > 0;
+      const isLoss = pnl < 0;
+
+      S.sessionStats.pnl += pnl;
+      S.sessionStats.t += 1;
+      if (isWin) S.sessionStats.w += 1;
+      else if (isLoss) S.sessionStats.l += 1;
+
+      // Sync WS outcome into the existing session/report pipeline (single source of truth for HTML)
+      try{
+        const outcomeStr = isWin ? 'ПЕЧАЛБИ' : (isLoss ? 'ЗАГУБИ' : 'НЕУТРАЛНИ');
+        const profitCents = Math.round(Number(pnl) * 100);
+        const settledAt = closeMs || Date.now();
+
+        // Prefer matching to an active bot trade (keeps strategy/regime/confidence/etc. for HTML)
+        const activeTrade = (typeof findActiveTradeByWsDeal === 'function') ? findActiveTradeByWsDeal(d) : null;
+        if (activeTrade) {
+          finalizeTradeOutcome(activeTrade, outcomeStr, profitCents, settledAt, 'WS');
+          wsRecordTradeToSessionReport(S, d, tf, outcomeStr, profitCents, settledAt);
+        } else {
+          // Manual / unmatched trade fallback so HTML totals are never zero
+          wsRecordTradeToSessionReport(S, d, tf, outcomeStr, profitCents, settledAt);
+          const dir2 = (typeof wsCommandToDirection === 'function') ? wsCommandToDirection(d.command) : (d.direction || d.side || '');
+          const asset2 = (d.asset || d.symbol || d.pair || S.lastAssetLabel || '');
+          const stake = Number(d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount);
+          const stakeCents = Number.isFinite(stake) ? Math.round(stake*100) : null;
+          sessionRecordTrade({ asset: asset2, direction: dir2, tf: tf, timeframe: tf, startTime: settledAt, stakeCents, mode: 'MANUAL', outcomeMethod: 'WS_FALLBACK' }, outcomeStr, profitCents);
+        }
+      }catch(e){}
+
+      
+      // WS outcome history for HTML/export/debug
+      try{
+        S.wsOutcomeHistory = S.wsOutcomeHistory || [];
+        S.wsOutcomeHistory.push({ ts: Date.now(), id: tradeId ? String(tradeId) : "", tf: tf || "", pnl: pnl });
+        if (S.wsOutcomeHistory.length > 5000) S.wsOutcomeHistory.splice(0, S.wsOutcomeHistory.length - 5000);
+      }catch(e){}
+
+      // Console log (use bot logger if exists)
+      try{
+        const sign = pnl >= 0 ? "+" : "-";
+        const abs = Math.abs(pnl);
+        const icon = isWin ? "✅" : (isLoss ? "❌" : "⚪");
+        const word = isWin ? "ПЕЧАЛБА !!!" : (isLoss ? "ЗАГУБА" : "РАВНО");
+        const line = `${icon} ${word} ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${tradeId ? " | #"+tradeId : ""}`;
+        const logger = (window.InfinityBot && typeof window.InfinityBot.log === "function") ? window.InfinityBot.log
+                     : (window.InfinityBot && window.InfinityBot.api && typeof window.InfinityBot.api.log === "function") ? window.InfinityBot.api.log
+                     : null;
+        if (logger) logger(line);
+        else console.log(line);
+      }catch(e){}
+}
+  }, false);
+})();
+
+
+
+/* IAA PO DEAL PAYLOAD BRIDGE (binary JSON array) */
+(function(){
+  if (window.__iaaDealPayloadBridgeInstalled) return;
+  window.__iaaDealPayloadBridgeInstalled = true;
+
+  function fmtMoney(x){
+    const n = Number(x);
+    if (!Number.isFinite(n)) return "0.00";
+    return (Math.round(n*100)/100).toFixed(2);
+  }
+  function logOutcome(isWin, pnl, tf, tradeId){
+    const sign = pnl >= 0 ? "+" : "-";
+    const abs = Math.abs(pnl);
+    const emoji = isWin ? "✅" : "❌";
+    const word = isWin ? "ПЕЧАЛБА !!!" : "ЗАГУБА";
+    const wordStyle = isWin ? "color:#22c55e;font-weight:900" : "color:#ef4444;font-weight:900";
+    const metaStyle = "color:#9ca3af";
+    const id = tradeId ? String(tradeId) : "";
+    try{
+      console.log(`%c${emoji} ${word}%c  ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${id ? " | #"+id : ""}`, wordStyle, metaStyle);
+    }catch(e){}
+  }
+
+  function tfFromDeal(d){
+    const v = d.period ?? d.tf ?? d.timeframe ?? d.duration ?? d.expiry ?? d.exp ?? 60;
+    if (v === 60) return "1m";
+    if (v === 180) return "3m";
+    if (v === 300) return "5m";
+    if (v === 900) return "15m";
+    return String(v||"?");
+  }
+
+  window.addEventListener("message", function(e){
+    const msg = e && e.data;
+    if (!msg || msg.__iaaType !== "IAA_PO_DEAL_PAYLOAD") return;
+
+    const arr = msg.payload;
+    const S = window.InfinityBot && window.InfinityBot.S ? window.InfinityBot.S : null;
+    if (!S || !Array.isArray(arr)) return;
+
+    S.sessionStats = S.sessionStats || { pnl:0, w:0, l:0, t:0, ws:0, deals:0 };
+    S._dealSeen = S._dealSeen || Object.create(null);
+
+    for (const d of arr){
+      if (!d || typeof d !== "object") continue;
+      const id = d.id || d.deal_id || d.dealId || d.ticket || d.order_id || d.orderId;
+      if (!id) continue;
+
+      const closeTs = Number(d.closeTimestamp ?? d.closeTs ?? d.close_time ?? d.closeTime ?? 0);
+      if (!closeTs) continue; // only closed deals
+
+      const key = String(id);
+      if (S._dealSeen[key]) continue;
+      S._dealSeen[key] = 1;
+
+      const profit = Number(d.profit);
+      const amount = Number(d.amount);
+      if (!Number.isFinite(amount)) continue;
+
+      // PO convention: profit is payout amount (e.g. 0.78 on stake 1) or profit? In HAR it's 0.78 with amount 1 => win pnl +0.78; lose profit 0 => pnl -amount.
+      let pnl;
+      if (Number.isFinite(profit) && profit > 0) pnl = profit;
+      else pnl = -amount;
+
+      const isWin = pnl > 0;
+      const tf = tfFromDeal(d);
+
+      S.sessionStats.pnl += pnl;
+      S.sessionStats.t += 1;
+      if (isWin) S.sessionStats.w += 1; else S.sessionStats.l += 1;
+
+      logOutcome(isWin, pnl, tf, key);
+    }
+  }, false);
+})();
+
+
+/* IAA SUPPRESS LEGACY DEAL LOGS */
+(function(){
+  try{
+    if (window.__iaaSuppressLegacyDealLogs) return;
+    window.__iaaSuppressLegacyDealLogs = true;
+    const orig = console.log;
+    console.log = function(){
+      try{
+        const s = arguments && arguments[0];
+        if (typeof s === "string" && (s.includes("🎉 СДЕЛКА") || s.includes("🛑 СДЕЛКА"))) {
+          // legacy logs suppressed
+          return;
+        }
+      }catch(e){}
+      return orig.apply(console, arguments);
+    };
+  }catch(e){}
+})();
+
+
+
+
+/* IAA WS DEAL PNL v1 */
+(function(){
+  if (window.__iaaWsDealPnlInstalled) return;
+  window.__iaaWsDealPnlInstalled = true;
+
+  function num(x){ x = Number(x); return Number.isFinite(x) ? x : null; }
+  function fmtMoney(x){
+    const n = Number(x);
+    if (!Number.isFinite(n)) return "0.00";
+    return (Math.round(n*100)/100).toFixed(2);
+  }
+  function tfLabelFromPeriod(v){
+    const n = Number(v);
+    if (n === 60) return "1m";
+    if (n === 180) return "3m";
+    if (n === 300) return "5m";
+    if (n === 900) return "15m";
+    return v ? String(v) : "?";
+  }
+  function logOutcome(isWin, pnl, tf, tradeId){
+    const sign = pnl >= 0 ? "+" : "-";
+    const abs = Math.abs(pnl);
+    const emoji = isWin ? "✅" : "❌";
+    const word = isWin ? "ПЕЧАЛБА !!!" : "ЗАГУБА";
+    const wordStyle = isWin ? "color:#22c55e;font-weight:900" : "color:#ef4444;font-weight:900";
+    const metaStyle = "color:#9ca3af";
+    const id = tradeId ? String(tradeId) : "";
+    try{
+      console.log(`%c${emoji} ${word}%c  ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${id ? " | #"+id : ""}`, wordStyle, metaStyle);
+    }catch(e){}
+  }
+
+  function normalizeDeals(payload){
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+    if (payload.deals && Array.isArray(payload.deals)) return payload.deals;
+    if (payload.data && Array.isArray(payload.data)) return payload.data;
+    if (payload.items && Array.isArray(payload.items)) return payload.items;
+    return [payload];
+  }
+
+  function extractCloseMs(d){
+    const t = num(d.closeTimestamp ?? d.close_time ?? d.closeTime ?? d.closed_at ?? d.closedAt ?? d.finishTimestamp ?? d.finishedAt ?? d.endTimestamp ?? d.endTime);
+    if (t == null) return null;
+    // some are seconds, some ms
+    return t < 2e12 ? Math.floor(t*1000) : Math.floor(t);
+  }
+
+  function extractPnl(d){
+    // PO typically has profit: numeric (+ for win, -stake for loss)
+    const profit = num(d.profit ?? d.pnl ?? d.profit_amount ?? d.result_amount ?? d.resultAmount);
+    if (profit != null) return profit;
+
+    const stake = num(d.amount ?? d.stake ?? d.bet ?? d.invest ?? d.sum);
+    const payout = num(d.payout ?? d.payout_amount ?? d.close_amount ?? d.closeAmount);
+    if (stake != null && payout != null) return payout - stake;
+
+    // fallback flags
+    const winFlag = (d.isWin === true) || (d.win === 1) || (String(d.result||"").toLowerCase()==="win");
+    const loseFlag = (d.isWin === false) || (d.win === 0) || (String(d.result||"").toLowerCase()==="lose");
+    if (stake != null && winFlag) return stake;
+    if (stake != null && loseFlag) return -stake;
+
+    return null;
+  }
+
+  function handleDeals(payload){
+    const S = window.InfinityBot && window.InfinityBot.S ? window.InfinityBot.S : null;
+    if (!S || !S.running) return;
+
+    const startMs = Number(S.sessionStartMs || 0);
+    if (!startMs) return;
+
+    S.sessionStats = S.sessionStats || { pnl:0, w:0, l:0, t:0, ws:0, deals:0 };
+    S.wsDealSeen = S.wsDealSeen || Object.create(null);
+
+    const arr = normalizeDeals(payload);
+    for (const d of arr){
+      const id = d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? null;
+      const closeMs = extractCloseMs(d);
+      if (closeMs != null && closeMs < startMs) continue; // ignore history before START
+
+      // must look like a closed result: either close time exists or profit exists
+      const pnl = extractPnl(d);
+      if (pnl == null) continue;
+
+      const key = id != null ? String(id) : (closeMs != null ? "t:"+closeMs+":"+String(pnl) : null);
+      if (!key) continue;
+      S.wsDealSeen[key] = 1;
+      S.wsDealSeenCount = (S.wsDealSeenCount||0) + 1;
+
+      S.sessionStats.pnl += pnl;
+      S.sessionStats.t += 1;
+      if (pnl > 0) S.sessionStats.w += 1; else S.sessionStats.l += 1;
+
+      const tf = tfLabelFromPeriod(d.period ?? d.tf ?? d.timeframe ?? d.duration ?? "");
+      logOutcome(pnl > 0, pnl, tf, id);
+    }
+  }
+
+  window.addEventListener("message", function(e){
+    const d = e && e.data;
+    if (!d) return;
+    if (d.__iaaType === "IAA_PO_DEAL_EVENT" || d.__iaaType === "IAA_PO_DEAL_PAYLOAD") {
+      handleDeals(d.payload);
+    }
+  }, false);
+})();
+
+
+
+
+
+
+
+/* IAA REPORT DATA HOOK */
+(function(){
+  try{
+    if (window.__iaaReportDataHookInstalled) return;
+    window.__iaaReportDataHookInstalled = true;
+    setInterval(() => {
+      const S = (window.InfinityBot && window.InfinityBot.S) ? window.InfinityBot.S : null;
+      if (!S) return;
+      window.__IAA_SESSION_STATS__ = S.sessionStats || null;
+      window.__IAA_WS_OUTCOMES__ = S.wsOutcomeHistory || null;
+    }, 1000);
+  }catch(e){}
 })();
 
