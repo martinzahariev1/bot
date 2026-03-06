@@ -1,3 +1,57 @@
+
+/* IAA GLOBAL dealKey SAFETY */
+(function(){
+  try{
+    if (typeof window.dealKey === "function") return;
+    window.dealKey = function(d, pnl){
+      try{
+        const id = d && (d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? "");
+        if (id) return "id:" + String(id);
+        const asset = d && (d.asset ?? d.symbol ?? d.pair ?? "");
+        const closeTs = Number(d && (d.closeTimestamp ?? d.closeTime ?? d.close_time ?? d.closedAt ?? d.finishedAt ?? d.ts ?? d.timestamp) || 0) || 0;
+        const stake = Number(d && (d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount) || 0) || 0;
+        const pnlCents = Number.isFinite(Number(pnl)) ? Math.round(Number(pnl)*100) : 0;
+        return `g:${asset}|${closeTs}|${pnlCents}|${Math.round(stake*100)}`;
+      }catch(e){ return "g:0"; }
+    };
+  }catch(e){}
+})();
+
+
+/* IAA LEGACY PNL HIDE CSS */
+(function(){
+  try{
+    const id = "iaa-hide-legacy-pnl-css";
+    if (document.getElementById(id)) return;
+    const st = document.createElement("style");
+    st.id = id;
+    st.textContent = `
+      #iaa-session-mini { display:none !important; }
+      #iaa-pnl-line { display:none !important; }
+    `;
+    (document.documentElement || document.head).appendChild(st);
+  }catch(e){}
+})();
+
+
+/* IAA EARLY INJECT BOOT (no inline, CSP-safe) */
+(function(){
+  try{
+    if (window.__iaaEarlyInjectBoot) return;
+    window.__iaaEarlyInjectBoot = true;
+
+    // Inject inject.js into MAIN world ASAP
+    const injectUrl = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("inject.js") : null;
+    if (injectUrl) {
+      const s = document.createElement("script");
+      s.src = injectUrl;
+      s.async = false;
+      s.type = "text/javascript";
+      (document.documentElement || document.head).prepend(s);
+    }
+  }catch(e){}
+})();
+
 (() => {
   'use strict';
 
@@ -99,8 +153,6 @@
   const SUPPORTING_FILTERS_ENABLED_KEY = 'IAA_SUPPORTING_FILTERS_ENABLED';
   const CHOP_V2_ENABLED_KEY = 'IAA_CHOP_V2_ENABLED';
   const CHOP_V2_STRENGTH_KEY = 'IAA_CHOP_V2_STRENGTH';
-  const CHOP_V3_HARD_STOP_KEY = 'IAA_CHOP_V3_HARD_STOP';
-
   const KILLER_DYNAMIC_COLLAPSED_KEY = 'IAA_KILLER_DYNAMIC_COLLAPSED';
   const DYNAMIC_CORE_COLLAPSED_KEY = 'IAA_DYNAMIC_CORE_COLLAPSED';
   const DYNAMIC_STAKE_COLLAPSED_KEY = 'IAA_DYNAMIC_STAKE_COLLAPSED';
@@ -154,11 +206,6 @@
   const FILTER_FLIPDELAY_SEC_KEY = 'IAA_FILTER_FLIPDELAY_SEC';
   const FILTER_IMPULSECAP_ENABLED_KEY = 'IAA_FILTER_IMPULSECAP_ENABLED';
   const FILTER_IMPULSECAP_MAX_KEY = 'IAA_FILTER_IMPULSECAP_MAX';
-  const FILTER_TRIO_CSEA_ENABLED_KEY = 'IAA_FILTER_TRIO_CSEA_ENABLED';
-  const DEAD_MARKET_FILTER_ENABLED_KEY = 'IAA_DEAD_MARKET_FILTER_ENABLED';
-  const DEAD_MARKET_MIN_MOVE_KEY = 'IAA_DEAD_MARKET_MIN_MOVE';
-  const EARLY_LATENCY_GATE_MS_KEY = 'IAA_EARLY_LATENCY_GATE_MS';
-
 
 
   const RANGE_OSC_PENALTY_ENABLED_KEY = 'IAA_RANGE_OSC_PENALTY_ENABLED';
@@ -1520,7 +1567,6 @@
       supportingFiltersEnabled: true,
       chopV2Enabled: true,
       chopV2StrengthPct: 50,
-      chopV3HardStop: false,
       biasPanelOpen: false,
       stabilityPanelOpen: false,
       maxTradeAmountCents: 15000,
@@ -1652,8 +1698,6 @@
       sniperEngineCollapsed: false,
       sniperRiskCollapsed: false,
       sniperNewFiltersCollapsed: true,
-      deadMarketPanelOpen: false,
-      chopV3PanelOpen: false,
       sniperSettingsTab: 'basic',
       debugTab: 'status',
       debugEnabled: false,
@@ -3239,9 +3283,9 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
   const tfLabel = (trade.tfLabel || trade.tf || trade.expiryLabel || trade.expiry || '').toString().toUpperCase();
 
   if (out === 'ПЕЧАЛБИ') {
-    logConsoleLine(`🎉 <span style="font-weight:900;color:#22c55e;">СДЕЛКА !!! ПЕЧАЛБА</span> <span style="color:#86efac;font-weight:800;">(${money(pc)})</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
+    if (!S.running) { /* bot not running */ } else if (S.wsDealPnLEnabled) { /* skip legacy */ } else logConsoleLine(`🎉 <span style="font-weight:900;color:#22c55e;">СДЕЛКА !!! ПЕЧАЛБА</span> <span style="color:#86efac;font-weight:800;">(${money(pc)})</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
   } else if (out === 'ЗАГУБИ') {
-    logConsoleLine(`🛑 <span style="font-weight:900;color:#ef4444;">СДЕЛКА !!! ЗАГУБА</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
+    if (!S.running) { } else if (S.wsDealPnLEnabled) { } else logConsoleLine(`🛑 <span style="font-weight:900;color:#ef4444;">СДЕЛКА !!! ЗАГУБА</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
   } else if (out === 'EVEN') {
     logConsoleLine(`➖ <span style="font-weight:900;color:#eab308;">СДЕЛКА !!! НЕУТРАЛНА</span> <span style="color:#a5b4fc;font-weight:700;">[${tfLabel}]</span>`);
   } else {
@@ -6748,67 +6792,6 @@ function getRecentPrices(count) {
       return ((close - low) / (high - low)) * 100;
     }
 
-    function getRecentPricesForTf(tfMs, mult = 6) {
-      const now = Date.now();
-      const winMs = Math.max(5_000, Math.min(300_000, Number(tfMs || 60_000) * Number(mult || 6)));
-      const hist = Array.isArray(S.priceHistory) ? S.priceHistory : [];
-      const out = [];
-      for (let i = hist.length - 1; i >= 0; i -= 1) {
-        const t = hist[i];
-        const ts = Number(t && t.timestamp);
-        if (!Number.isFinite(ts)) continue;
-        if (now - ts > winMs) break;
-        const px = Number(t && t.price);
-        if (Number.isFinite(px)) out.push(px);
-      }
-      out.reverse();
-      return out;
-    }
-
-    function calcCustomSupertrendSignal(tfMs) {
-      const prices = getRecentPricesForTf(tfMs, 6);
-      if (prices.length < 30) return { direction: null, strength: 0 };
-      const ema10 = calcEma(prices, 10);
-      const ema21 = calcEma(prices, 21);
-      const last = prices[prices.length - 1];
-      if (!Number.isFinite(ema10) || !Number.isFinite(ema21) || !Number.isFinite(last) || last <= 0) return { direction: null, strength: 0 };
-      const dir = ema10 > ema21 ? 'BUY' : (ema10 < ema21 ? 'SELL' : null);
-      const strength = Math.abs(ema10 - ema21) / last;
-      return { direction: dir, strength };
-    }
-
-    function calcEmaAlignmentSignal(tfMs) {
-      const prices = getRecentPricesForTf(tfMs, 10);
-      if (prices.length < 60) return { aligned: false, direction: null };
-      const ema9 = calcEma(prices, 9);
-      const ema21 = calcEma(prices, 21);
-      const ema50 = calcEma(prices, 50);
-      if (!Number.isFinite(ema9) || !Number.isFinite(ema21) || !Number.isFinite(ema50)) return { aligned: false, direction: null };
-      if (ema9 > ema21 && ema21 > ema50) return { aligned: true, direction: 'BUY' };
-      if (ema9 < ema21 && ema21 < ema50) return { aligned: true, direction: 'SELL' };
-      return { aligned: false, direction: null };
-    }
-
-    function calcStochasticExtremeSignal(tfMs, dir) {
-      const prices = getRecentPricesForTf(tfMs, 6);
-      if (prices.length < 20) return { state: 'na' };
-      const k = calcStochastic(prices, 14);
-      if (!Number.isFinite(k)) return { state: 'na' };
-      if (dir === 'BUY') {
-        if (k <= 20) return { state: 'good' };
-        if (k >= 80) return { state: 'bad' };
-        return { state: 'neutral' };
-      }
-      if (dir === 'SELL') {
-        if (k >= 80) return { state: 'good' };
-        if (k <= 20) return { state: 'bad' };
-        return { state: 'neutral' };
-      }
-      return { state: 'neutral' };
-    }
-
-
-
     function calcSharpeScore(windowMs) {
       const endTs = Date.now();
       const startTs = endTs - windowMs;
@@ -7026,22 +7009,6 @@ if (!weights.length) return 0;
       const stoSell = stoch?.direction === 'SELL';
       const stoOk = dir === 'BUY' ? stoBuy : stoSell;
       checks.push({ key: 'STO', ok: stoOk, points: stoOk ? 1 : 0, buy: stoBuy, sell: stoSell });
-
-      if (S.filterTrioCseaEnabled) {
-        const supertrend = calcCustomSupertrendSignal(SNIPER_TF_MS[tf]);
-        let csPoints = 0;
-        if (supertrend.direction === dir) csPoints = supertrend.strength >= 0.2 ? 1 : 0;
-        else if (supertrend.direction && supertrend.direction !== dir) csPoints = -1;
-        checks.push({ key: 'CS', ok: csPoints >= 0, points: csPoints, buy: csPoints >= 0, sell: csPoints >= 0 });
-
-        const emaAlign = calcEmaAlignmentSignal(SNIPER_TF_MS[tf]);
-        const eaPoints = !emaAlign.aligned ? 0 : (emaAlign.direction === dir ? 1 : -1);
-        checks.push({ key: 'EA', ok: eaPoints >= 0, points: eaPoints, buy: eaPoints >= 0, sell: eaPoints >= 0 });
-
-        const stochExtreme = calcStochasticExtremeSignal(SNIPER_TF_MS[tf], dir);
-        const sePoints = stochExtreme.state === 'good' ? 1 : (stochExtreme.state === 'bad' ? -1 : 0);
-        checks.push({ key: 'SE', ok: sePoints >= 0, points: sePoints, buy: sePoints >= 0, sell: sePoints >= 0 });
-      }
 
       const volOk = !!decision.volumeOk;
       checks.push({ key: 'VOL', ok: volOk, points: volOk ? 1 : 0, buy: volOk, sell: volOk });
@@ -8441,50 +8408,6 @@ const readySignals = Object.keys(tfStatus)
         }
       }
 
-
-      // OTC dead market velocity filter
-      if (S.deadMarketFilterEnabled && /OTC/i.test(assetLabel || '')) {
-        const nowTs = Date.now();
-        const windowMs = 10000;
-        const ticks = (S.priceHistory || []).filter((p) => p && Number.isFinite(p.timestamp) && nowTs - p.timestamp <= windowMs);
-        if (ticks.length >= 5) {
-          let high = -Infinity;
-          let low = Infinity;
-          for (const t of ticks) {
-            const px = Number(t.price);
-            if (!Number.isFinite(px)) continue;
-            if (px > high) high = px;
-            if (px < low) low = px;
-          }
-          const move = Number.isFinite(high) && Number.isFinite(low) ? (high - low) : 0;
-          const minMove = Math.max(0, Number(S.deadMarketMinMove || 0.00010));
-          if (move < minMove) {
-            setSkipReason('dead_market_velocity');
-            bumpFilterDiagnostic('deadMarketVelocity');
-            continue;
-          }
-        }
-      }
-
-      // Early latency gate by remaining entry window
-      if (S.entryWindowTfEnabled && Number.isFinite(S.earlyLatencyGateMs) && S.earlyLatencyGateMs > 0) {
-        const remainMs = ((Number(decision.entryWindowSec || 0) - Number(decision.timeInCandle || 0)) * 1000);
-        if (Number.isFinite(remainMs) && remainMs > 0 && remainMs < Number(S.earlyLatencyGateMs || 1500)) {
-          setSkipReason('early_latency_gate');
-          bumpFilterDiagnostic('earlyLatencyGate');
-          continue;
-        }
-      }
-
-
-      // Chop V3 hard stop
-      if (S.chopV3HardStop && regimeState === 'chop') {
-        setSkipReason('chop_hard_stop');
-        bumpFilterDiagnostic('chopHardStop');
-        continue;
-      }
-
-
       // Impulse Entry Cap: per TF + direction per candle (1m/3m/5m)
       if (S.impulseCapEnabled) {
         const tf = decision.tfKey || decision.timeframe;
@@ -9596,16 +9519,7 @@ const ok = await executeTradeOrder(signal);
                                     <div class="iaa-field-row" title="Минимална увереност за near-miss при режим толеранс."><span class="iaa-field-label">Праг толеранс</span><input type="number" id="iaa-tolerance-confidence" min="0.60" max="0.95" step="0.01"></div>
                                   </div>
                                 </div>
-                
-                                <div id="iaa-deadmarket-body">
-                                  <div class="iaa-field-row" title="Филтри за избягване на мъртъв пазар и късни входове."><span class="iaa-field-label" style="color:${UI_WARM_RED};">Филтри Мъртъв пазар</span><button id="iaa-deadmarket-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
-                                  <div id="iaa-deadmarket-panel" style="display:none;">
-                                    <div class="iaa-field-row iaa-field-toggle" title="Включва проверка за мъртъв пазар (dead market) по движение на цената в последните секунди."><span class="iaa-field-label">Velocity филтър</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-deadmarket-enabled"></label></div>
-                                    <div class="iaa-field-row" title="Минимално движение на цената за последния прозорец."><span class="iaa-field-label">Мин. движение</span><input type="number" id="iaa-deadmarket-minmove" min="0.00001" max="0.05000" step="0.00001" value="0.00010"></div>
-                                    <div class="iaa-field-row" title="Минимално оставащо време до края на прозореца за вход."><span class="iaa-field-label">Мин. latency budget (ms)</span><input type="number" id="iaa-early-latency-ms" min="200" max="5000" step="50" value="1500"></div>
-                                  </div>
-                                </div>
-<div id="iaa-newfilters-body" style="${S.sniperNewFiltersCollapsed ? 'display:none;' : ''}">
+                <div id="iaa-newfilters-body" style="${S.sniperNewFiltersCollapsed ? 'display:none;' : ''}">
 
 
         <div class="iaa-field-row iaa-inline-newfilter" title="Минимална разлика между BUY и SELL увереност (в процентни пункта), за да се филтрира шум.">
@@ -9644,11 +9558,7 @@ const ok = await executeTradeOrder(signal);
 
         </div>
 
-                <div class="iaa-field-row"
-        <div class="iaa-field-row" style="margin-top:6px;" title="Три нови филтъра: Custom Supertrend, EMA Alignment, Stochastic Extreme.">
-          <label class="iaa-checkbox iaa-new-setting" style="color:#fff6bf;font-weight:700;"><input type="checkbox" id="iaa-filter-trio-csea-enabled"> НОВИ ФИЛТРИ (CS + EA + SE)</label>
-        </div>
- title="Лимит за максимална загуба за сесия.">
+                <div class="iaa-field-row" title="Лимит за максимална загуба за сесия.">
                   <span class="iaa-field-label">Стоп при загуба (€)</span>
                   <input type="number" id="iaa-sniper-max-session-loss" min="0" step="1" value="0">
                 </div>
@@ -9671,18 +9581,14 @@ const ok = await executeTradeOrder(signal);
 
                 
                 <label class="iaa-checkbox"><input type="checkbox" id="iaa-candle-pattern-enabled"> Candlestick Pattern On/Off</label>
-                
-                <div class="iaa-field-row" title="Настройки за Chop V3 филтър."><span class="iaa-field-label" style="color:${UI_WARM_RED};">Chop V3.</span><button id="iaa-chopv3-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
-                <div id="iaa-chopv3-panel" style="display:none;">
-                  <div class="iaa-field-row iaa-field-toggle iaa-max-row" title="Penalty only: при chop се прилага наказание, но не е hard stop.">
-                    <span class="iaa-field-label">Chop on/off</span>
-                    <label class="iaa-checkbox"><input type="checkbox" id="iaa-chop-v2-enabled"></label>
-                    <span class="iaa-mini-label">Сила</span>
-                    <input type="number" id="iaa-chop-v2-strength" min="1" max="100" step="1" value="50">
-                  </div>
-                  <div class="iaa-field-row iaa-field-toggle" title="Когато е ON и пазарът е chop, ботът блокира входа (hard stop)."><span class="iaa-field-label">Hard Stop в Chop режим</span><label class="iaa-checkbox"><input type="checkbox" id="iaa-chop-v3-hardstop"></label></div>
+                <div class="iaa-field-row iaa-field-toggle" title="Penalty only: при chop се прилага наказание, но не е hard stop.">
+                  <span class="iaa-field-label">Chop v2 (анти-chop penalty)</span>
+                  <label class="iaa-checkbox"><input type="checkbox" id="iaa-chop-v2-enabled"></label>
                 </div>
-
+                <div class="iaa-field-row" title="Сила на наказанието при chop. 1 = най-слабо, 50 = средно, 100 = най-силно.">
+                  <span class="iaa-field-label">Сила Chop v2 (1–100)</span>
+                  <input type="number" id="iaa-chop-v2-strength" min="1" max="100" step="1" value="50">
+                </div>
                 <div class="iaa-field-row iaa-field-toggle" title="Ако последната свещ е срещу посоката на входа, сигналът се блокира.">
                     <span class="iaa-field-label">Свещ срещу входа = твърд стоп</span>
                     <label class="iaa-checkbox"><input type="checkbox" id="iaa-killer-candle-hardstop"></label>
@@ -10576,15 +10482,6 @@ setTimeout(() => {
     S.impulseCapMaxPerCandle = clamp(parseNumberFlexible(await storage.get(FILTER_IMPULSECAP_MAX_KEY, 2)) || 2, 1, 5);
 
 
-    S.filterTrioCseaEnabled = !!(await storage.get(FILTER_TRIO_CSEA_ENABLED_KEY, false));
-    S.deadMarketFilterEnabled = !!(await storage.get(DEAD_MARKET_FILTER_ENABLED_KEY, false));
-    S.deadMarketMinMove = clamp(parseNumberFlexible(await storage.get(DEAD_MARKET_MIN_MOVE_KEY, 0.00010)) || 0.00010, 0.00001, 0.05000);
-    S.earlyLatencyGateMs = clamp(parseNumberFlexible(await storage.get(EARLY_LATENCY_GATE_MS_KEY, 1500)) || 1500, 200, 5000);
-
-    S.chopV3HardStop = !!(await storage.get(CHOP_V3_HARD_STOP_KEY, false));
-    S.sniperNoTradeInChop = !!S.chopV3HardStop;
-
-
     S.rangeOscPenaltyEnabled = !!(await storage.get(RANGE_OSC_PENALTY_ENABLED_KEY, true));
     S.rangeOscPenaltyPct = clamp(parseNumberFlexible(await storage.get(RANGE_OSC_PENALTY_PCT_KEY, 20)) || 20, 0, 50);
     // paint UI (if present)
@@ -10838,14 +10735,6 @@ setTimeout(() => {
       await storage.set(FILTER_IMPULSECAP_MAX_KEY, Number(S.impulseCapMaxPerCandle || 2));
 
 
-      await storage.set(FILTER_TRIO_CSEA_ENABLED_KEY, !!S.filterTrioCseaEnabled);
-      await storage.set(DEAD_MARKET_FILTER_ENABLED_KEY, !!S.deadMarketFilterEnabled);
-      await storage.set(DEAD_MARKET_MIN_MOVE_KEY, Number(S.deadMarketMinMove || 0.00010));
-      await storage.set(EARLY_LATENCY_GATE_MS_KEY, Number(S.earlyLatencyGateMs || 1500));
-
-      await storage.set(CHOP_V3_HARD_STOP_KEY, !!S.chopV3HardStop);
-
-
 
       await storage.set(RANGE_OSC_PENALTY_ENABLED_KEY, !!S.rangeOscPenaltyEnabled);
       await storage.set(RANGE_OSC_PENALTY_PCT_KEY, Number(S.rangeOscPenaltyPct || 0));
@@ -11089,18 +10978,6 @@ setTimeout(() => {
       const supportingFiltersEnabledSettings = $id('iaa-supporting-filters-enabled');
       const chopV2EnabledSettings = $id('iaa-chop-v2-enabled');
       const chopV2StrengthSettings = $id('iaa-chop-v2-strength');
-      const chopV3HardStopSettings = $id('iaa-chop-v3-hardstop');
-      const chopV3ToggleBtn = $id('iaa-chopv3-toggle');
-      const chopV3Panel = $id('iaa-chopv3-panel');
-
-      const deadMarketToggleBtn = $id('iaa-deadmarket-toggle');
-      const deadMarketPanel = $id('iaa-deadmarket-panel');
-      const deadMarketEnabledSettings = $id('iaa-deadmarket-enabled');
-      const deadMarketMinMoveSettings = $id('iaa-deadmarket-minmove');
-      const earlyLatencyMsSettings = $id('iaa-early-latency-ms');
-
-      const filterTrioCseaEnabledSettings = $id('iaa-filter-trio-csea-enabled');
-
       const biasEnabledSettings = $id('iaa-bias-enabled');
       const biasModeSettings = $id('iaa-bias-mode');
       const biasStrongThresholdSettings = $id('iaa-bias-strong-threshold');
@@ -11125,14 +11002,6 @@ setTimeout(() => {
       if (supportingFiltersEnabledSettings) supportingFiltersEnabledSettings.checked = !!S.supportingFiltersEnabled;
       if (chopV2EnabledSettings) chopV2EnabledSettings.checked = !!S.chopV2Enabled;
       if (chopV2StrengthSettings) chopV2StrengthSettings.value = Math.max(1, Math.min(100, Math.round(S.chopV2StrengthPct || 50)));
-      if (chopV3HardStopSettings) chopV3HardStopSettings.checked = !!S.chopV3HardStop;
-      if (chopV3Panel && chopV3ToggleBtn) { chopV3Panel.style.display = S.chopV3PanelOpen ? 'block' : 'none'; chopV3ToggleBtn.textContent = S.chopV3PanelOpen ? '▾' : '▸'; }
-      if (deadMarketPanel && deadMarketToggleBtn) { deadMarketPanel.style.display = S.deadMarketPanelOpen ? 'block' : 'none'; deadMarketToggleBtn.textContent = S.deadMarketPanelOpen ? '▾' : '▸'; }
-      if (deadMarketEnabledSettings) deadMarketEnabledSettings.checked = !!S.deadMarketFilterEnabled;
-      if (deadMarketMinMoveSettings) deadMarketMinMoveSettings.value = String(S.deadMarketMinMove || 0.00010);
-      if (earlyLatencyMsSettings) earlyLatencyMsSettings.value = String(S.earlyLatencyGateMs || 1500);
-      if (filterTrioCseaEnabledSettings) filterTrioCseaEnabledSettings.checked = !!S.filterTrioCseaEnabled;
-
       if (biasEnabledSettings) biasEnabledSettings.checked = !!S.biasEnabled;
       if (biasModeSettings) biasModeSettings.value = ['points','hybrid'].includes(S.biasMode) ? S.biasMode : 'points';
       if (biasStrongThresholdSettings) biasStrongThresholdSettings.value = Number(S.biasStrongThreshold || 0.45).toFixed(2);
@@ -11479,7 +11348,21 @@ const closeSettingsPanel = () => {
       if (toggleBtn) {
         toggleBtn.addEventListener('click', () => {
           S.running = !S.running;
-          toggleBtn.classList.toggle('stop', S.running);
+          
+          /* IAA_SESSION_RESET_ON_START */
+          try{
+            S.sessionStats = S.sessionStats || { pnl:0, w:0, l:0, t:0, ws:0, deals:0 };
+            if (S.running){
+              // session begins when bot STARTs
+              S.sessionStartMs = Date.now();
+              S.sessionStats.pnl = 0; S.sessionStats.w = 0; S.sessionStats.l = 0; S.sessionStats.t = 0;
+              S.wsDealSeen = Object.create(null);
+        S.wsDealSeenId = Object.create(null);
+        S.wsDealCloseSigSeen = Object.create(null); // id->1
+              S.wsDealSeenCount = 0;
+            }
+          }catch(e){}
+toggleBtn.classList.toggle('stop', S.running);
           toggleBtn.classList.toggle('is-running', S.running);
           toggleBtn.classList.toggle('is-stopped', !S.running);
           const dotEl = $id('iaa-dot');
@@ -11735,16 +11618,6 @@ const closeSettingsPanel = () => {
       safeBindOnce(supportingFiltersEnabledSettings, 'change', () => { S.supportingFiltersEnabled = !!supportingFiltersEnabledSettings.checked; void persistSettings(); });
       if (typeof chopV2EnabledSettings !== 'undefined' && chopV2EnabledSettings) safeBindOnce(chopV2EnabledSettings, 'change', () => { S.chopV2Enabled = !!chopV2EnabledSettings.checked; void persistSettings(); });
       if (chopV2StrengthSettings) safeBindOnce(chopV2StrengthSettings, 'input', () => { const v = parseNumberFlexible(chopV2StrengthSettings.value); S.chopV2StrengthPct = Math.max(1, Math.min(100, Math.round(Number.isFinite(v) ? v : 50))); chopV2StrengthSettings.value = String(S.chopV2StrengthPct); void persistSettings(); });
-
-      if (chopV3HardStopSettings) safeBindOnce(chopV3HardStopSettings, 'change', () => { S.chopV3HardStop = !!chopV3HardStopSettings.checked; S.sniperNoTradeInChop = !!S.chopV3HardStop; void persistSettings(); });
-      if (chopV3ToggleBtn && chopV3Panel) safeBindOnce(chopV3ToggleBtn, 'click', () => { S.chopV3PanelOpen = !S.chopV3PanelOpen; chopV3Panel.style.display = S.chopV3PanelOpen ? 'block' : 'none'; chopV3ToggleBtn.textContent = S.chopV3PanelOpen ? '▾' : '▸'; });
-
-      if (deadMarketToggleBtn && deadMarketPanel) safeBindOnce(deadMarketToggleBtn, 'click', () => { S.deadMarketPanelOpen = !S.deadMarketPanelOpen; deadMarketPanel.style.display = S.deadMarketPanelOpen ? 'block' : 'none'; deadMarketToggleBtn.textContent = S.deadMarketPanelOpen ? '▾' : '▸'; });
-      if (deadMarketEnabledSettings) safeBindOnce(deadMarketEnabledSettings, 'change', () => { S.deadMarketFilterEnabled = !!deadMarketEnabledSettings.checked; void persistSettings(); });
-      if (deadMarketMinMoveSettings) safeBindOnce(deadMarketMinMoveSettings, 'input', () => { const v = parseNumberFlexible(deadMarketMinMoveSettings.value); S.deadMarketMinMove = clamp(Number.isFinite(v) ? v : 0.00010, 0.00001, 0.05000); deadMarketMinMoveSettings.value = String(S.deadMarketMinMove); void persistSettings(); });
-      if (earlyLatencyMsSettings) safeBindOnce(earlyLatencyMsSettings, 'input', () => { const v = parseNumberFlexible(earlyLatencyMsSettings.value); S.earlyLatencyGateMs = clamp(Number.isFinite(v) ? v : 1500, 200, 5000); earlyLatencyMsSettings.value = String(S.earlyLatencyGateMs); void persistSettings(); });
-
-      if (filterTrioCseaEnabledSettings) safeBindOnce(filterTrioCseaEnabledSettings, 'change', () => { S.filterTrioCseaEnabled = !!filterTrioCseaEnabledSettings.checked; void persistSettings(); });
       safeBindOnce(biasEnabledSettings, 'change', () => { S.biasEnabled = !!biasEnabledSettings.checked; void persistSettings(); });
       safeBindOnce(biasModeSettings, 'change', () => { const v = String(biasModeSettings.value || 'points'); S.biasMode = ['points','hybrid'].includes(v) ? v : 'points'; void persistSettings(); });
       safeBindOnce(biasStrongThresholdSettings, 'input', () => { const v = parseNumberFlexible(biasStrongThresholdSettings.value); S.biasStrongThreshold = Math.max(0.20, Math.min(0.80, Number.isFinite(v) ? v : 0.45)); void persistSettings(); });
@@ -12657,3 +12530,562 @@ if (SNIPER_VOLUME_THRESHOLD) {
     }
 
 ;
+
+
+/* IAA PO PRICE BRIDGE */
+(function(){
+  if (window.__iaaPriceBridgeInstalled) return;
+  window.__iaaPriceBridgeInstalled = true;
+
+  window.addEventListener("message", function(e){
+    const d = e && e.data;
+    if (!d) return;
+    const t = d.__iaaType;
+    if (t !== "IAA_PO_PRICE" && t !== "IAA_WS_PRICE") return;
+
+    const bot = window.InfinityBot && window.InfinityBot.S ? window.InfinityBot.S : null;
+    if (!bot) return;
+
+    const price = Number(d.price);
+    if (!Number.isFinite(price)) return;
+
+    const now = Date.now();
+    bot.wsLastPrice = price;
+    bot.wsLastPriceAt = now;
+    bot.currentAssetPrice = price;
+    bot.lastPriceAt = now;
+    bot.feedState = "READY";
+    bot.lastFeedSource = "ws";
+    try { bot.wsPacketsSeen = (bot.wsPacketsSeen||0) + 1;
+    try{ bot.sessionStats = bot.sessionStats || {pnl:0,w:0,l:0,t:0,ws:0}; bot.sessionStats.ws = (bot.sessionStats.ws||0)+1; }catch(e){} } catch {}
+  }, false);
+})();
+
+
+// sessionStats
+
+
+/* IAA PNL LINE (separate element) */
+(function(){
+  if (window.__iaaPnlLineInstalled) return;
+  window.__iaaPnlLineInstalled = true;
+
+  function n(x){ x = Number(x); return Number.isFinite(x) ? x : 0; }
+  function fmtMoney(x){ return (Math.round(n(x)*100)/100).toFixed(2); }
+  function wr(w,t){ return t>0 ? Math.round((w/t)*1000)/10 : 0; }
+
+  function ensure(){
+    const feed = document.getElementById("iaa-feed-cloud");
+    if (!feed) return null;
+    let pnl = document.getElementById("iaa-pnl-cloud");
+    if (pnl) return pnl;
+
+    pnl = document.createElement("div");
+    pnl.id = "iaa-pnl-cloud";
+    pnl.style.marginTop = "6px";
+    pnl.style.fontSize = "12px";
+    pnl.style.lineHeight = "1.2";
+    pnl.style.userSelect = "text";
+    feed.insertAdjacentElement("afterend", pnl);
+    return pnl;
+  }
+
+  setInterval(() => {
+    const S = window.InfinityBot && window.InfinityBot.S ? window.InfinityBot.S : null;
+    if (!S) return;
+
+    // gate WS PnL until START
+    if (!S.wsDealPnLEnabled) return;
+    const el = ensure();
+    if (!el) return;
+
+    S.sessionStats = S.sessionStats || { pnl:0, w:0, l:0, t:0, ws:0 };
+
+    const pnl = n(S.sessionStats.pnl);
+    const w = n(S.sessionStats.w);
+    const l = n(S.sessionStats.l);
+    const t = n(S.sessionStats.t);
+    const ws = n(S.wsPacketsSeen || S.sessionStats.ws || 0);
+    const wrp = wr(w,t);
+
+    const pnlColor = pnl >= 0 ? "#22c55e" : "#ef4444";
+    const wrColor = "#60a5fa";
+    const tColor = "#eab308";
+    const wsColor = "#9ca3af";
+
+    el.innerHTML =
+      `<span style="color:${pnlColor};font-weight:800;">PnL ${(pnl>=0?"+":"-")}$${fmtMoney(Math.abs(pnl))}</span>` +
+      ` • <span style="color:#22c55e;font-weight:800;">W ${w}</span>` +
+      ` • <span style="color:#ef4444;font-weight:800;">L ${l}</span>` +
+      ` • <span style="color:${wrColor};font-weight:800;">WR ${wrp}%</span>` +
+      ` • <span style="color:${tColor};font-weight:800;">T ${t}</span>` +
+      ` • <span style="color:${wsColor};font-weight:800;">WS ${ws}</span>`;
+  }, 800);
+})();
+
+
+
+
+/* IAA PNL KILL OBSERVER */
+(function(){
+  try{
+    if (window.__iaaPnlKillObserver) return;
+    window.__iaaPnlKillObserver = true;
+
+    const kill = ()=>{
+      const a = document.getElementById("iaa-session-mini");
+      if (a) a.remove();
+      const b = document.getElementById("iaa-pnl-line");
+      if (b) b.remove();
+    };
+    kill();
+
+    const mo = new MutationObserver(()=>kill());
+    mo.observe(document.documentElement || document.body, { childList:true, subtree:true });
+  }catch(e){}
+})();
+
+
+
+
+/* IAA PO DEAL BRIDGE v3 (WS, session-gated, deduped) */
+(function(){
+  if (window.__iaaDealBridgeInstalledV3) return;
+  window.__iaaDealBridgeInstalledV3 = true;
+
+  function fmtMoney(x){
+    const n = Number(x);
+    if (!Number.isFinite(n)) return "0.00";
+    return (Math.round(n*100)/100).toFixed(2);
+  }
+
+  function logOutcome(isWin, pnl, tf, tradeId){
+    const sign = pnl >= 0 ? "+" : "-";
+    const abs = Math.abs(pnl);
+    const emoji = isWin ? "✅" : "❌";
+    const word = isWin ? "ПЕЧАЛБА !!!" : "ЗАГУБА";
+    const wordStyle = isWin ? "color:#22c55e;font-weight:900" : "color:#ef4444;font-weight:900";
+    const metaStyle = "color:#9ca3af";
+    const id = tradeId ? String(tradeId) : "";
+    try{
+      console.log(
+        `%c${emoji} ${word}%c  ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${id ? " | #"+id : ""}`,
+        wordStyle,
+        metaStyle
+      );
+    }catch(e){}
+  }
+
+  function toArray(payload){
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+    if (payload.deals && Array.isArray(payload.deals)) return payload.deals;
+    if (payload.data && Array.isArray(payload.data)) return payload.data;
+    if (payload.items && Array.isArray(payload.items)) return payload.items;
+    return [payload];
+  }
+
+  function extractTf(d){
+    const v = d.period ?? d.tf ?? d.timeframe ?? d.duration ?? d.expiry ?? d.exp ?? "";
+    if (v === 60) return "1m";
+    if (v === 180) return "3m";
+    if (v === 300) return "5m";
+    if (v === 900) return "15m";
+    return String(v || "");
+  }
+
+  // Prefer PO's profit field (net profit). If only payout+stake present, use payout-stake.
+  function extractNetPnl(d){
+    const profit = Number(d.profit ?? d.pnl ?? d.profit_amount ?? d.win_amount ?? d.winAmount ?? d.result_amount ?? d.resultAmount);
+    if (Number.isFinite(profit)) return profit;
+
+    const stake  = Number(d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount);
+    const payout = Number(d.payout ?? d.payout_amount ?? d.payoutAmount ?? d.close_amount ?? d.closeAmount);
+    if (Number.isFinite(payout) && Number.isFinite(stake)) return payout - stake;
+
+    // flags fallback
+    const winFlag = (d.isWin === true) || (d.win === 1) || (String(d.result||"").toLowerCase()==="win");
+    const loseFlag = (d.isWin === false) || (d.win === 0) || (String(d.result||"").toLowerCase()==="lose");
+    if (winFlag && Number.isFinite(stake)) return stake;
+    if (loseFlag && Number.isFinite(stake)) return -stake;
+
+    return null;
+  }
+
+  function getCloseMs(d){
+    const v = d.closeTimestamp ?? d.closeTime ?? d.close_time ?? d.closedAt ?? d.finishedAt ?? d.ts ?? d.timestamp ?? null;
+    const n = Number(v);
+    // normalize seconds to ms if needed
+    if (!Number.isFinite(n)) return null;
+    if (n > 0 && n < 2e10) return n; // ms
+    if (n > 0 && n < 2e10/1000) return n*1000; // sec -> ms (rare)
+    return n;
+  }
+
+  function dealKey(d, pnl){
+    const id = d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? "";
+    if (id) return "id:" + String(id);
+
+    const asset = d.asset ?? d.symbol ?? d.pair ?? "";
+    const closeMs = getCloseMs(d) || 0;
+    const openMs = Number(d.openTimestamp ?? d.openTime ?? d.open_time ?? d.openedAt ?? d.createdAt ?? 0) || 0;
+    const stake  = Number(d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount);
+    const pnlCents = Number.isFinite(pnl) ? Math.round(pnl*100) : 0;
+    const stakeCents = Number.isFinite(stake) ? Math.round(stake*100) : 0;
+    const dir = d.direction ?? d.side ?? d.action ?? d.type ?? "";
+
+    return `k:${asset}|${openMs}|${closeMsEff}|${pnlCents}|${stakeCents}|${dir}`;
+  }
+
+  function getS(){
+    return (window.InfinityBot && window.InfinityBot.S) ? window.InfinityBot.S : null;
+  }
+
+  function ensureSessionDefaults(S){
+    if (!S.sessionStats) S.sessionStats = { pnl:0, w:0, l:0, t:0, ws:(S.wsPacketsSeen||0), deals:0 };
+    if (typeof S.wsDealPnLEnabled !== "boolean") S.wsDealPnLEnabled = false;
+    if (!S.wsDealSeen) S.wsDealSeen = Object.create(null);
+        S.wsDealSeenId = Object.create(null);
+        S.wsDealCloseSigSeen = Object.create(null);
+  }
+
+  // Reset on START click
+  (function(){
+    if (window.__iaaWsDealStartHookV3) return;
+    window.__iaaWsDealStartHookV3 = true;
+
+    document.addEventListener("click", function(ev){
+      const t = ev && ev.target;
+      if (!t) return;
+      const id = t.id || "";
+      const txt = (t.textContent || "").trim().toUpperCase();
+      if (id === "iaa-toggle" || txt === "START") {
+        const S = getS(); if (!S) return;
+        S.sessionStartMs = Date.now();
+        S.wsDealPnLEnabled = true;
+        S.wsDealSeen = Object.create(null);
+        S.wsDealSeenId = Object.create(null);
+        S.wsDealCloseSigSeen = Object.create(null);
+        S.wsDealSeenIdV17 = Object.create(null);
+        S.sessionStats = { pnl:0, w:0, l:0, t:0, ws:(S.wsPacketsSeen||0), deals:0 };
+      }
+    }, true);
+  })();
+
+  window.addEventListener("message", function(e){
+    const msg = e && e.data;
+    if (!msg || msg.__iaaType !== "IAA_PO_DEAL_EVENT") return;
+
+    const S = getS();
+    if (!S) return;
+    ensureSessionDefaults(S);
+    S.wsDealSeenIdV17 = S.wsDealSeenIdV17 || Object.create(null);
+
+    // gate until START
+    if (!S.wsDealPnLEnabled) return;
+
+    const ev = String(msg.event || "");
+    const evLower = ev.toLowerCase();
+    // accept all deal events; we filter by payload fields instead of event name
+    const arr = toArray(msg.payload);
+    for (const d of arr){
+      const pnl = extractNetPnl(d);
+      if (pnl == null) continue;
+
+      const closeMs = getCloseMs(d);
+      const closeMsEff = closeMs || Date.now();
+      if (!closeMs) { /* no close time in payload */ }
+      const now = Date.now();
+      if (closeMs) { if (closeMs < now - 24*60*60*1000 || closeMs > now + 60*1000) continue; }
+      if (S.sessionStartMs && closeMs && closeMs < S.sessionStartMs) continue;
+
+      const key = dealKey(d, pnl);
+
+      // DEDUPE v22 (kill x2 close notifications)
+      S.wsDealSeen = S.wsDealSeen || Object.create(null);
+      S.wsDealSeenId = S.wsDealSeenId || Object.create(null);
+      S.wsDealCloseSigSeen = S.wsDealCloseSigSeen || Object.create(null);
+
+      const _id = d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? "";
+      if (_id) {
+        if (S.wsDealSeenId[_id]) continue;
+        S.wsDealSeenId[_id] = true;
+      }
+
+      const stake = Number(d.stake ?? d.amount ?? d.bet ?? d.invest ?? d.sum ?? d.open_amount ?? d.openAmount);
+      const stakeC = Number.isFinite(stake) ? Math.round(stake*100) : 0;
+      const pnlC = Number.isFinite(pnl) ? Math.round(pnl*100) : 0;
+      const asset = d.asset ?? d.symbol ?? d.pair ?? "";
+      const closeSig = `c:${asset}|${stakeC}|${pnlC}`;
+      const prevAt = Number(S.wsDealCloseSigSeen[closeSig] || 0);
+      if (prevAt && (now2 - prevAt) < 20000) continue; // 20s window kills duplicates
+      S.wsDealCloseSigSeen[closeSig] = now2;
+
+      if (S.wsDealSeen[key]) continue;
+      S.wsDealSeen[key] = true;
+
+      const tf = extractTf(d);
+      const tradeId = d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? "";
+      const isWin = pnl > 0;
+      const isLoss = pnl < 0;
+
+      S.sessionStats.pnl += pnl;
+      S.sessionStats.t += 1;
+      if (isWin) S.sessionStats.w += 1;
+      else if (isLoss) S.sessionStats.l += 1;
+
+      
+      // WS outcome history for HTML/export/debug
+      try{
+        S.wsOutcomeHistory = S.wsOutcomeHistory || [];
+        S.wsOutcomeHistory.push({ ts: Date.now(), id: tradeId ? String(tradeId) : "", tf: tf || "", pnl: pnl });
+        if (S.wsOutcomeHistory.length > 5000) S.wsOutcomeHistory.splice(0, S.wsOutcomeHistory.length - 5000);
+      }catch(e){}
+
+      // Console log (use bot logger if exists)
+      try{
+        const sign = pnl >= 0 ? "+" : "-";
+        const abs = Math.abs(pnl);
+        const icon = isWin ? "✅" : (isLoss ? "❌" : "⚪");
+        const word = isWin ? "ПЕЧАЛБА !!!" : (isLoss ? "ЗАГУБА" : "РАВНО");
+        const line = `${icon} ${word} ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${tradeId ? " | #"+tradeId : ""}`;
+        const logger = (window.InfinityBot && typeof window.InfinityBot.log === "function") ? window.InfinityBot.log
+                     : (window.InfinityBot && window.InfinityBot.api && typeof window.InfinityBot.api.log === "function") ? window.InfinityBot.api.log
+                     : null;
+        if (logger) logger(line);
+        else console.log(line);
+      }catch(e){}
+}
+  }, false);
+})();
+
+
+
+/* IAA PO DEAL PAYLOAD BRIDGE (binary JSON array) */
+(function(){
+  if (window.__iaaDealPayloadBridgeInstalled) return;
+  window.__iaaDealPayloadBridgeInstalled = true;
+
+  function fmtMoney(x){
+    const n = Number(x);
+    if (!Number.isFinite(n)) return "0.00";
+    return (Math.round(n*100)/100).toFixed(2);
+  }
+  function logOutcome(isWin, pnl, tf, tradeId){
+    const sign = pnl >= 0 ? "+" : "-";
+    const abs = Math.abs(pnl);
+    const emoji = isWin ? "✅" : "❌";
+    const word = isWin ? "ПЕЧАЛБА !!!" : "ЗАГУБА";
+    const wordStyle = isWin ? "color:#22c55e;font-weight:900" : "color:#ef4444;font-weight:900";
+    const metaStyle = "color:#9ca3af";
+    const id = tradeId ? String(tradeId) : "";
+    try{
+      console.log(`%c${emoji} ${word}%c  ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${id ? " | #"+id : ""}`, wordStyle, metaStyle);
+    }catch(e){}
+  }
+
+  function tfFromDeal(d){
+    const v = d.period ?? d.tf ?? d.timeframe ?? d.duration ?? d.expiry ?? d.exp ?? 60;
+    if (v === 60) return "1m";
+    if (v === 180) return "3m";
+    if (v === 300) return "5m";
+    if (v === 900) return "15m";
+    return String(v||"?");
+  }
+
+  window.addEventListener("message", function(e){
+    const msg = e && e.data;
+    if (!msg || msg.__iaaType !== "IAA_PO_DEAL_PAYLOAD") return;
+
+    const arr = msg.payload;
+    const S = window.InfinityBot && window.InfinityBot.S ? window.InfinityBot.S : null;
+    if (!S || !Array.isArray(arr)) return;
+
+    S.sessionStats = S.sessionStats || { pnl:0, w:0, l:0, t:0, ws:0, deals:0 };
+    S._dealSeen = S._dealSeen || Object.create(null);
+
+    for (const d of arr){
+      if (!d || typeof d !== "object") continue;
+      const id = d.id || d.deal_id || d.dealId || d.ticket || d.order_id || d.orderId;
+      if (!id) continue;
+
+      const closeTs = Number(d.closeTimestamp ?? d.closeTs ?? d.close_time ?? d.closeTime ?? 0);
+      if (!closeTs) continue; // only closed deals
+
+      const key = String(id);
+      if (S._dealSeen[key]) continue;
+      S._dealSeen[key] = 1;
+
+      const profit = Number(d.profit);
+      const amount = Number(d.amount);
+      if (!Number.isFinite(amount)) continue;
+
+      // PO convention: profit is payout amount (e.g. 0.78 on stake 1) or profit? In HAR it's 0.78 with amount 1 => win pnl +0.78; lose profit 0 => pnl -amount.
+      let pnl;
+      if (Number.isFinite(profit) && profit > 0) pnl = profit;
+      else pnl = -amount;
+
+      const isWin = pnl > 0;
+      const tf = tfFromDeal(d);
+
+      S.sessionStats.pnl += pnl;
+      S.sessionStats.t += 1;
+      if (isWin) S.sessionStats.w += 1; else S.sessionStats.l += 1;
+
+      logOutcome(isWin, pnl, tf, key);
+    }
+  }, false);
+})();
+
+
+/* IAA SUPPRESS LEGACY DEAL LOGS */
+(function(){
+  try{
+    if (window.__iaaSuppressLegacyDealLogs) return;
+    window.__iaaSuppressLegacyDealLogs = true;
+    const orig = console.log;
+    console.log = function(){
+      try{
+        const s = arguments && arguments[0];
+        if (typeof s === "string" && (s.includes("🎉 СДЕЛКА") || s.includes("🛑 СДЕЛКА"))) {
+          // legacy logs suppressed
+          return;
+        }
+      }catch(e){}
+      return orig.apply(console, arguments);
+    };
+  }catch(e){}
+})();
+
+
+
+
+/* IAA WS DEAL PNL v1 */
+(function(){
+  if (window.__iaaWsDealPnlInstalled) return;
+  window.__iaaWsDealPnlInstalled = true;
+
+  function num(x){ x = Number(x); return Number.isFinite(x) ? x : null; }
+  function fmtMoney(x){
+    const n = Number(x);
+    if (!Number.isFinite(n)) return "0.00";
+    return (Math.round(n*100)/100).toFixed(2);
+  }
+  function tfLabelFromPeriod(v){
+    const n = Number(v);
+    if (n === 60) return "1m";
+    if (n === 180) return "3m";
+    if (n === 300) return "5m";
+    if (n === 900) return "15m";
+    return v ? String(v) : "?";
+  }
+  function logOutcome(isWin, pnl, tf, tradeId){
+    const sign = pnl >= 0 ? "+" : "-";
+    const abs = Math.abs(pnl);
+    const emoji = isWin ? "✅" : "❌";
+    const word = isWin ? "ПЕЧАЛБА !!!" : "ЗАГУБА";
+    const wordStyle = isWin ? "color:#22c55e;font-weight:900" : "color:#ef4444;font-weight:900";
+    const metaStyle = "color:#9ca3af";
+    const id = tradeId ? String(tradeId) : "";
+    try{
+      console.log(`%c${emoji} ${word}%c  ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${id ? " | #"+id : ""}`, wordStyle, metaStyle);
+    }catch(e){}
+  }
+
+  function normalizeDeals(payload){
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+    if (payload.deals && Array.isArray(payload.deals)) return payload.deals;
+    if (payload.data && Array.isArray(payload.data)) return payload.data;
+    if (payload.items && Array.isArray(payload.items)) return payload.items;
+    return [payload];
+  }
+
+  function extractCloseMs(d){
+    const t = num(d.closeTimestamp ?? d.close_time ?? d.closeTime ?? d.closed_at ?? d.closedAt ?? d.finishTimestamp ?? d.finishedAt ?? d.endTimestamp ?? d.endTime);
+    if (t == null) return null;
+    // some are seconds, some ms
+    return t < 2e12 ? Math.floor(t*1000) : Math.floor(t);
+  }
+
+  function extractPnl(d){
+    // PO typically has profit: numeric (+ for win, -stake for loss)
+    const profit = num(d.profit ?? d.pnl ?? d.profit_amount ?? d.result_amount ?? d.resultAmount);
+    if (profit != null) return profit;
+
+    const stake = num(d.amount ?? d.stake ?? d.bet ?? d.invest ?? d.sum);
+    const payout = num(d.payout ?? d.payout_amount ?? d.close_amount ?? d.closeAmount);
+    if (stake != null && payout != null) return payout - stake;
+
+    // fallback flags
+    const winFlag = (d.isWin === true) || (d.win === 1) || (String(d.result||"").toLowerCase()==="win");
+    const loseFlag = (d.isWin === false) || (d.win === 0) || (String(d.result||"").toLowerCase()==="lose");
+    if (stake != null && winFlag) return stake;
+    if (stake != null && loseFlag) return -stake;
+
+    return null;
+  }
+
+  function handleDeals(payload){
+    const S = window.InfinityBot && window.InfinityBot.S ? window.InfinityBot.S : null;
+    if (!S || !S.running) return;
+
+    const startMs = Number(S.sessionStartMs || 0);
+    if (!startMs) return;
+
+    S.sessionStats = S.sessionStats || { pnl:0, w:0, l:0, t:0, ws:0, deals:0 };
+    S.wsDealSeen = S.wsDealSeen || Object.create(null);
+
+    const arr = normalizeDeals(payload);
+    for (const d of arr){
+      const id = d.id ?? d.deal_id ?? d.dealId ?? d.ticket ?? d.order_id ?? d.orderId ?? d.uid ?? null;
+      const closeMs = extractCloseMs(d);
+      if (closeMs != null && closeMs < startMs) continue; // ignore history before START
+
+      // must look like a closed result: either close time exists or profit exists
+      const pnl = extractPnl(d);
+      if (pnl == null) continue;
+
+      const key = id != null ? String(id) : (closeMs != null ? "t:"+closeMs+":"+String(pnl) : null);
+      if (!key) continue;
+      S.wsDealSeen[key] = 1;
+      S.wsDealSeenCount = (S.wsDealSeenCount||0) + 1;
+
+      S.sessionStats.pnl += pnl;
+      S.sessionStats.t += 1;
+      if (pnl > 0) S.sessionStats.w += 1; else S.sessionStats.l += 1;
+
+      const tf = tfLabelFromPeriod(d.period ?? d.tf ?? d.timeframe ?? d.duration ?? "");
+      logOutcome(pnl > 0, pnl, tf, id);
+    }
+  }
+
+  window.addEventListener("message", function(e){
+    const d = e && e.data;
+    if (!d) return;
+    if (d.__iaaType === "IAA_PO_DEAL_EVENT" || d.__iaaType === "IAA_PO_DEAL_PAYLOAD") {
+      handleDeals(d.payload);
+    }
+  }, false);
+})();
+
+
+
+
+
+
+
+/* IAA REPORT DATA HOOK */
+(function(){
+  try{
+    if (window.__iaaReportDataHookInstalled) return;
+    window.__iaaReportDataHookInstalled = true;
+    setInterval(() => {
+      const S = (window.InfinityBot && window.InfinityBot.S) ? window.InfinityBot.S : null;
+      if (!S) return;
+      window.__IAA_SESSION_STATS__ = S.sessionStats || null;
+      window.__IAA_WS_OUTCOMES__ = S.wsOutcomeHistory || null;
+    }, 1000);
+  }catch(e){}
+})();
+
