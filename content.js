@@ -225,6 +225,13 @@
   const ENGINE_GUARD_IMPULSE_ENABLED_KEY = 'IAA_ENGINE_GUARD_IMPULSE_ENABLED';
   const ENGINE_GUARD_NOISE_ENABLED_KEY = 'IAA_ENGINE_GUARD_NOISE_ENABLED';
   const ENGINE_GUARD_STABILIZER_SEC_KEY = 'IAA_ENGINE_GUARD_STABILIZER_SEC';
+  const PRO_DRIFT_ENABLED_KEY = 'PRO_DRIFT_ENABLED';
+  const PRO_SPIKE_ENABLED_KEY = 'PRO_SPIKE_ENABLED';
+  const PRO_DOJI_ENABLED_KEY = 'PRO_DOJI_ENABLED';
+  const PRO_DOJI_SENSITIVITY_KEY = 'PRO_DOJI_SENSITIVITY';
+  const PRO_SR_ENABLED_KEY = 'PRO_SR_ENABLED';
+  const PRO_SR_LOOKBACK_KEY = 'PRO_SR_LOOKBACK';
+  const PRO_PRECALC_ENABLED_KEY = 'PRO_PRECALC_ENABLED';
 
 
   const RANGE_OSC_PENALTY_ENABLED_KEY = 'IAA_RANGE_OSC_PENALTY_ENABLED';
@@ -1535,6 +1542,18 @@
       engineGuardImpulse: 0.70,
       engineGuardNoise: 0.55,
       engineGuardStabilizerSec: 3,
+      driftProtectionEnabled: true,
+      spikeProtectionEnabled: true,
+      filterDojiEnabled: true,
+      dojiSensitivity: 0.15,
+      filterSrEnabled: false,
+      srLookback: 20,
+      proPrecalcEnabled: true,
+      proFiltersPanelOpen: false,
+      preCalculatedSignal: null,
+      blockBuy: false,
+      blockSell: false,
+      singleAssetMode: true,
       _dirLock: { dir: null, until: 0 },
       _engineStabilizerByTf: {},
       maxTradeAmountCents: 15000,
@@ -2022,6 +2041,14 @@
           msgClass += ' iaa-console-msg--warn';
         } else if (messageText.startsWith('🔫🎯 ГОТОВ')) {
           msgClass += ' iaa-console-msg--signal';
+        } else if (messageText.startsWith('⏱️⏭️ PRECALC ГОТОВ')) {
+          msgClass += ' iaa-console-msg--signal';
+        } else if (messageText.startsWith('🟡 PRECALC ПРОПУСК') || messageText.startsWith('🟠 PRECALC ПРОПУСК')) {
+          msgClass += ' iaa-console-msg--warn';
+        } else if (messageText.startsWith('🔴 PRECALC БЛОК')) {
+          msgClass += ' iaa-console-msg--skip';
+        } else if (messageText.startsWith('🔵 PRECALC ПРОПУСК') || messageText.startsWith('⚪ Предварителен анализ: ИЗКЛ')) {
+          msgClass += ' iaa-console-msg--diag';
         } else if (messageText.startsWith('💥 СДЕЛКА')) {
           msgClass += ' iaa-console-msg--trade';
         } else if (messageText.startsWith('✅')) {
@@ -2092,6 +2119,12 @@
         m.startsWith('🔴🧭 ПРЕЧЕК СТОП') ||
         m.startsWith('🔫 ⏳') ||
         m.startsWith('🔫🎯 ГОТОВ') ||
+        m.startsWith('⏱️⏭️ PRECALC ГОТОВ |') ||
+        m.startsWith('🟡 PRECALC ПРОПУСК |') ||
+        m.startsWith('🟠 PRECALC ПРОПУСК |') ||
+        m.startsWith('🔴 PRECALC БЛОК |') ||
+        m.startsWith('🔵 PRECALC ПРОПУСК |') ||
+        m.startsWith('⚪ Предварителен анализ: ИЗКЛ') ||
         m.startsWith('💥 СДЕЛКА |') ||
         m.startsWith('✅ ПЕЧАЛБА |') ||
         m.startsWith('❌ ЗАГУБА |') ||
@@ -7134,6 +7167,72 @@ function getRecentPrices(count) {
       return 0;
     }
 
+    function calcAtr(windowMs, period = 14) {
+      const p = Math.max(3, Math.min(50, Math.round(period)));
+      let prevClose = null;
+      const tr = [];
+      for (let i = p; i >= 0; i -= 1) {
+        const c = getCandleAt(Date.now() - i * windowMs, windowMs);
+        if (!c) continue;
+        if (prevClose == null) {
+          prevClose = c.close;
+          continue;
+        }
+        const highLow = Math.abs(c.high - c.low);
+        const highPrev = Math.abs(c.high - prevClose);
+        const lowPrev = Math.abs(c.low - prevClose);
+        tr.push(Math.max(highLow, highPrev, lowPrev));
+        prevClose = c.close;
+      }
+      if (!tr.length) return null;
+      return tr.reduce((a, b) => a + b, 0) / tr.length;
+    }
+
+    function updateSpikeProtectionState() {
+      if (!S.spikeProtectionEnabled) {
+        S.blockBuy = false;
+        S.blockSell = false;
+        return;
+      }
+      const arr = Array.isArray(S.priceHistory) ? S.priceHistory : [];
+      if (arr.length < 2) return;
+      const now = Date.now();
+      const latest = arr[arr.length - 1];
+      let old = null;
+      for (let i = arr.length - 2; i >= 0; i -= 1) {
+        if (now - Number(arr[i]?.timestamp || 0) >= 5000) { old = arr[i]; break; }
+      }
+      if (!old || !Number.isFinite(latest?.price) || !Number.isFinite(old?.price)) return;
+      const priceDelta = latest.price - old.price;
+      const absDelta = Math.abs(priceDelta);
+      const threshold = Math.max(0.00001, Number(S.spikeThresholdAbs || 0.00035));
+      if (absDelta <= threshold) {
+        S.blockBuy = false;
+        S.blockSell = false;
+        return;
+      }
+      S.blockBuy = priceDelta < 0;
+      S.blockSell = priceDelta > 0;
+      const key = `spike:${Math.round(priceDelta * 1e6)}`;
+      if (logSpamControlled(key, `${priceDelta.toFixed(6)}`, 3000)) {
+        logConsoleLine('⚠️ Висока волатилност! Режим: Trend-Follow Only.');
+      }
+    }
+
+    function getSupportResistance(windowMs, lookback = 20) {
+      const bars = Math.max(5, Math.min(120, Math.round(lookback)));
+      let support = Number.POSITIVE_INFINITY;
+      let resistance = Number.NEGATIVE_INFINITY;
+      for (let i = 1; i <= bars; i += 1) {
+        const c = getCandleAt(Date.now() - i * windowMs, windowMs);
+        if (!c) continue;
+        support = Math.min(support, Number(c.low));
+        resistance = Math.max(resistance, Number(c.high));
+      }
+      if (!Number.isFinite(support) || !Number.isFinite(resistance) || resistance <= support) return null;
+      return { support, resistance };
+    }
+
     function calcTrendStrength(windowMs) {
       const candle = getCandleAt(Date.now(), windowMs);
       if (!candle || !candle.open) return 0;
@@ -7275,91 +7374,120 @@ if (!weights.length) return 0;
       return { bonus, details };
     }
 
+    function evaluateStrictDecision(tf, decision, regime) {
+      if (!decision || !decision.direction) return { pass: false, reason: 'Veto: No decision' };
+      const dirSign = decision.direction === 'BUY' ? 1 : -1;
+      const windowMs = KILLER_TF_MS[tf] || KILLER_TF_MS['1m'];
+
+      const h3 = calcTrendDirection(KILLER_TF_MS['3m'], 3);
+      const h5 = calcTrendDirection(KILLER_TF_MS['5m'], 3);
+      if (h3 !== 0 && h5 !== 0 && h3 !== h5) {
+        return { pass: false, reason: 'Veto: Trend Conflict (3m/5m)' };
+      }
+      const htfTrend = h5 !== 0 ? h5 : h3;
+      const trendAligned = htfTrend === 0 || htfTrend === dirSign;
+      if (!trendAligned) {
+        return { pass: false, reason: 'Veto: Trend Mismatch' };
+      }
+
+      const prices = getPricesForWindow(windowMs, 14);
+      const rsiPeriod = Math.max(6, Math.min(20, Math.round(Number(S.killerRsiWindow || 10))));
+      const rsi = calcRsi(prices, rsiPeriod);
+      if (!Number.isFinite(rsi)) {
+        return { pass: false, reason: 'Veto: RSI N/A', rsi: null };
+      }
+      const buyMin = Math.max(5, Math.min(50, Number(S.killerRsiOversold || 25)));
+      const sellMax = Math.max(50, Math.min(95, Number(S.killerRsiOverbought || 75)));
+      const momentumPass = decision.direction === 'BUY' ? rsi >= buyMin : rsi <= sellMax;
+      if (!momentumPass) {
+        return { pass: false, reason: 'Veto: Weak Momentum', rsi, buyMin, sellMax };
+      }
+
+      if (S.filterDojiEnabled) {
+        const candle = getCandleAt(Date.now(), windowMs);
+        if (candle && Number.isFinite(candle.open) && Number.isFinite(candle.close) && Number.isFinite(candle.high) && Number.isFinite(candle.low)) {
+          const range = Math.max(1e-9, Math.abs(candle.high - candle.low));
+          const isDoji = Math.abs(candle.close - candle.open) < range * Math.max(0.01, Math.min(0.5, Number(S.dojiSensitivity || 0.15)));
+          if (isDoji) {
+            return { pass: false, reason: 'Doji detected' };
+          }
+        }
+      }
+
+      if (S.filterSrEnabled) {
+        const sr = getSupportResistance(windowMs, Number(S.srLookback || 20));
+        const price = Number(S.currentAssetPrice);
+        if (sr && Number.isFinite(price) && Number.isFinite(sr.support) && Number.isFinite(sr.resistance)) {
+          const range = sr.resistance - sr.support;
+          if (range > 0) {
+            if (decision.direction === 'BUY' && price > sr.support + 0.2 * range) {
+              return { pass: false, reason: 'S/R bounce blocked' };
+            }
+            if (decision.direction === 'SELL' && price < sr.resistance - 0.2 * range) {
+              return { pass: false, reason: 'S/R bounce blocked' };
+            }
+          }
+        }
+      }
+
+      const atr = calcAtr(KILLER_TF_MS['1m'], 14);
+      const nowPx = Number(S.currentAssetPrice);
+      const refPx = Number(decision.priceAtSignal);
+      if (S.driftProtectionEnabled && Number.isFinite(atr) && atr > 0 && Number.isFinite(nowPx) && Number.isFinite(refPx)) {
+        const drift = Math.abs(nowPx - refPx);
+        if (drift > atr * 0.35) {
+          return { pass: false, reason: 'Drift protection triggered', drift, atr };
+        }
+      }
+
+      return {
+        pass: true,
+        rsi,
+        buyMin,
+        sellMax,
+        htfTrend,
+        trendAligned
+      };
+    }
+
     function computeKillerSnapshot(tf, decision, regime, confirmation, strategyDecisions = []) {
       if (!decision || !decision.direction) return null;
       const dir = decision.direction;
-      const trendDir = decision.trendDir || calcTrendDirection(KILLER_TF_MS[tf]);
-      const candle = getCandleAt(Date.now(), KILLER_TF_MS[tf]);
-      const candleDir = candle ? (candle.close > candle.open ? 'BUY' : candle.close < candle.open ? 'SELL' : null) : null;
-      const stoch = calcStochDecision(KILLER_TF_MS[tf]);
-      const momentum = Number.isFinite(decision.momentum) ? decision.momentum : 0;
+      const tfMs = KILLER_TF_MS[tf] || KILLER_TF_MS['1m'];
       const adx = calcAdxProxy(regime, decision);
-
-      const strategyEnabled = !!decision.strategyKey && isStrategyEnabled(decision.strategyKey);
-      const strategyPoints = strategyEnabled ? (decision.strategyKey === 'candlestick_pattern' ? 1 : 2) : 0;
-
-      const checks = [];
-      checks.push({ key: 'STRAT', ok: strategyPoints > 0, points: strategyPoints, buy: strategyPoints > 0, sell: strategyPoints > 0 });
-
-      const trdOk = !!decision.trendAligned;
-      checks.push({ key: 'TRD', ok: trdOk, points: trdOk ? 1 : 0, buy: trdOk, sell: trdOk });
-
-      const macdBuy = momentum > 0;
-      const macdSell = momentum < 0;
-      const macdOk = dir === 'BUY' ? macdBuy : macdSell;
-      checks.push({ key: 'MACD', ok: macdOk, points: macdOk ? 1 : 0, buy: macdBuy, sell: macdSell });
-
-      const stoBuy = stoch?.direction === 'BUY';
-      const stoSell = stoch?.direction === 'SELL';
-      const stoOk = dir === 'BUY' ? stoBuy : stoSell;
-      checks.push({ key: 'STO', ok: stoOk, points: stoOk ? 1 : 0, buy: stoBuy, sell: stoSell });
-
-      const volOk = !!decision.volumeOk;
-      checks.push({ key: 'VOL', ok: volOk, points: volOk ? 1 : 0, buy: volOk, sell: volOk });
-
-      const adxOk = adx >= 18;
-      checks.push({ key: 'ADX', ok: adxOk, points: adxOk ? 1 : 0, buy: adxOk, sell: adxOk });
-
-      const directionalVotes = [];
-      if (trendDir > 0) directionalVotes.push('BUY');
-      if (trendDir < 0) directionalVotes.push('SELL');
-      if (macdBuy) directionalVotes.push('BUY');
-      if (macdSell) directionalVotes.push('SELL');
-      if (stoBuy) directionalVotes.push('BUY');
-      if (stoSell) directionalVotes.push('SELL');
-      if (candleDir === 'BUY' || candleDir === 'SELL') directionalVotes.push(candleDir);
-      const buyVotes = directionalVotes.filter((v) => v === 'BUY').length;
-      const sellVotes = directionalVotes.filter((v) => v === 'SELL').length;
-      const totalVotes = Math.max(1, buyVotes + sellVotes);
-      const longPct = Math.round((buyVotes / totalVotes) * 100);
-      const shortPct = Math.round((sellVotes / totalVotes) * 100);
-      const dominance = dir === 'BUY' ? longPct : shortPct;
-
-      const dominanceThreshold = getKillerDominanceThreshold(adx);
-      const passDominance = dominance >= dominanceThreshold;
-      checks.push({ key: 'DOM', ok: passDominance, points: passDominance ? 1 : 0, buy: passDominance, sell: passDominance });
-
-      const biasDirection = decision.biasDir > 0 ? 'BUY' : decision.biasDir < 0 ? 'SELL' : null;
-      const biasStrength = Number(decision.biasDir || 0);
-      const biasSnap = getBiasSnapshot({ biasDirection, biasStrength });
-      let biasPoints = 0;
-      if (S.biasEnabled) {
-        const pointNeed = S.biasPointMinStrength === 'high' ? 0.85 : S.biasPointMinStrength === 'low' ? 0.45 : 0.65;
-        const pointAllowed = Number(biasSnap.quality || 0) >= pointNeed;
-        if (pointAllowed && biasSnap.direction === dir) biasPoints = 1;
-        else if (pointAllowed && biasSnap.direction && biasSnap.direction !== dir) biasPoints = -1;
+      const trendDir = decision.trendDir || calcTrendDirection(tfMs);
+      const strict = evaluateStrictDecision(tf, decision, regime);
+      if (!strict.pass) {
+        return {
+          tf,
+          direction: dir,
+          confluence: 0,
+          effectivePoints: 0,
+          supportingBonus: 0,
+          supportingDetails: [],
+          minConfluence: 1,
+          threshold: 1,
+          maxPoints: 1,
+          longPct: 50,
+          shortPct: 50,
+          dominance: 0,
+          dominanceThreshold: getKillerDominanceThreshold(adx),
+          adx,
+          checks: [{ key: 'STRICT', ok: false, points: 0 }],
+          strategyVotes: { buy: 0, sell: 0 },
+          strategyAgreement: 0,
+          stabilityState: 'STRICT',
+          candleAgainst: false,
+          passConfluence: false,
+          passDominance: false,
+          nearMiss: false,
+          confOkNear: false,
+          strictReason: strict.reason || 'Strict veto',
+          strictPass: false,
+          rsi: Number.isFinite(strict.rsi) ? Number(strict.rsi.toFixed(1)) : null,
+          momentumWindow: Number.isFinite(strict.rsi) ? `${strict.buyMin}/${strict.sellMax}` : '—'
+        };
       }
-      checks.push({ key: 'BIAS', ok: biasPoints >= 0, points: biasPoints, buy: biasPoints >= 0, sell: biasPoints >= 0 });
-
-      const hist = (S.__tfDirHist && S.__tfDirHist[tf]) ? S.__tfDirHist[tf] : [];
-      const stabilityState = S.stabilityEnabled ? computeSignalStability(hist, S.stabilityMaxGapMs) : 'OFF';
-      let stabilityPoints = 0;
-      if (S.stabilityEnabled) {
-        if (stabilityState === '2/2') stabilityPoints = 1;
-        else if (stabilityState === '0/2') stabilityPoints = -1;
-      }
-      checks.push({ key: 'STAB', ok: stabilityPoints >= 0, points: stabilityPoints, buy: stabilityPoints >= 0, sell: stabilityPoints >= 0 });
-
-      let chopPenalty = 0;
-      if (S.chopV2Enabled) {
-        const isChop = String(regime?.state || '').toLowerCase() === 'chop' || ((Number(regime?.rangePct || 0) < 0.0035) && Number(regime?.trendScore || 0) < 0.4);
-        if (isChop) {
-          const strength = Math.max(1, Math.min(100, Math.round(S.chopV2StrengthPct || 50)));
-          const penaltyAbs = 0.2 + ((strength - 1) / 99) * 1.8;
-          chopPenalty = -penaltyAbs;
-        }
-      }
-      checks.push({ key: 'CHOP', ok: chopPenalty >= 0, points: chopPenalty, buy: chopPenalty >= 0, sell: chopPenalty >= 0 });
 
       const strategyVotes = { buy: 0, sell: 0 };
       for (const st of strategyDecisions || []) {
@@ -7369,29 +7497,32 @@ if (!weights.length) return 0;
       }
       const strategyAgreement = dir === 'BUY' ? strategyVotes.buy : strategyVotes.sell;
 
-      let basePoints = checks.reduce((acc, c) => acc + (Number.isFinite(c.points) ? c.points : (c.ok ? 1 : 0)), 0);
-      if (S.killerUseStrategyVotes && strategyAgreement > 0) basePoints += 1;
+      const buyVotes = (trendDir > 0 ? 1 : 0) + (strategyVotes.buy || 0);
+      const sellVotes = (trendDir < 0 ? 1 : 0) + (strategyVotes.sell || 0);
+      const totalVotes = Math.max(1, buyVotes + sellVotes);
+      const longPct = Math.round((buyVotes / totalVotes) * 100);
+      const shortPct = Math.round((sellVotes / totalVotes) * 100);
+      const dominance = dir === 'BUY' ? longPct : shortPct;
+      const dominanceThreshold = getKillerDominanceThreshold(adx);
+      const passDominance = dominance >= dominanceThreshold;
 
-      const supporting = getKillerSupportingBonus({ decision, regime });
-      const supportingBonus = Number(supporting.bonus || 0);
-      const maxPoints = 11;
-      const threshold = getScoreThresholdPoints();
-      const effectivePoints = Math.max(0, Math.min(11, basePoints + supportingBonus));
-      const nearMiss = Math.abs(effectivePoints - (threshold - 1)) < 0.0001;
-      const confOkNear = Number(decision?.confidence || 0) >= Math.max(0.60, Math.min(0.95, Number(S.toleranceConfidence || 0.75)));
-      const passConfluence = effectivePoints >= threshold;
-      const candleAgainst = !!(candleDir && candleDir !== dir);
+      const checks = [
+        { key: 'TREND', ok: strict.pass || !String(strict.reason || '').includes('Trend'), points: strict.pass ? 1 : 0 },
+        { key: 'RSI', ok: strict.pass || !String(strict.reason || '').includes('Momentum'), points: strict.pass ? 1 : 0 },
+        { key: 'DOM', ok: passDominance, points: passDominance ? 1 : 0 }
+      ];
+      const passConfluence = !!strict.pass;
 
       return {
         tf,
         direction: dir,
-        confluence: Number(basePoints.toFixed(2)),
-        effectivePoints: Number(effectivePoints.toFixed(2)),
-        supportingBonus: Number(supportingBonus.toFixed(2)),
-        supportingDetails: supporting.details || [],
-        minConfluence: threshold,
-        threshold,
-        maxPoints,
+        confluence: passConfluence ? 1 : 0,
+        effectivePoints: passConfluence ? 1 : 0,
+        supportingBonus: 0,
+        supportingDetails: [],
+        minConfluence: 1,
+        threshold: 1,
+        maxPoints: 1,
         longPct,
         shortPct,
         dominance,
@@ -7400,12 +7531,16 @@ if (!weights.length) return 0;
         checks,
         strategyVotes,
         strategyAgreement,
-        stabilityState,
-        candleAgainst,
+        stabilityState: 'STRICT',
+        candleAgainst: false,
         passConfluence,
         passDominance,
-        nearMiss,
-        confOkNear,
+        nearMiss: false,
+        confOkNear: false,
+        strictReason: strict.reason || '',
+        strictPass: !!strict.pass,
+        rsi: Number.isFinite(strict.rsi) ? Number(strict.rsi.toFixed(1)) : null,
+        momentumWindow: Number.isFinite(strict.rsi) ? `${strict.buyMin}/${strict.sellMax}` : '—'
       };
     }
 
@@ -8079,13 +8214,10 @@ if (!weights.length) return 0;
       const maxPoints = 11;
       const threshold = getScoreThresholdPoints();
       const basePoints = Number(killerSnapshot?.confluence || 0);
-      const supportingBonus = Number(killerSnapshot?.supportingBonus || 0);
-      const effectivePoints = Math.max(0, Math.min(11, basePoints + supportingBonus));
+      const supportingBonus = 0;
+      const effectivePoints = Number(basePoints || 0);
 
-      breakdown.push(`CONF ${basePoints.toFixed(1)}/${maxPoints} + BONUS ${supportingBonus.toFixed(1)} → ${effectivePoints.toFixed(1)}/${maxPoints} (мин ${threshold})`);
-      if (Array.isArray(killerSnapshot?.supportingDetails) && killerSnapshot.supportingDetails.length) {
-        breakdown.push(`BONUS: ${killerSnapshot.supportingDetails.join(' • ')}`);
-      }
+      breakdown.push(`STRICT VETO | ${basePoints.toFixed(1)}/${maxPoints} | праг ${threshold}`);
 
       const regimeState = String(regime?.state || '').toLowerCase();
       if (noTradeInChop && regimeState === 'chop') hardFails.push('CHOP – без сделки');
@@ -8140,6 +8272,70 @@ if (!weights.length) return 0;
       }
       return { slope, last: last.c, peak: peak.c, peakDir: peak.d, peakT: peak.t, troughAfterPeak };
     }
+    function logPrecalcConsole(message, spamKey, spamState, cooldownMs = 5000) {
+      if (!message) return;
+      if (spamKey && !logSpamControlled(spamKey, spamState, cooldownMs)) return;
+      logConsoleLine(message);
+    }
+
+    function runPrecalcStage(timeframes, decisionsByTf, evaluatePrecheckGate, requiredThreshold) {
+      if (!Array.isArray(timeframes) || !timeframes.length) return;
+      if (!S.proPrecalcEnabled) {
+        if (S.preCalculatedSignal) {
+          S.preCalculatedSignal = null;
+        }
+        return;
+      }
+
+      for (const tf of timeframes) {
+        const tfMs = Number(KILLER_TF_MS[tf] || 0);
+        if (!(tfMs > 0)) continue;
+
+        const tfSec = Math.round(tfMs / 1000);
+        const t = Number(getTimeInCandleSec(tfMs));
+        const inPreCalcWindow = tfSec > 10 && Number.isFinite(t) && t >= (tfSec - 5) && t <= (tfSec - 1);
+        if (!inPreCalcWindow) continue;
+
+        const candleStart = getCandleStart(tfMs);
+        const tfLabel = String(tf || '1m').toLowerCase();
+        const baseSpamKey = `precalc:${tfLabel}`;
+        const d = decisionsByTf?.[tf] || null;
+
+        if (!d) {
+          logPrecalcConsole(`🟡 PRECALC ПРОПУСК | ${tfLabel} | няма сигнал`, `${baseSpamKey}:no-signal`, `${candleStart}:no-signal`, 15000);
+          continue;
+        }
+
+        if (!d.direction) {
+          logPrecalcConsole(`🟠 PRECALC ПРОПУСК | ${tfLabel} | няма посока`, `${baseSpamKey}:no-direction`, `${candleStart}:no-direction`, 15000);
+          continue;
+        }
+
+        const gate = evaluatePrecheckGate(tf, d, d.regime, requiredThreshold);
+        if (!gate?.pass) {
+          const gateState = `${candleStart}:${String(gate?.reason || 'gate-fail')}`;
+          logPrecalcConsole(`🔴 PRECALC БЛОК | ${tfLabel} | филтър отказ`, `${baseSpamKey}:gate-fail`, gateState, 15000);
+          continue;
+        }
+
+        const signalTfKey = String(d.tfKey || tf).toLowerCase();
+        if (S.preCalculatedSignal && String(S.preCalculatedSignal.tfKey || '').toLowerCase() === signalTfKey && S.preCalculatedSignal.candleStart === candleStart) {
+          logPrecalcConsole(`🔵 PRECALC ПРОПУСК | ${tfLabel} | вече записан`, `${baseSpamKey}:duplicate`, `${candleStart}:duplicate`, 15000);
+          continue;
+        }
+
+        S.preCalculatedSignal = {
+          ...d,
+          tfKey: signalTfKey,
+          preCalculatedAt: Date.now(),
+          candleStart,
+          priceAtDecision: Number(S.currentAssetPrice)
+        };
+        logPrecalcConsole(`⏱️⏭️ PRECALC ГОТОВ | ${signalTfKey} | ${String(d.direction || '').toUpperCase()} | conf=${Math.round(Number(d.confidence || 0) * 100)}% | слот=55-59s`, `${baseSpamKey}:ready`, `${candleStart}:${String(d.direction || '')}:${Math.round(Number(d.confidence || 0) * 100)}`, 15000);
+        break;
+      }
+    }
+
     async function runKillerTick() {
       S.engineState = 'ANALYZE';
       const now = Date.now();
@@ -8215,6 +8411,7 @@ if (!weights.length) return 0;
       }
 
       S.feedState = 'READY';
+      updateSpikeProtectionState();
       const canTrade = S.autoTrade && !S.executing;
 
       const timeframes = getKillerTimeframes();
@@ -8268,6 +8465,8 @@ if (!weights.length) return 0;
           S._entryWindowClosedByTf[tf] = { candleStart, closed: false, logged: false };
         }
         const winState = S._entryWindowClosedByTf[tf];
+        const tfSec = Math.round(windowMs / 1000);
+        const inPreCalcWindow = tfSec > 10 && Number.isFinite(timeInCandle) && timeInCandle >= (tfSec - 5) && timeInCandle <= (tfSec - 1);
         if (S.entryWindowTfEnabled && entryWindowLimit > 0 && Number.isFinite(timeInCandle) && timeInCandle > entryWindowLimit) {
           if (!winState.logged) {
             const detailTxt = `${timeInCandle.toFixed(1)}s > ${entryWindowLimit.toFixed(0)}s`;
@@ -8281,7 +8480,9 @@ if (!weights.length) return 0;
           const confPrev = getPrevStatus(tf)?.confidence ?? null;
           const dirPrev = getPrevStatus(tf)?.direction ?? null;
           tfStatus[tf] = { state: 'window_closed', detail: `${timeInCandle.toFixed(1)}>${entryWindowLimit}`, confidence: confPrev, direction: dirPrev };
-          continue;
+          if (!inPreCalcWindow) {
+            continue;
+          }
         }
         const readiness = partnerReady.details?.[tf];
         if (readiness && !readiness.ready) {
@@ -8311,6 +8512,7 @@ if (!weights.length) return 0;
           entryWindowSec: entryWindowLimit,
           candleStart
         });
+        if (decision) decision.priceAtSignal = Number(S.currentAssetPrice);
         decisionsByTf[tf] = decision;
         if (!decision) {
           tfStatus[tf] = { state: 'nodata', detail: 'липсва решение от стратегия', confidence: null, direction: null };
@@ -8466,43 +8668,21 @@ if (!weights.length) return 0;
           const strategyGateOk = !S.killerUseStrategyVotes || killerSnapshotTf.strategyAgreement >= minAgreement;
           const counterCandleHardStop = !!(S.killerCandleAgainstHardStop && killerSnapshotTf.candleAgainst);
           decision.counterCandleHardStop = counterCandleHardStop;
-          const threshold = Number(killerSnapshotTf.threshold || getScoreThresholdPoints());
-          const nearMiss = Math.abs(Number(killerSnapshotTf.effectivePoints || 0) - (threshold - 1)) < 0.0001;
-          const confOkNear = !!killerSnapshotTf.confOkNear;
-          const mode = String(S.toleranceMode || 'either');
           const ptRuntimeMode = getPtModeForRuntime(regime?.state);
           const ptEdgeHit = killerEdgeTriggered(tf, decision.direction, true);
-          let ptBonus = 0;
-          if (ptRuntimeMode === 'hard') {
-            perfectTimeOk = !!ptEdgeHit;
-          } else if (ptRuntimeMode === 'soft') {
-            perfectTimeOk = true;
-            ptBonus = ptEdgeHit ? 0.5 : 0;
-          } else {
-            perfectTimeOk = true;
-          }
-          if (ptBonus > 0) {
-            const maxPts = Number(killerSnapshotTf.maxPoints || 11);
-            const thresholdPts = Number(killerSnapshotTf.threshold || getScoreThresholdPoints());
-            killerSnapshotTf.effectivePoints = Math.max(0, Math.min(maxPts, Number(killerSnapshotTf.effectivePoints || 0) + ptBonus));
-            killerSnapshotTf.passConfluence = killerSnapshotTf.effectivePoints >= thresholdPts;
-          }
-          const ptOkNear = !!perfectTimeOk;
-          const allowNearMiss = mode === 'confidence' ? confOkNear : mode === 'pt' ? ptOkNear : mode === 'either' ? (confOkNear || ptOkNear) : false;
-          const confluenceWithTolerance = !!(killerSnapshotTf.passConfluence || (nearMiss && allowNearMiss));
-          killerSnapshotTf.allowNearMiss = allowNearMiss;
-          killerAlignmentOk = !!(confluenceWithTolerance && killerSnapshotTf.passDominance && strategyGateOk);
+          perfectTimeOk = ptRuntimeMode === 'hard' ? !!ptEdgeHit : true;
+          killerAlignmentOk = !!(killerSnapshotTf.passConfluence && killerSnapshotTf.passDominance && strategyGateOk && !counterCandleHardStop);
           if (!killerAlignmentOk) {
             try {
-              const reason = !(killerSnapshotTf.passConfluence || (killerSnapshotTf.nearMiss && killerSnapshotTf.allowNearMiss)) ? 'Confluence' : (!killerSnapshotTf.passDominance ? 'Dominance' : (!strategyGateOk ? 'Strategy' : ''));
+              const reason = !killerSnapshotTf.passConfluence
+                ? (killerSnapshotTf.strictReason || 'Confluence')
+                : (!killerSnapshotTf.passDominance ? 'Dominance' : (!strategyGateOk ? 'Strategy' : (counterCandleHardStop ? 'CounterCandle' : '')));
               sessionRecordKiller(tf, killerSnapshotTf, 'WAIT', reason);
             } catch (e) {}
           } else if (!perfectTimeOk) {
             try { sessionRecordKiller(tf, killerSnapshotTf, 'WAIT', 'PerfectTime'); } catch (e) {}
           }
         }
-
-        if (S.killerEnabled && killerAlignmentOk && perfectTimeOk) { try { sessionRecordKiller(tf, killerSnapshotTf, 'PASS', ''); } catch (e) {} }
 
         const entryWindowOk = !S.entryWindowTfEnabled || entryWindowLimit <= 0 || timeInCandle <= entryWindowLimit;
         const spreadMetric = Number.isFinite(S.lastGlobalSpread) ? S.lastGlobalSpread : 0;
@@ -8572,7 +8752,7 @@ if (!weights.length) return 0;
       }
 
       const readySignalsForVote = Object.keys(tfStatus)
-        .filter((tf) => ['ready', 'risk'].includes(tfStatus[tf]?.state) && decisionsByTf[tf]?.direction)
+        .filter((tf) => ['ready'].includes(tfStatus[tf]?.state) && decisionsByTf[tf]?.direction)
         .map((tf) => decisionsByTf[tf]);
       if (readySignalsForVote.length >= minReadyCount) {
         let buyScore = 0;
@@ -8622,6 +8802,7 @@ if (!weights.length) return 0;
       renderKillerMatrix();
       renderPendingTrades();
       renderKillerHud();
+      runPrecalcStage(timeframes, decisionsByTf, evaluatePrecheckGate, requiredThreshold);
       if (!best) {
         S.analysisConfidence = bestCandidate ? bestCandidate.confidence : 0;
         S.analysisDirection = bestCandidate ? bestCandidate.direction : null;
@@ -8694,7 +8875,7 @@ if (!weights.length) return 0;
     S.lastGlobalSellAvg = sellAvg;
     S.lastGlobalSpread = spreadPct;
 const readySignals = Object.keys(tfStatus)
-        .filter(tf => ['ready', 'risk'].includes(tfStatus[tf]?.state))
+        .filter(tf => ['ready'].includes(tfStatus[tf]?.state))
         .map(tf => {
           const decision = decisionsByTf[tf];
           const windowMs = KILLER_TF_MS[tf];
@@ -8728,7 +8909,25 @@ const readySignals = Object.keys(tfStatus)
         return;
       }
 
-      const signalsToExecute = readySignals.slice(0, availableSlots);
+      let signalsToExecute = readySignals.slice(0, availableSlots);
+      if (!S.proPrecalcEnabled && S.preCalculatedSignal) {
+        S.preCalculatedSignal = null;
+      }
+      if (S.proPrecalcEnabled && S.preCalculatedSignal && S.preCalculatedSignal.tfKey) {
+        const tfKey = String(S.preCalculatedSignal.tfKey || '1m').toLowerCase();
+        const tfMs = KILLER_TF_MS[tfKey] || 60_000;
+        const t = Number(getTimeInCandleSec(tfMs));
+        const limit = tfKey === '1m' ? Number(S.entryWindowSec1m || 15)
+          : tfKey === '3m' ? Number(S.entryWindowSec3m || 35)
+          : Number(S.entryWindowSec5m || 150);
+        const currentCandleStart = getCandleStart(tfMs);
+        const preparedPrevCandle = Number(S.preCalculatedSignal.candleStart || 0) < currentCandleStart;
+        if (preparedPrevCandle && t >= 0 && t <= limit) {
+          signalsToExecute = [{ ...S.preCalculatedSignal, _fromPreCalc: true, windowMs: tfMs }];
+        } else if (t > limit || currentCandleStart > Number(S.preCalculatedSignal.candleStart || 0) + tfMs) {
+          S.preCalculatedSignal = null;
+        }
+      }
 
       for (let i = 0; i < signalsToExecute.length; i += 1) {
         const decision = signalsToExecute[i];
@@ -8736,7 +8935,7 @@ const readySignals = Object.keys(tfStatus)
         const baseConfPct = Math.round(Number(decision?.confidence || 0) * 100);
 
         // Frozen signal flow: no strategy re-selection before execution.
-        const preDelayMs = Math.max(250, Number.isFinite(S.preTradeRecheckDelayMs) ? S.preTradeRecheckDelayMs : 400);
+        const preDelayMs = decision._fromPreCalc ? 0 : Math.max(250, Number.isFinite(S.preTradeRecheckDelayMs) ? S.preTradeRecheckDelayMs : 400);
         await new Promise(r => setTimeout(r, preDelayMs));
 
         if (i > 0) {
@@ -8868,6 +9067,13 @@ const readySignals = Object.keys(tfStatus)
           continue;
         }
       }
+
+      if (S.spikeProtectionEnabled) {
+        if ((decision.direction === 'BUY' && S.blockBuy) || (decision.direction === 'SELL' && S.blockSell)) {
+          setSkipReason('Spike trend-follow only');
+          continue;
+        }
+      }
 const frozenSignal = {
           asset: assetLabel,
           assetSearch,
@@ -8955,7 +9161,7 @@ const frozenSignal = {
 
         // 2) Removed extra anti-flip vote gate here to reduce duplicate post-ready blocking.
 
-        const confirmDelayMs = getAdaptiveConfirmDelayMs(decision.tfKey);
+        const confirmDelayMs = decision._fromPreCalc ? 0 : getAdaptiveConfirmDelayMs(decision.tfKey);
         const frozenSignalBaseConfidence = Number(frozenSignal.confidence || 0);
         let finalConfidence = frozenSignalBaseConfidence;
         if (confirmDelayMs > 0) {
@@ -9027,6 +9233,9 @@ const frozenSignal = {
           }
         }
 const ok = await executeTradeOrder(signal);
+        if (decision._fromPreCalc) {
+          S.preCalculatedSignal = null;
+        }
         S.killerInFlightUntil = 0;
         S.baseAmount = prevBase;
         S.assetSelectedForSignal = false;
@@ -9280,6 +9489,17 @@ const ok = await executeTradeOrder(signal);
     async function selectAssetWithVerification(signal) {
       if (S.assetSelectionAttempted && !S.forceAssetSelect) return true;
       if (S.assetSelecting) return false;
+
+      if (S.singleAssetMode) {
+        const current = normalizeAssetLabel(getCurrentAssetLabel());
+        const wanted = normalizeAssetLabel(signal?.asset);
+        if (current && wanted && current === wanted) {
+          S.assetSelecting = false;
+          S.assetSelectionAttempted = true;
+          S.assetSelectedForSignal = true;
+          return true;
+        }
+      }
 
       const precheck = verifyAssetSelection(signal.asset);
       if (precheck.verified) {
@@ -10007,6 +10227,22 @@ const ok = await executeTradeOrder(signal);
                                     <div class="iaa-field-row" title="Изисква посоката да се задържи X секунди преди вход.">
                                       <span class="iaa-field-label">Engine Stabilizer (сек.)</span>
                                       <input type="number" id="iaa-engine-stabilizer-sec" min="0" max="20" step="1" value="3">
+                                    </div>
+                                  </div>
+                                  <div class="iaa-field-row" title="Професионални филтри за вход."><span class="iaa-field-label" style="color:#fbbf24;">PRO Filters</span><button id="iaa-pro-filters-toggle" type="button" class="iaa-toggle-btn">▸</button></div>
+                                  <div id="iaa-pro-filters-panel" style="display:none; margin-left:8px;">
+                                    <div class="iaa-field-row iaa-field-toggle"><label class="iaa-checkbox"><input type="checkbox" id="iaa-pro-precalc-enabled"> Предварителен анализ 55–59s</label></div>
+                                    <div class="iaa-field-row iaa-field-toggle"><label class="iaa-checkbox"><input type="checkbox" id="iaa-pro-drift-enabled"> Drift защита</label></div>
+                                    <div class="iaa-field-row iaa-field-toggle"><label class="iaa-checkbox"><input type="checkbox" id="iaa-pro-spike-enabled"> Волатилен Spike</label></div>
+                                    <div class="iaa-field-row iaa-field-toggle">
+                                      <label class="iaa-checkbox"><input type="checkbox" id="iaa-pro-doji-enabled"> Doji филтър</label>
+                                      <span class="iaa-mini-label">Чувствителност</span>
+                                      <input type="number" id="iaa-pro-doji-sensitivity" min="1" max="50" step="1" value="15"><span class="iaa-mini-label">%</span>
+                                    </div>
+                                    <div class="iaa-field-row iaa-field-toggle">
+                                      <label class="iaa-checkbox"><input type="checkbox" id="iaa-pro-sr-enabled"> Отскок S/R</label>
+                                      <span class="iaa-mini-label">Свещи</span>
+                                      <input type="number" id="iaa-pro-sr-lookback" min="5" max="120" step="1" value="20">
                                     </div>
                                   </div>
                                 </div>
@@ -11007,6 +11243,20 @@ setTimeout(() => {
       const engineGuardStabilizerSec = await storage.get(ENGINE_GUARD_STABILIZER_SEC_KEY);
       if (typeof engineGuardStabilizerSec === 'number') S.engineGuardStabilizerSec = Math.max(0, Math.min(20, Math.round(Number(engineGuardStabilizerSec))));
       S.engineGuardEnabled = !!(S.engineGuardImpulseEnabled || S.engineGuardNoiseEnabled || Number(S.engineGuardStabilizerSec || 0) > 0);
+      const proPrecalcEnabled = await storage.get(PRO_PRECALC_ENABLED_KEY);
+      if (typeof proPrecalcEnabled === 'boolean') S.proPrecalcEnabled = proPrecalcEnabled;
+      const proDriftEnabled = await storage.get(PRO_DRIFT_ENABLED_KEY);
+      if (typeof proDriftEnabled === 'boolean') S.driftProtectionEnabled = proDriftEnabled;
+      const proSpikeEnabled = await storage.get(PRO_SPIKE_ENABLED_KEY);
+      if (typeof proSpikeEnabled === 'boolean') S.spikeProtectionEnabled = proSpikeEnabled;
+      const proDojiEnabled = await storage.get(PRO_DOJI_ENABLED_KEY);
+      if (typeof proDojiEnabled === 'boolean') S.filterDojiEnabled = proDojiEnabled;
+      const proDojiSensitivity = await storage.get(PRO_DOJI_SENSITIVITY_KEY);
+      if (typeof proDojiSensitivity === 'number') S.dojiSensitivity = Math.max(0.01, Math.min(0.5, Number(proDojiSensitivity)));
+      const proSrEnabled = await storage.get(PRO_SR_ENABLED_KEY);
+      if (typeof proSrEnabled === 'boolean') S.filterSrEnabled = proSrEnabled;
+      const proSrLookback = await storage.get(PRO_SR_LOOKBACK_KEY);
+      if (typeof proSrLookback === 'number') S.srLookback = Math.max(5, Math.min(120, Math.round(Number(proSrLookback))));
     
     // --- NEW FILTERS (Advanced) ---
     S.filterSpreadEnabled = !!(await storage.get(FILTER_SPREAD_ENABLED_KEY, false));
@@ -11296,6 +11546,13 @@ setTimeout(() => {
       storage.set(ENGINE_GUARD_IMPULSE_KEY, Number(S.engineGuardImpulse || 0.70));
       storage.set(ENGINE_GUARD_NOISE_KEY, Number(S.engineGuardNoise || 0.55));
       storage.set(ENGINE_GUARD_STABILIZER_SEC_KEY, Math.round(Number(S.engineGuardStabilizerSec || 0)));
+      storage.set(PRO_PRECALC_ENABLED_KEY, !!S.proPrecalcEnabled);
+      storage.set(PRO_DRIFT_ENABLED_KEY, !!S.driftProtectionEnabled);
+      storage.set(PRO_SPIKE_ENABLED_KEY, !!S.spikeProtectionEnabled);
+      storage.set(PRO_DOJI_ENABLED_KEY, !!S.filterDojiEnabled);
+      storage.set(PRO_DOJI_SENSITIVITY_KEY, Number(S.dojiSensitivity || 0.15));
+      storage.set(PRO_SR_ENABLED_KEY, !!S.filterSrEnabled);
+      storage.set(PRO_SR_LOOKBACK_KEY, Math.max(5, Math.min(120, Math.round(Number(S.srLookback || 20)))));
       await storage.set(FILTER_SPREAD_ENABLED_KEY, !!S.filterSpreadEnabled);
       await storage.set(FILTER_SPREAD_THRESHOLD_KEY, Number(S.filterSpreadThreshold || 0));
 
@@ -11579,6 +11836,15 @@ setTimeout(() => {
       const engineGuardImpulseSettings = $id('iaa-engine-impulse');
       const engineGuardNoiseSettings = $id('iaa-engine-noise');
       const engineGuardStabilizerSettings = $id('iaa-engine-stabilizer-sec');
+      const proFiltersToggleSettings = $id('iaa-pro-filters-toggle');
+      const proFiltersPanelSettings = $id('iaa-pro-filters-panel');
+      const proPrecalcEnabledSettings = $id('iaa-pro-precalc-enabled');
+      const proDriftEnabledSettings = $id('iaa-pro-drift-enabled');
+      const proSpikeEnabledSettings = $id('iaa-pro-spike-enabled');
+      const proDojiEnabledSettings = $id('iaa-pro-doji-enabled');
+      const proDojiSensitivitySettings = $id('iaa-pro-doji-sensitivity');
+      const proSrEnabledSettings = $id('iaa-pro-sr-enabled');
+      const proSrLookbackSettings = $id('iaa-pro-sr-lookback');
       if (killerEnabledSettings) { killerEnabledSettings.checked = !!S.killerEnabled; killerEnabledSettings.disabled = false; killerEnabledSettings.title = "Вкл./изкл. KILLER филтъра"; }
       if (killerHudEnabledSettings) killerHudEnabledSettings.checked = !!S.killerHudEnabled;
       if (killerMinConfluenceSettings) killerMinConfluenceSettings.value = ['7of11','8of11','9of11'].includes(S.killerThresholdMode) ? S.killerThresholdMode : '8of11';
@@ -11614,6 +11880,15 @@ setTimeout(() => {
       if (engineGuardImpulseSettings) engineGuardImpulseSettings.value = Number(S.engineGuardImpulse ?? 0.70).toFixed(2);
       if (engineGuardNoiseSettings) engineGuardNoiseSettings.value = Number(S.engineGuardNoise ?? 0.55).toFixed(2);
       if (engineGuardStabilizerSettings) engineGuardStabilizerSettings.value = String(Math.max(0, Math.min(20, Math.round(Number(S.engineGuardStabilizerSec ?? 3)))));
+      if (proFiltersPanelSettings) proFiltersPanelSettings.style.display = S.proFiltersPanelOpen ? 'block' : 'none';
+      if (proFiltersToggleSettings) proFiltersToggleSettings.textContent = S.proFiltersPanelOpen ? '▾' : '▸';
+      if (proPrecalcEnabledSettings) proPrecalcEnabledSettings.checked = !!S.proPrecalcEnabled;
+      if (proDriftEnabledSettings) proDriftEnabledSettings.checked = !!S.driftProtectionEnabled;
+      if (proSpikeEnabledSettings) proSpikeEnabledSettings.checked = !!S.spikeProtectionEnabled;
+      if (proDojiEnabledSettings) proDojiEnabledSettings.checked = !!S.filterDojiEnabled;
+      if (proDojiSensitivitySettings) proDojiSensitivitySettings.value = String(Math.round(Math.max(0.01, Math.min(0.5, Number(S.dojiSensitivity || 0.15))) * 100));
+      if (proSrEnabledSettings) proSrEnabledSettings.checked = !!S.filterSrEnabled;
+      if (proSrLookbackSettings) proSrLookbackSettings.value = String(Math.max(5, Math.min(120, Math.round(Number(S.srLookback || 20)))));
       const biasBody = $id('iaa-bias-body'); const biasPanel = $id('iaa-bias-panel'); const biasToggle = $id('iaa-bias-toggle');
       const stabBody = $id('iaa-stability-body'); const stabPanel = $id('iaa-stability-panel'); const stabToggle = $id('iaa-stability-toggle');
       if (biasBody) biasBody.style.display = ''; if (stabBody) stabBody.style.display = '';
@@ -12261,6 +12536,15 @@ toggleBtn.classList.toggle('stop', S.running);
       const engineImpulseInput = $id('iaa-engine-impulse');
       const engineNoiseInput = $id('iaa-engine-noise');
       const engineStabilizerInput = $id('iaa-engine-stabilizer-sec');
+      const proFiltersToggleBtn = $id('iaa-pro-filters-toggle');
+      const proFiltersPanel = $id('iaa-pro-filters-panel');
+      const proPrecalcInput = $id('iaa-pro-precalc-enabled');
+      const proDriftInput = $id('iaa-pro-drift-enabled');
+      const proSpikeInput = $id('iaa-pro-spike-enabled');
+      const proDojiInput = $id('iaa-pro-doji-enabled');
+      const proDojiSensInput = $id('iaa-pro-doji-sensitivity');
+      const proSrInput = $id('iaa-pro-sr-enabled');
+      const proSrLookbackInput = $id('iaa-pro-sr-lookback');
       safeBindOnce(engineGuardToggleBtn, 'click', () => {
         S.engineGuardPanelOpen = !S.engineGuardPanelOpen;
         if (engineGuardPanel) engineGuardPanel.style.display = S.engineGuardPanelOpen ? 'block' : 'none';
@@ -12283,6 +12567,36 @@ toggleBtn.classList.toggle('stop', S.running);
         const v = parseNumberFlexible(engineStabilizerInput.value);
         if (Number.isFinite(v)) S.engineGuardStabilizerSec = Math.max(0, Math.min(20, Math.round(Number(v))));
         S.engineGuardEnabled = !!(S.engineGuardImpulseEnabled || S.engineGuardNoiseEnabled || Number(S.engineGuardStabilizerSec || 0) > 0);
+        void persistSettings();
+      });
+      safeBindOnce(proFiltersToggleBtn, 'click', () => {
+        S.proFiltersPanelOpen = !S.proFiltersPanelOpen;
+        if (proFiltersPanel) proFiltersPanel.style.display = S.proFiltersPanelOpen ? 'block' : 'none';
+        if (proFiltersToggleBtn) proFiltersToggleBtn.textContent = S.proFiltersPanelOpen ? '▾' : '▸';
+        void persistSettings();
+      });
+      safeBindOnce(proPrecalcInput, 'change', () => {
+        S.proPrecalcEnabled = !!proPrecalcInput.checked;
+        if (!S.proPrecalcEnabled) {
+          S.preCalculatedSignal = null;
+          logConsoleLine('⚪ Предварителен анализ: ИЗКЛ');
+        }
+        void persistSettings();
+      });
+      safeBindOnce(proDriftInput, 'change', () => { S.driftProtectionEnabled = !!proDriftInput.checked; void persistSettings(); });
+      safeBindOnce(proSpikeInput, 'change', () => { S.spikeProtectionEnabled = !!proSpikeInput.checked; if (!S.spikeProtectionEnabled) { S.blockBuy = false; S.blockSell = false; } void persistSettings(); });
+      safeBindOnce(proDojiInput, 'change', () => { S.filterDojiEnabled = !!proDojiInput.checked; void persistSettings(); });
+      safeBindOnce(proDojiSensInput, 'change', () => {
+        const v = parseNumberFlexible(proDojiSensInput.value);
+        S.dojiSensitivity = Math.max(0.01, Math.min(0.5, (Number.isFinite(v) ? Number(v) : 15) / 100));
+        if (proDojiSensInput) proDojiSensInput.value = String(Math.round(S.dojiSensitivity * 100));
+        void persistSettings();
+      });
+      safeBindOnce(proSrInput, 'change', () => { S.filterSrEnabled = !!proSrInput.checked; void persistSettings(); });
+      safeBindOnce(proSrLookbackInput, 'change', () => {
+        const v = parseNumberFlexible(proSrLookbackInput.value);
+        S.srLookback = Math.max(5, Math.min(120, Math.round(Number.isFinite(v) ? v : 20)));
+        if (proSrLookbackInput) proSrLookbackInput.value = String(S.srLookback);
         void persistSettings();
       });
       safeBindOnce(biasToggleBtn, 'click', () => { S.biasPanelOpen = !S.biasPanelOpen; if (biasPanel) biasPanel.style.display = S.biasPanelOpen ? 'block' : 'none'; if (biasToggleBtn) biasToggleBtn.textContent = S.biasPanelOpen ? '▾' : '▸'; });
