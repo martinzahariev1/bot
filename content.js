@@ -1950,7 +1950,7 @@
       if (!decision || !decision.direction) return { pass: false, reason: 'слаб сигнал' };
       const conf = Number(decision.confidence || 0);
       const minBase = Number.isFinite(Number(S.analysisConfidenceThreshold)) ? Number(S.analysisConfidenceThreshold) : 0.42;
-      const confNeed = Math.max(minBase, Number(requiredThreshold || 0) - 0.18);
+      const confNeed = Math.max(minBase, Number(requiredThreshold || 0));
       if (conf < confNeed) return { pass: false, reason: 'слаба увереност', details: `${(conf * 100).toFixed(0)}% < ${(confNeed * 100).toFixed(0)}%` };
       const t = Number(decision.timeInCandle || 0);
       const lim = Number(decision.entryWindowSec || 0);
@@ -2124,6 +2124,9 @@
         m.startsWith('🟠 PRECALC ПРОПУСК |') ||
         m.startsWith('🔴 PRECALC БЛОК |') ||
         m.startsWith('🔵 PRECALC ПРОПУСК |') ||
+        m.startsWith('🧾|') ||
+        m.startsWith('🔴🧾|') ||
+        m.startsWith('🔵🧾|') ||
         m.startsWith('⚪ Предварителен анализ: ИЗКЛ') ||
         m.startsWith('💥 СДЕЛКА |') ||
         m.startsWith('✅ ПЕЧАЛБА |') ||
@@ -2260,8 +2263,11 @@
         tf: trade?.tf || trade?.timeframe || trade?.expiryTf || trade?.expiry || '',
         direction: trade?.direction || trade?.execDirection || trade?.side || '',
         confidence: normalizedConfidence,
+        confidencePct: Number.isFinite(normalizedConfidence) ? Math.round(normalizedConfidence * 100) : null,
         mode: trade?.mode || (S.autoTrade ? 'AUTO' : 'MANUAL'),
         expiry: trade?.expiry || trade?.resolvedExpiry || '',
+        source: trade?.source || trade?.commitSource || '',
+        commitSource: trade?.commitSource || trade?.source || '',
         strategyKey: trade?.strategyKey || trade?.strategy || S.lastStrategyKey || null,
         regime: (trade?.entryContext?.regime?.state || trade?.entryContext?.regime || trade?.entryContext?.entryMeta?.regime?.state || null),
         points: Number.isFinite(trade?.entryContext?.scoreCard?.points) ? trade.entryContext.scoreCard.points : null,
@@ -3269,6 +3275,60 @@ window.__REPORT_FNAME__ = "${fname}";
         trendAligned: meta.trendAligned ?? null,
         volumeOk: meta.volumeOk ?? null
       };
+    }
+
+    function enrichTradeTelemetry(trade, signal, entryContext, resolvedExpiry = null) {
+      if (!trade) return trade;
+      try {
+        trade.id = trade.id || ('T' + Date.now().toString(36) + '_' + Math.random().toString(16).slice(2));
+        trade.mode = trade.mode || (S.autoTrade ? 'AUTO' : 'MANUAL');
+
+        const derivedTf = String(
+          trade.tf ||
+          trade.timeframe ||
+          signal?.tfKey ||
+          signal?.timeframe ||
+          resolvedExpiry ||
+          trade.expiry ||
+          signal?.expiry ||
+          S.expirySetting ||
+          ''
+        );
+
+        if (!trade.tf) trade.tf = derivedTf;
+        if (!trade.timeframe) trade.timeframe = derivedTf;
+        if (!trade.tfLabel) trade.tfLabel = derivedTf;
+
+        const rawConf = Number.isFinite(Number(signal?.confidence))
+          ? Number(signal.confidence)
+          : Number.isFinite(Number(signal?.analysisConfidence))
+            ? Number(signal.analysisConfidence)
+            : Number.isFinite(Number(entryContext?.confidencePct))
+              ? (Number(entryContext.confidencePct) / 100)
+              : null;
+
+        if (!Number.isFinite(Number(trade.confidence)) && Number.isFinite(rawConf)) {
+          trade.confidence = Math.max(0, Math.min(1, rawConf));
+        }
+        if (!Number.isFinite(Number(trade.expectedConfidence)) && Number.isFinite(rawConf)) {
+          trade.expectedConfidence = Math.max(0, Math.min(1, rawConf));
+        }
+
+        const derivedSource = signal?._fromPreCalc
+          ? 'precalc'
+          : String(signal?.source || '').toLowerCase();
+
+        if (!trade.source || trade.source === 'signal') {
+          trade.source = derivedSource || (isKillerMode() ? 'killer' : 'runtime');
+        }
+
+        trade.commitSource = trade.commitSource || trade.source || null;
+        trade.strategyKey = trade.strategyKey || (entryContext && entryContext.strategyKey) || signal?.strategyKey || trade.strategy || '';
+        trade.entryContext = trade.entryContext || entryContext || null;
+        if (trade.entryContext && !trade.entryContext.source) trade.entryContext.source = trade.source || null;
+        if (trade.entryContext && !trade.entryContext.tf) trade.entryContext.tf = derivedTf || null;
+      } catch (e) {}
+      return trade;
     }
 
     function buildLossReasonSummary(trade, outcome, profitCents) {
@@ -5387,85 +5447,270 @@ function getMinHistoryWindowForReadinessMs() {
       playCountdownBeep();
     }
 
+
+    const tradeCommitGuard = new Map();
+
+    function __normalizeCommitTf(signal) {
+      const raw = String(signal?.expiry || signal?.tfKey || signal?.entryMeta?.tfKey || '').toLowerCase();
+      if (raw === 'm1' || raw == '1m') return '1m';
+      if (raw === 'm3' || raw == '3m') return '3m';
+      if (raw === 'm5' || raw == '5m') return '5m';
+      if (raw === 'm15' || raw == '15m') return '15m';
+      return raw || '1m';
+    }
+
+    function __commitGuardKey(signal) {
+      const tf = __normalizeCommitTf(signal);
+      const dir = String(signal?.direction || '').toUpperCase() || '-';
+      const candleStart = Number(signal?.entryMeta?.candleStart || signal?.candleStart || 0) || 0;
+      const asset = String(signal?.asset || getCurrentAssetLabel() || '').trim();
+      return `${tf}|${dir}|${candleStart}|${asset}`;
+    }
+
+    function __commitWaitReasonFromTfStatus(tfStatus) {
+      const state = String(tfStatus?.state || '').toLowerCase();
+      const detail = String(tfStatus?.detail || '');
+      if (!state || state === 'ready') return '';
+      if (state.includes('window')) return 'LATE';
+      if (state.includes('tf_wait')) return 'TF';
+      if (state.includes('precheck') || state.includes('risk')) {
+        if (/чоп/i.test(detail)) return 'ЧОП';
+        if (/конфликт/i.test(detail)) return 'конфликт';
+        if (/слаба увереност/i.test(detail)) return 'CONF';
+      }
+      if (/dom/i.test(detail) || /domin/i.test(detail)) return 'DOM';
+      return detail || state;
+    }
+
+    function __canCommitTrade(signal) {
+      const tf = __normalizeCommitTf(signal);
+      const tfMs = Number(KILLER_TF_MS[tf] || 0) || 60000;
+      const entryMeta = signal?.entryMeta || {};
+      const direction = String(signal?.direction || '').toUpperCase();
+      const timeInCandle = Number.isFinite(entryMeta?.timeInCandle) ? Number(entryMeta.timeInCandle) : Number(getTimeInCandleSec(tfMs));
+      const entryWindowSec = Number.isFinite(entryMeta?.entryWindowSec) ? Number(entryMeta.entryWindowSec) : 0;
+      const regime = entryMeta?.regime || {};
+      const requiredThreshold = clamp01(getKillerThresholdForScope(getExpiryScopeFromAsset(signal?.asset || getCurrentAssetLabel())));
+      const decision = {
+        direction,
+        confidence: Number(signal?.confidence || 0),
+        strategyKey: entryMeta?.strategyKey || signal?.strategyKey || '',
+        biasDir: Number(entryMeta?.biasDir || 0),
+        timeInCandle,
+        entryWindowSec,
+        candleStart: Number(entryMeta?.candleStart || getCandleStart(tfMs) || 0)
+      };
+
+      const reasons = [];
+      const gate = evaluatePrecheckGateCore(tf, decision, regime, requiredThreshold);
+      if (!gate?.pass) reasons.push(String(gate.reason || 'gate'));
+      const tfStatus = S?.killerTfStatus?.[tf];
+      const waitReason = __commitWaitReasonFromTfStatus(tfStatus);
+      if (waitReason) reasons.push(waitReason);
+
+      const currentState = String(tfStatus?.state || '').toLowerCase();
+      if (currentState && currentState !== 'ready') {
+        return { pass: false, reason: reasons[0] || currentState, reasons, gate, tfStatus };
+      }
+      if (reasons.length) {
+        return { pass: false, reason: reasons[0], reasons, gate, tfStatus };
+      }
+      return { pass: true, reason: '', reasons: [], gate, tfStatus };
+    }
+
+    function __isDuplicateTrade(signal) {
+      const key = __commitGuardKey(signal);
+      const now = Date.now();
+      const lockMs = 4000;
+      const prev = Number(tradeCommitGuard.get(key) || 0);
+      if (prev && (now - prev) < lockMs) return true;
+      tradeCommitGuard.set(key, now);
+      return false;
+    }
+
+    function __releaseDuplicateTrade(signal) {
+      try { tradeCommitGuard.delete(__commitGuardKey(signal)); } catch (_) {}
+    }
+
+    function __buildCommitAudit(signal, options = {}) {
+      const tf = __normalizeCommitTf(signal);
+      const dir = String(signal?.direction || '').toUpperCase() || '-';
+      const confInput = Number.isFinite(Number(options.confidenceOverride))
+        ? Number(options.confidenceOverride)
+        : Number(signal?.confidence ?? signal?.analysisConfidence ?? 0);
+      const confPct = Math.round(confInput > 1 ? confInput : confInput * 100);
+
+      const commitCheck = options.commitCheck || null;
+      const tfStatus = commitCheck?.tfStatus || null;
+      const waitReason = __commitWaitReasonFromTfStatus(tfStatus);
+      const waits = waitReason ? 1 : 0;
+      const reasonList = Array.isArray(commitCheck?.reasons) ? commitCheck.reasons.filter(Boolean) : [];
+      const stops = Number.isFinite(Number(options.stops))
+        ? Number(options.stops)
+        : (commitCheck?.pass === false ? Math.max(1, reasonList.length || 0) : 0);
+
+      const src = signal?.preCalculatedAt
+        ? 'precalc'
+        : String(signal?.source || (isKillerMode() ? 'killer' : 'runtime')).toLowerCase();
+
+      return {
+        tf,
+        dir,
+        confPct,
+        stops,
+        waits,
+        src,
+        reason: String(options.reason || commitCheck?.reason || '').trim(),
+        detail: String(options.detail || commitCheck?.gate?.details || tfStatus?.detail || '').trim()
+      };
+    }
+
+    function __commitReasonCode(reason) {
+      const raw = String(reason || '').trim();
+      const norm = raw.toLowerCase();
+      const mapped = {
+        'impulse_extension': 'IMPULSE',
+        'micro_noise': 'NOISE',
+        'dir_stabilizer': 'STAB',
+        'confidence': 'CONF',
+        'duplicate_trade': 'DUP',
+        'дубликат': 'DUP',
+        'direction_lock': 'DIR_LOCK'
+      };
+      if (mapped[norm]) return mapped[norm];
+      if (!raw) return 'BLOCK';
+      if (raw === 'Mismatch' || raw === 'Reversal' || raw === 'Conflict' || raw === 'Payout' || raw === 'Warmup' || raw === 'Interval') return raw;
+      return raw;
+    }
+
+    function __commitDetailShort(detail = '') {
+      const txt = String(detail || '').trim();
+      if (!txt) return '';
+      return txt
+        .replace(/^ratio=/i, 'r=')
+        .replace(/^stability=/i, 's=')
+        .replace(/^trade mutex active$/i, 'mutex')
+        .replace(/^trade lock active$/i, 'trade_lock');
+    }
+
+    function __commitSrcShort(src) {
+      const val = String(src || '').trim().toLowerCase();
+      return val || '-';
+    }
+
+    function __commitShouldLog(kind, audit, cooldownMs = 1500) {
+      const key = `commit:${kind}:${String(audit.tf || '').toLowerCase()}`;
+      const state = [
+        String(audit.dir || ''),
+        String(audit.reasonCode || audit.reason || ''),
+        String(audit.detailShort || ''),
+        String(audit.confPct || '')
+      ].join('|');
+      return logSpamControlled(key, state, cooldownMs);
+    }
+
+    function __logCommit(signal, confidenceOverride = null, commitCheck = null) {
+      const audit = __buildCommitAudit(signal, { confidenceOverride, commitCheck, stops: 0 });
+      if (!__commitShouldLog('pass', audit, 900)) return;
+      logConsoleLine(`🧾| ${audit.tf} | ${audit.dir} | ${audit.confPct}% | ${__commitSrcShort(audit.src)}`);
+    }
+
+
     /* ========================= ENHANCED TRADE EXECUTION WITH EXACT TIMING ========================= */
     async function executeTradeOrder(signal) {
       if (S.executing) return false;
-      if (S.tradeMutex?.active) return false;
+      const __commitCheck = __canCommitTrade(signal);
+      const __logCommitBlock = (reason, detail = '') => {
+        setSkipReason(reason || 'commit_block');
+        const __blockAudit = __buildCommitAudit(signal, { commitCheck: __commitCheck, reason, detail, stops: 1 });
+        __blockAudit.reasonCode = __commitReasonCode(__blockAudit.reason || 'commit_block');
+        __blockAudit.detailShort = __commitDetailShort(__blockAudit.detail);
+        if (__commitShouldLog('block', __blockAudit, 1800)) {
+          logConsoleLine(`🔴🧾| ${__blockAudit.tf} | ${__blockAudit.dir} | ${__blockAudit.reasonCode}${__blockAudit.detailShort ? ` | ${__blockAudit.detailShort}` : ''} | ${__blockAudit.confPct}% | ${__commitSrcShort(__blockAudit.src)}`);
+        }
+        return false;
+      };
+      if (!__commitCheck.pass) {
+        const reasonTxt = String(__commitCheck.reason || 'commit_block');
+        const detailTxt = String(__commitCheck?.gate?.details || __commitCheck?.tfStatus?.detail || '').trim();
+        return __logCommitBlock(reasonTxt, detailTxt);
+      }
+      if (__isDuplicateTrade(signal)) {
+        setSkipReason('duplicate_trade');
+        const __skipAudit = __buildCommitAudit(signal, { reason: 'дубликат', stops: 0 });
+        __skipAudit.reasonCode = __commitReasonCode(__skipAudit.reason);
+        __skipAudit.detailShort = __commitDetailShort(__skipAudit.detail);
+        if (__commitShouldLog('skip', __skipAudit, 1200)) {
+          logConsoleLine(`🔵🧾| ${__skipAudit.tf} | ${__skipAudit.dir} | ${__skipAudit.reasonCode} | ${__skipAudit.confPct}% | ${__commitSrcShort(__skipAudit.src)}`);
+        }
+        return false;
+      }
+      if (S.tradeMutex?.active) return __logCommitBlock('mutex', 'trade mutex active');
       if (iaaDirectionBlocked(signal.direction)) {
         const leftMs = Math.max(0, Number(S?._dirLock?.until || 0) - Date.now());
         const lockDir = String(S?._dirLock?.dir || '-').toUpperCase();
         logConsoleLine(`🧭 [ENGINE_GUARD] [${String(signal.expiry || '1m').toLowerCase()}] [${String(signal.direction || '').toUpperCase()}] [ЗАКЛЮЧЕНА ПОСОКА] lock=${lockDir} (${(leftMs/1000).toFixed(1)}s)`);
-        return false;
+        return __logCommitBlock('direction_lock', `lock=${lockDir} (${(leftMs/1000).toFixed(1)}s)`);
       }
       if (!canOpenAnotherTrade()) {
-        setSkipReason('MaxOpen');
-        return false;
+        return __logCommitBlock('MaxOpen');
       }
       if (!canExecuteTradeByRate()) {
-        setSkipReason('MaxRate');
-        return false;
+        return __logCommitBlock('MaxRate');
       }
 
       const execKey = signalExecKey(signal);
-      if (!isKillerMode() && S.lastExecutedKey === execKey && Date.now() < S.tradeLockUntil) return false;
+      if (!isKillerMode() && S.lastExecutedKey === execKey && Date.now() < S.tradeLockUntil) {
+        return __logCommitBlock('trade_lock', 'trade lock active');
+      }
       if (!S.baseAmount) {
-        setSkipReason('Amount');
-        return false;
+        return __logCommitBlock('Amount');
       }
       const enforceAnalysis = !isKillerMode() && S.analysisEnabled;
       const enforceInterval = !isKillerMode();
       const enforcePayout = false;
       const enforceReversal = true;
       if (enforceAnalysis && S.analysisReadyAt && Date.now() < S.analysisReadyAt) {
-        setSkipReason('Warmup');
-        return false;
+        return __logCommitBlock('Warmup');
       }
-      if (!isKillerMode() && S.tradeLockUntil > Date.now()) return false;
+      if (!isKillerMode() && S.tradeLockUntil > Date.now()) return __logCommitBlock('trade_lock', 'trade lock active');
       if (enforceInterval && S.nextTradeAllowedAt && Date.now() < S.nextTradeAllowedAt) {
-        setSkipReason('Interval');
-        return false;
+        return __logCommitBlock('Interval');
       }
       if (enforceAnalysis) {
         if (!S.analysisDirection) {
-          setSkipReason('NoTrend');
-          return false;
+          return __logCommitBlock('NoTrend');
         }
         if (S.analysisConfidence < S.analysisConfidenceThreshold) {
-          setSkipReason('Confidence');
-          return false;
+          return __logCommitBlock('Confidence');
         }
         if (S.analysisDirection !== signal.direction.toUpperCase()) {
-          setSkipReason('Mismatch');
-          return false;
+          return __logCommitBlock('Mismatch');
         }
       }
       if (enforcePayout && (S.payoutMin > 0 || S.payoutMax > 0 || S.payoutRequired)) {
         const payout = getCurrentPayoutPercent();
         if (payout === null) {
           if (S.payoutRequired) {
-            setSkipReason('Payout');
-            return false;
+            return __logCommitBlock('Payout');
           }
           logConsoleLine(formatStatus('payout_missing'));
         } else {
           if (S.payoutMin > 0 && payout < S.payoutMin) {
-            setSkipReason('Payout');
-            return false;
+            return __logCommitBlock('Payout');
           }
           if (S.payoutMax > 0 && payout > S.payoutMax) {
-            setSkipReason('Payout');
-            return false;
+            return __logCommitBlock('Payout');
           }
         }
       }
       if (enforceReversal && isLateReversal(signal.direction.toUpperCase())) {
-        setSkipReason('Reversal');
-        return false;
+        return __logCommitBlock('Reversal');
       }
       if (isKillerMode() && hasOppositeActiveTrade(signal)) {
-        setSkipReason('Conflict');
-        return false;
+        return __logCommitBlock('Conflict');
       }
+      __logCommit(signal, signal?.confidence || signal?.analysisConfidence, __commitCheck);
       S.executing = true;
       S.executionAttempts = 1;
       S.executionStartTime = Date.now();
@@ -5665,19 +5910,11 @@ function getMinHistoryWindowForReadinessMs() {
               };
 
       // --- normalize trade context for reporting/debug ---
-      try {
-        trade.id = trade.id || ('T' + Date.now().toString(36) + '_' + Math.random().toString(16).slice(2));
-        trade.mode = trade.mode || 'AUTO';
-        trade.tfLabel = trade.tfLabel || (resolvedExpiry && resolvedExpiry.label) || trade.expiryLabel || '';
-        if (trade.confidence == null) {
-          const c = entryContext && (entryContext.confidence ?? entryContext.finalConfidence ?? entryContext.conf);
-          trade.confidence = (c == null ? null : c);
-        }
-        trade.strategyKey = trade.strategyKey || (entryContext && entryContext.strategyKey) || trade.strategy || '';
-      } catch (e) {}
+      enrichTradeTelemetry(trade, signal, entryContext, resolvedExpiry);
 
-
-              S.activeTrades.push(trade);
+              enrichTradeTelemetry(trade, signal, entryContext, resolvedExpiry);
+              enrichTradeTelemetry(trade, signal, entryContext, resolvedExpiry);
+          S.activeTrades.push(trade);
               S.pendingTradeConfirmations.push({ trade, at: Date.now() });
               dynamicApplied = true;
               await delay(140);
@@ -8287,6 +8524,36 @@ if (!weights.length) return 0;
         return;
       }
 
+      S.precalcVerdictByTf = S.precalcVerdictByTf || {};
+
+      const logPrecalcVerdictOnce = (tfLabel, candleStart, verdictKey, message, spamKey, spamState, cooldownMs = 5000) => {
+        const store = S.precalcVerdictByTf;
+        const prev = store[tfLabel];
+
+        if (!prev || prev.candleStart !== candleStart) {
+          store[tfLabel] = {
+            candleStart,
+            verdicts: new Set([verdictKey])
+          };
+          logPrecalcConsole(message, spamKey, spamState, cooldownMs);
+          return true;
+        }
+
+        if (prev.verdicts && prev.verdicts.has(verdictKey)) {
+          return false;
+        }
+
+        if (!prev.verdicts) {
+          prev.verdicts = new Set();
+          if (prev.verdictKey) prev.verdicts.add(prev.verdictKey);
+          delete prev.verdictKey;
+        }
+
+        prev.verdicts.add(verdictKey);
+        logPrecalcConsole(message, spamKey, spamState, cooldownMs);
+        return true;
+      };
+
       for (const tf of timeframes) {
         const tfMs = Number(KILLER_TF_MS[tf] || 0);
         if (!(tfMs > 0)) continue;
@@ -8302,25 +8569,26 @@ if (!weights.length) return 0;
         const d = decisionsByTf?.[tf] || null;
 
         if (!d) {
-          logPrecalcConsole(`🟡 PRECALC ПРОПУСК | ${tfLabel} | няма сигнал`, `${baseSpamKey}:no-signal`, `${candleStart}:no-signal`, 15000);
+          logPrecalcVerdictOnce(tfLabel, candleStart, 'no-signal', `🟡 PRECALC ПРОПУСК | ${tfLabel} | selector_rejected`, `${baseSpamKey}:no-signal`, `${candleStart}:no-signal`, 15000);
           continue;
         }
 
         if (!d.direction) {
-          logPrecalcConsole(`🟠 PRECALC ПРОПУСК | ${tfLabel} | няма посока`, `${baseSpamKey}:no-direction`, `${candleStart}:no-direction`, 15000);
+          logPrecalcVerdictOnce(tfLabel, candleStart, 'no-direction', `🟠 PRECALC ПРОПУСК | ${tfLabel} | няма посока`, `${baseSpamKey}:no-direction`, `${candleStart}:no-direction`, 15000);
           continue;
         }
 
         const gate = evaluatePrecheckGate(tf, d, d.regime, requiredThreshold);
         if (!gate?.pass) {
-          const gateState = `${candleStart}:${String(gate?.reason || 'gate-fail')}`;
-          logPrecalcConsole(`🔴 PRECALC БЛОК | ${tfLabel} | филтър отказ`, `${baseSpamKey}:gate-fail`, gateState, 15000);
+          const reason = String(gate?.reason || 'gate-fail');
+          const gateState = `${candleStart}:${reason}`;
+          logPrecalcVerdictOnce(tfLabel, candleStart, `gate:${reason}`, `🔴 PRECALC БЛОК | ${tfLabel} | ${String(gate?.reason || 'филтър отказ')}`, `${baseSpamKey}:gate-fail`, gateState, 15000);
           continue;
         }
 
         const signalTfKey = String(d.tfKey || tf).toLowerCase();
         if (S.preCalculatedSignal && String(S.preCalculatedSignal.tfKey || '').toLowerCase() === signalTfKey && S.preCalculatedSignal.candleStart === candleStart) {
-          logPrecalcConsole(`🔵 PRECALC ПРОПУСК | ${tfLabel} | вече записан`, `${baseSpamKey}:duplicate`, `${candleStart}:duplicate`, 15000);
+          logPrecalcVerdictOnce(tfLabel, candleStart, 'duplicate', `🔵 PRECALC ПРОПУСК | ${tfLabel} | вече записан`, `${baseSpamKey}:duplicate`, `${candleStart}:duplicate`, 15000);
           continue;
         }
 
@@ -8331,7 +8599,8 @@ if (!weights.length) return 0;
           candleStart,
           priceAtDecision: Number(S.currentAssetPrice)
         };
-        logPrecalcConsole(`⏱️⏭️ PRECALC ГОТОВ | ${signalTfKey} | ${String(d.direction || '').toUpperCase()} | conf=${Math.round(Number(d.confidence || 0) * 100)}% | слот=55-59s`, `${baseSpamKey}:ready`, `${candleStart}:${String(d.direction || '')}:${Math.round(Number(d.confidence || 0) * 100)}`, 15000);
+        const confPct = Math.round(Number(d.confidence || 0) * 100);
+        logPrecalcVerdictOnce(tfLabel, candleStart, `ready:${String(d.direction || '').toUpperCase()}:${confPct}`, `⏱️⏭️ PRECALC ГОТОВ | ${signalTfKey} | ${String(d.direction || '').toUpperCase()} | conf=${confPct}% | слот=55-59s`, `${baseSpamKey}:ready`, `${candleStart}:${String(d.direction || '')}:${confPct}`, 15000);
         break;
       }
     }
@@ -8425,7 +8694,7 @@ if (!weights.length) return 0;
         S.analysisConfidence = 0;
         S.analysisDirection = null;
         S.tradeQualityScore = 0;
-        setStatusOverlay('Снайпер: няма активни таймфрейми', '', false);
+        setStatusOverlay('Killer: няма активни таймфрейми', '', false);
         renderKillerMatrix();
         renderPendingTrades();
         return;
@@ -8556,11 +8825,29 @@ if (!weights.length) return 0;
             logConsoleLine(`🧭 [ENGINE_GUARD] [${String(tf||'1m').toLowerCase()}] [${String(decision.direction||'').toUpperCase()}] [${bgReason}]${detailSuffix}`);
           }
         }
-        const confBin = Math.floor((Number(decision.confidence||0) * 100) / 5) * 5;
+        const confPct = Number(decision.confidence || 0) * 100;
+        const confNeedPct = Math.max(
+          Number.isFinite(Number(S.analysisConfidenceThreshold)) ? Number(S.analysisConfidenceThreshold) * 100 : 0,
+          Number(requiredThreshold || 0) * 100
+        );
+
+        if (confPct < confNeedPct) {
+          const stopBurstKey = `precheck-burst-stop:${String(tf||'1m').toLowerCase()}`;
+          const preStopKey = `precheck-stop:${String(tf||'1m').toLowerCase()}:confidence-hard`;
+          if (
+            logSpamControlled(stopBurstKey, 'confidence-hard', 1200) &&
+            logSpamControlled(preStopKey, 'STOP|confidence-hard', 30000)
+          ) {
+            logConsoleLine(`🔴🧭 ПРЕЧЕК СТОП | ${String(tf||'1m').toLowerCase()} | ${decision.direction} | слаба увереност | ${confPct.toFixed(0)}% < ${confNeedPct.toFixed(0)}%`);
+          }
+          continue;
+        }
+
+        const confBin = Math.floor(confPct / 5) * 5;
         const prePassKey = `precheck-pass:${String(tf||'1m').toLowerCase()}:${String(decision.direction||'').toUpperCase()}`;
         const passBurstKey = `precheck-burst-pass:${String(tf||'1m').toLowerCase()}`;
         if (logSpamControlled(passBurstKey, `${String(decision.direction||'').toUpperCase()}|${confBin}`, 1500) && logSpamControlled(prePassKey, `PASS|${String(decision.direction||'').toUpperCase()}`, 15000)) {
-          logConsoleLine(`🟢🧭 ПРЕЧЕК УСПЕШЕН | ${String(tf||'1m').toLowerCase()} | ${decision.direction} | ${(Number(decision.confidence||0)*100).toFixed(0)}%`);
+          logConsoleLine(`🟢🧭 ПРЕЧЕК УСПЕШЕН | ${String(tf||'1m').toLowerCase()} | ${decision.direction} | ${confPct.toFixed(0)}%`);
           const strategyLabel = getStrategyDisplayLabel(decision.strategyKey || '').toLowerCase();
           logConsoleLine(`🧠 DIR PICK | ${String(tf||'1m').toLowerCase()} | ${String(decision.direction||'').toUpperCase()} | ${strategyLabel}`);
         }
@@ -8814,9 +9101,9 @@ if (!weights.length) return 0;
         const readyCount = Object.entries(partnerReady.details || {}).filter(([,d]) => !!d.ready).length;
         if (readyCount < minReadyCount && notReady.length) {
           const tfNotReadySummary = notReady.map(([tf, d]) => `${tf}=${d.bars}/${d.required}`).join(' ');
-          setStatusOverlay(`Снайпер: TF not ready ${tfNotReadySummary}`, '', false);
+          setStatusOverlay(`Killer: TF not ready ${tfNotReadySummary}`, '', false);
         } else {
-          setStatusOverlay('Снайпер: няма чист вход', '', false);
+          setStatusOverlay('Killer: няма чист вход', '', false);
         }
         renderPendingTrades();
         return;
@@ -8848,7 +9135,7 @@ if (!weights.length) return 0;
       };
 
       if (!canTrade) {
-        setStatusOverlay('Снайпер: изчакване', '', false);
+        setStatusOverlay('Killer: изчакване', '', false);
         renderPendingTrades();
         return;
       }
@@ -8905,7 +9192,7 @@ const readySignals = Object.keys(tfStatus)
       const maxConcurrentKillerTrades = Math.max(1, Math.round(S.maxOpenTrades || timeframes.length));
       const availableSlots = Math.max(0, maxConcurrentKillerTrades - S.activeTrades.length);
       if (!availableSlots) {
-        setStatusOverlay('Снайпер: изчакване', '', false);
+        setStatusOverlay('Killer: изчакване', '', false);
         return;
       }
 
@@ -8921,10 +9208,24 @@ const readySignals = Object.keys(tfStatus)
           : tfKey === '3m' ? Number(S.entryWindowSec3m || 35)
           : Number(S.entryWindowSec5m || 150);
         const currentCandleStart = getCandleStart(tfMs);
-        const preparedPrevCandle = Number(S.preCalculatedSignal.candleStart || 0) < currentCandleStart;
-        if (preparedPrevCandle && t >= 0 && t <= limit) {
-          signalsToExecute = [{ ...S.preCalculatedSignal, _fromPreCalc: true, windowMs: tfMs }];
-        } else if (t > limit || currentCandleStart > Number(S.preCalculatedSignal.candleStart || 0) + tfMs) {
+        const preparedCandleStart = Number(S.preCalculatedSignal.candleStart || 0);
+        const preparedPrevCandle = preparedCandleStart < currentCandleStart;
+        const withinEntryWindow = t >= 0 && t <= limit;
+        const runtimeSameTf = readySignals.find((sig) => String(sig?.tfKey || sig?.timeframe || '1m').toLowerCase() === tfKey);
+
+        if (preparedPrevCandle && withinEntryWindow) {
+          if (runtimeSameTf) {
+            S.preCalculatedSignal = null;
+          } else {
+            signalsToExecute = [{
+              ...S.preCalculatedSignal,
+              _fromPreCalc: true,
+              windowMs: tfMs,
+              source: 'precalc'
+            }];
+            S.preCalculatedSignal = null;
+          }
+        } else if (t > limit || currentCandleStart > preparedCandleStart + tfMs) {
           S.preCalculatedSignal = null;
         }
       }
@@ -9103,6 +9404,7 @@ const frozenSignal = {
           confidence: frozenSignal.confidence,
           entryMeta: {
             strategyKey: frozenSignal.strategyKey,
+            tfKey: frozenSignal.tfKey,
             scoreCard: frozenSignal.scoreCard,
             regime: frozenSignal.regime,
             biasDir: frozenSignal.biasDir,
@@ -14071,4 +14373,110 @@ if (KILLER_VOLUME_THRESHOLD) {
       window.__IAA_WS_OUTCOMES__ = S.wsOutcomeHistory || null;
     }, 1000);
   }catch(e){}
+})();
+
+/* ========================= UPDATE 1 STABILIZATION PATCH (NO DUPLICATE GUARD) ========================= */
+(function(){
+  try {
+    if (!window.InfinityBot || !window.InfinityBot.S) return;
+    if (window.__iaaUpdate1StabilizationPatchInstalled) return;
+    window.__iaaUpdate1StabilizationPatchInstalled = true;
+
+    const S = window.InfinityBot.S;
+
+    function normTf(tf) {
+      const v = String(tf || '1m').toLowerCase();
+      return (v === '5m' || v === '3m' || v === '1m') ? v : '1m';
+    }
+
+    function tfToMs(tf) {
+      switch (normTf(tf)) {
+        case '5m': return 300000;
+        case '3m': return 180000;
+        default: return 60000;
+      }
+    }
+
+    function getCandleId(tf, now = Date.now()) {
+      const tfMs = tfToMs(tf);
+      return Math.floor(Number(now) / tfMs);
+    }
+
+    if (!S.__precalc) {
+      S.__precalc = {
+        byTf: {}
+      };
+    }
+
+    window.__iaaCommitTrade = function(tf, decision, meta = {}) {
+      try {
+        if (!decision || !decision.direction) return false;
+        if (decision.verdict && String(decision.verdict).toUpperCase() !== 'PASS') return false;
+
+        const tfLabel = normTf(tf);
+        const confPct = Math.round((Number(decision.confidence || 0)) * 100);
+        const stops = Number(meta.stops || 0);
+        const waits = Number(meta.waits || 0);
+        const auditKey = [
+          tfLabel,
+          String(decision.direction || '').toUpperCase(),
+          String(confPct),
+          String(stops),
+          String(waits)
+        ].join('|');
+
+        if (typeof window.logSpamControlled === 'function') {
+          if (!window.logSpamControlled(`commit:${tfLabel}`, auditKey, 1200)) return true;
+        }
+
+        window.InfinityBot.logConsole(
+          `🧾 COMMIT | ${tfLabel} | ${String(decision.direction || '').toUpperCase()} | conf=${confPct}% | stops=${stops} | waits=${waits}`
+        );
+        return true;
+      } catch (_) {
+        return false;
+      }
+    };
+
+    window.__iaaPrecalcStore = function(tf, decision, now = Date.now()) {
+      try {
+        if (!decision || !decision.direction) return false;
+        const tfLabel = normTf(tf);
+        const candleId = getCandleId(tfLabel, now);
+        const bucket = S.__precalc.byTf[tfLabel] || (S.__precalc.byTf[tfLabel] = {});
+        if (bucket.candleId === candleId) return false;
+
+        bucket.candleId = candleId;
+        bucket.savedAt = Number(now) || Date.now();
+        bucket.decision = {
+          ...decision,
+          __precalc: true,
+          __precalcTf: tfLabel,
+          __precalcCandleId: candleId,
+          __precalcSavedAt: Number(now) || Date.now()
+        };
+
+        const confPct = Math.round((Number(decision.confidence || 0)) * 100);
+        window.InfinityBot.logConsole(
+          `⏱️⏭️ PRECALC ГОТОВ | ${tfLabel} | ${String(decision.direction || '').toUpperCase()} | conf=${confPct}% | слот=55-59s`
+        );
+        return true;
+      } catch (_) {
+        return false;
+      }
+    };
+
+    window.__iaaPrecalcGet = function(tf, now = Date.now()) {
+      try {
+        const tfLabel = normTf(tf);
+        const bucket = S.__precalc && S.__precalc.byTf ? S.__precalc.byTf[tfLabel] : null;
+        if (!bucket || !bucket.decision) return null;
+        const candleId = getCandleId(tfLabel, now);
+        if (bucket.candleId !== candleId) return null;
+        return bucket.decision;
+      } catch (_) {
+        return null;
+      }
+    };
+  } catch (_) {}
 })();
