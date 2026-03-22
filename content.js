@@ -1551,6 +1551,7 @@
       proPrecalcEnabled: true,
       proFiltersPanelOpen: false,
       preCalculatedSignal: null,
+      precalcCandleLockByKey: {},
       blockBuy: false,
       blockSell: false,
       singleAssetMode: true,
@@ -1622,7 +1623,25 @@
       lastSelfTradeHintAt: 0,
       lastDiagnosticsAt: 0,
       lastDiagnosticsMinuteKey: null,
+      lastObsBaselineMinuteKey: null,
       logSpamCache: Object.create(null),
+      obsMetrics: {
+        detected: 0,
+        precheckPass: 0,
+        precheckStop: 0,
+        precalcReady: 0,
+        commitPass: 0,
+        commitBlock: 0,
+        executePass: 0,
+        executeFail: 0,
+        deterministicFlip: 0
+      },
+      signalTraceStageById: {},
+      signalTraceShortIdById: {},
+      signalTraceLastEventById: {},
+      signalTraceSeenByCandle: {},
+      deterministicDecisionByTfCandle: {},
+      deterministicSummaryState: {},
       /* ---------- Killer mode ---------- */
       killerBaseAmount: KILLER_5S_DEFAULTS.baseAmountCents,
       killerThreshold: KILLER_5S_DEFAULTS.threshold,
@@ -2043,7 +2062,13 @@
           msgClass += ' iaa-console-msg--signal';
         } else if (messageText.startsWith('⏱️⏭️ PRECALC ГОТОВ')) {
           msgClass += ' iaa-console-msg--signal';
+        } else if (messageText.startsWith('⏩ PRECALC ПРЕХВЪРЛЯНЕ')) {
+          msgClass += ' iaa-console-msg--signal';
         } else if (messageText.startsWith('🟡 PRECALC ПРОПУСК') || messageText.startsWith('🟠 PRECALC ПРОПУСК')) {
+          msgClass += ' iaa-console-msg--warn';
+        } else if (messageText.startsWith('🟢 PRECALC ИЗХОД')) {
+          msgClass += ' iaa-console-msg--signal';
+        } else if (messageText.startsWith('🟠 PRECALC ИЗХОД')) {
           msgClass += ' iaa-console-msg--warn';
         } else if (messageText.startsWith('🔴 PRECALC БЛОК')) {
           msgClass += ' iaa-console-msg--skip';
@@ -2119,9 +2144,24 @@
         m.startsWith('🔴🧭 ПРЕЧЕК СТОП') ||
         m.startsWith('🔫 ⏳') ||
         m.startsWith('🔫🎯 ГОТОВ') ||
+        m.startsWith('🧾 COMMIT |') ||
+        m.startsWith('🔴🧾 COMMIT БЛОК |') ||
+        m.startsWith('🔵🧾 COMMIT ПРОПУСК |') ||
+        m.startsWith('🧾 ОК |') ||
+        m.startsWith('🔴🧾 БЛОК |') ||
+        m.startsWith('🔵🧾 ПРОПУСК |') ||
+        m.startsWith('🧭 СЛЕДА |') ||
+        m.startsWith('🟣 СТАБИЛНОСТ |') ||
+        m.startsWith('📊 СТАТУС |') ||
+        m.startsWith('🧭 TRACE |') ||
+        m.startsWith('🟣 DETERMINISM |') ||
+        m.startsWith('📊 BASELINE |') ||
         m.startsWith('⏱️⏭️ PRECALC ГОТОВ |') ||
+        m.startsWith('⏩ PRECALC ПРЕХВЪРЛЯНЕ |') ||
         m.startsWith('🟡 PRECALC ПРОПУСК |') ||
         m.startsWith('🟠 PRECALC ПРОПУСК |') ||
+        m.startsWith('🟢 PRECALC ИЗХОД |') ||
+        m.startsWith('🟠 PRECALC ИЗХОД |') ||
         m.startsWith('🔴 PRECALC БЛОК |') ||
         m.startsWith('🔵 PRECALC ПРОПУСК |') ||
         m.startsWith('⚪ Предварителен анализ: ИЗКЛ') ||
@@ -2137,6 +2177,14 @@
 
       const now = Date.now();
       const isOutcomeMessage = /^✅|^❌|^⚪/.test(message);
+      if (m.startsWith('💥 СДЕЛКА |')) {
+        const parts = m.split('|').map((s) => s.trim());
+        const tf = parts[1] || '-';
+        const dir = parts[2] || '-';
+        const amt = parts[3] || '-';
+        const tradeKey = `trade-log:${tf}:${dir}:${amt}`;
+        if (!logSpamControlled(tradeKey, tradeKey, 5000)) return;
+      }
       if (!isOutcomeMessage && S.lastConsoleMessage === message && now - S.lastConsoleAt < 1500) return;
       S.lastConsoleMessage = message;
       S.lastConsoleAt = now;
@@ -2146,6 +2194,302 @@
       if (S.consoleLines.length > 200) S.consoleLines.shift();
       try { sessionRecordLog(message, `[${stamp}] ${message}`); } catch (e) {}
       renderConsole();
+    }
+
+    function ensureObsStructures() {
+      if (!S.obsMetrics || typeof S.obsMetrics !== 'object') {
+        S.obsMetrics = {
+          detected: 0,
+          precheckPass: 0,
+          precheckStop: 0,
+          precalcReady: 0,
+          commitPass: 0,
+          commitBlock: 0,
+          executePass: 0,
+          executeFail: 0,
+          deterministicFlip: 0
+        };
+      }
+      if (!S.signalTraceStageById || typeof S.signalTraceStageById !== 'object') S.signalTraceStageById = {};
+      if (!S.signalTraceShortIdById || typeof S.signalTraceShortIdById !== 'object') S.signalTraceShortIdById = {};
+      if (!S.signalTraceLastEventById || typeof S.signalTraceLastEventById !== 'object') S.signalTraceLastEventById = {};
+      if (!S.signalTraceSeenByCandle || typeof S.signalTraceSeenByCandle !== 'object') S.signalTraceSeenByCandle = {};
+      if (!S.deterministicDecisionByTfCandle || typeof S.deterministicDecisionByTfCandle !== 'object') S.deterministicDecisionByTfCandle = {};
+      if (!S.deterministicSummaryState || typeof S.deterministicSummaryState !== 'object') S.deterministicSummaryState = {};
+    }
+
+    function incrementObsMetric(key, amount = 1) {
+      ensureObsStructures();
+      const k = String(key || '').trim();
+      if (!k) return;
+      const prev = Number(S.obsMetrics[k] || 0);
+      S.obsMetrics[k] = prev + Number(amount || 1);
+    }
+
+    function buildSignalTraceId(input = {}) {
+      const tf = String(input?.tfKey || input?.entryMeta?.tfKey || input?.expiry || '1m').toLowerCase();
+      const dir = String(input?.direction || '').toUpperCase() || '-';
+      const candleStart = Number(input?.candleStart || input?.entryMeta?.candleStart || 0) || 0;
+      const strategy = String(input?.strategyKey || input?.entryMeta?.strategyKey || 'na').toLowerCase();
+      return `${tf}|${dir}|${candleStart}|${strategy}`;
+    }
+
+    function buildPrecalcCandidateKey(input = {}) {
+      const tf = String(input?.tfKey || input?.expiry || '1m').toLowerCase();
+      const dir = String(input?.direction || '').toUpperCase() || '-';
+      const candleStart = Number(input?.candleStart || 0) || 0;
+      return `${tf}|${candleStart}|${dir}`;
+    }
+
+    function buildPrecalcCandleLockKey(tfKey, candleStart) {
+      return `${String(tfKey || '1m').toLowerCase()}|${Number(candleStart || 0)}`;
+    }
+
+    function setPrecalcCandleLock(tfKey, candleStart, patch = {}) {
+      S.precalcCandleLockByKey = S.precalcCandleLockByKey || {};
+      const key = buildPrecalcCandleLockKey(tfKey, candleStart);
+      const prev = S.precalcCandleLockByKey[key] || {};
+      S.precalcCandleLockByKey[key] = { ...prev, tfKey: String(tfKey || '1m').toLowerCase(), candleStart: Number(candleStart || 0), ...patch };
+      return S.precalcCandleLockByKey[key];
+    }
+
+    function getPrecalcCandleLock(tfKey, candleStart) {
+      const key = buildPrecalcCandleLockKey(tfKey, candleStart);
+      return (S.precalcCandleLockByKey && S.precalcCandleLockByKey[key]) || null;
+    }
+
+    function isCandleLockedByPrecalc(tfKey, candleStart) {
+      const lock = getPrecalcCandleLock(tfKey, candleStart);
+      if (!lock || String(lock.source || '') !== 'PRECALC') return false;
+      const status = String(lock.status || '').toUpperCase();
+      return status === 'HANDOFF' || status === 'DROPPED' || status === 'EXECUTED';
+    }
+
+    function cleanupPrecalcCandleLocks(timeframes = []) {
+      S.precalcCandleLockByKey = S.precalcCandleLockByKey || {};
+      const allowed = new Set((timeframes || []).map((tf) => buildPrecalcCandleLockKey(tf, getCandleStart(KILLER_TF_MS[tf] || 0))));
+      for (const key of Object.keys(S.precalcCandleLockByKey)) {
+        if (!allowed.has(key)) delete S.precalcCandleLockByKey[key];
+      }
+    }
+
+    function finalizePrecalcOutcome(decision, outcome = 'dropped', reason = '') {
+      if (!decision || !decision._fromPreCalc || !decision._fromPreCalcHandoff) return false;
+      const candidateKey = String(decision.precalcCandidateKey || buildPrecalcCandidateKey(decision));
+      if (!candidateKey) return false;
+
+      S.precalcFinalizedByKey = S.precalcFinalizedByKey || {};
+      if (S.precalcFinalizedByKey[candidateKey]) return false;
+
+      const tfOut = String(decision.tfKey || decision.expiry || '1m').toLowerCase();
+      const dirOut = String(decision.direction || '').toUpperCase() || '-';
+      const confOut = Math.round(Number(decision.confidence || 0) * 100);
+      const normOutcome = String(outcome || '').toLowerCase() === 'executed' ? 'executed' : 'dropped';
+      const normReason = String(reason || '').trim() || 'blocked';
+      const outcomeTag = normOutcome === 'executed' ? 'executed' : `dropped:${normReason}`;
+      const outcomeKey = `precalc:outcome:${candidateKey}:${outcomeTag}`;
+      if (logSpamControlled(outcomeKey, outcomeTag, 60000)) {
+        if (normOutcome === 'executed') logConsoleLine(`🟢 PRECALC ИЗХОД | ${tfOut} | ${dirOut} | conf=${confOut}% | key=${candidateKey} | executed`);
+        else logConsoleLine(`🟠 PRECALC ИЗХОД | ${tfOut} | ${dirOut} | conf=${confOut}% | key=${candidateKey} | dropped:${normReason}`);
+      }
+
+      S.precalcFinalizedByKey[candidateKey] = { outcome: normOutcome, reason: normReason, t: Date.now() };
+
+      setPrecalcCandleLock(decision.tfKey, decision.candleStart, {
+        source: 'PRECALC',
+        candidateKey,
+        status: normOutcome === 'executed' ? 'EXECUTED' : 'DROPPED',
+        reason: normOutcome === 'executed' ? 'executed' : normReason,
+        finalizedAt: Date.now()
+      });
+
+      const active = S.preCalculatedSignal;
+      if (active && String(active?.precalcCandidateKey || '') === candidateKey) {
+        S.preCalculatedSignal = {
+          ...active,
+          handoffOutcome: normOutcome,
+          handoffOutcomeReason: normOutcome === 'executed' ? 'executed' : normReason,
+          finalizedAt: Date.now(),
+          consumed: true
+        };
+        S.preCalculatedSignal = null;
+      }
+      return true;
+    }
+
+    function getSignalShortId(traceId) {
+      ensureObsStructures();
+      const key = String(traceId || '').trim();
+      if (!key) return '0000';
+      const cached = S.signalTraceShortIdById[key];
+      if (cached) return cached;
+      let h = 2166136261;
+      for (let i = 0; i < key.length; i += 1) {
+        h ^= key.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      const shortId = String(Math.abs(h >>> 0) % 10000).padStart(4, '0');
+      S.signalTraceShortIdById[key] = shortId;
+      return shortId;
+    }
+
+    function normalizeTraceStage(stage = '') {
+      const s = String(stage || '').trim().toUpperCase();
+      if (!s) return 'ЕТАП';
+      if (s === 'DETECTED') return 'СИГНАЛ';
+      if (s === 'PRECHECK_PASS') return 'ПРЕЧЕК ОК';
+      if (s === 'PRECHECK_STOP') return 'ПРЕЧЕК СТОП';
+      if (s === 'PRECALC_READY') return 'PRECALC ГОТОВ';
+      if (s === 'PRECALC_HANDOFF') return 'PRECALC ПРЕХВЪРЛЯНЕ';
+      if (s === 'COMMIT_CANDIDATE') return 'COMMIT КАНДИДАТ';
+      if (s === 'COMMIT_ATTEMPT') return 'COMMIT ОПИТ';
+      if (s === 'COMMIT_PASS') return 'COMMIT ОК';
+      if (s === 'COMMIT_BLOCK') return 'COMMIT БЛОК';
+      if (s === 'COMMIT_DUPLICATE') return 'COMMIT ПРОПУСК';
+      if (s === 'EXECUTE_PASS') return 'ВХОД';
+      if (s === 'EXECUTE_FAIL') return 'БЛОК';
+      return s;
+    }
+
+    function normalizeTraceReason(reason = '') {
+      let r = String(reason || '').trim();
+      if (!r) return '';
+      // Keep semantic reason; drop payload noise after separators.
+      r = r.replace(/\s+/g, ' ');
+      r = r.split('|')[0].trim();
+      r = r.replace(/\s*:\s*.*/g, '').trim();
+      const low = r.toLowerCase();
+      if (low.includes('dir_stabilizer') || low.includes('стабилизатор')) return 'DIR_STABILIZER';
+      if (low.includes('impulse_extension') || low.includes('импулс')) return 'IMPULSE_EXTENSION';
+      if (low.includes('micro_noise') || low.includes('шум')) return 'MICRO_NOISE';
+      if (low.includes('конфликт') || low.includes('conflict')) return 'КОНФЛИКТ';
+      if (low.includes('чоп') || low.includes('chop')) return 'ЧОП';
+      if (low.includes('късен') || low.includes('late')) return 'КЪСЕН ВХОД';
+      return r.toUpperCase();
+    }
+
+    function getTraceCandleStart(signal = {}) {
+      const explicit = Number(signal?.candleStart || signal?.entryMeta?.candleStart || 0);
+      if (Number.isFinite(explicit) && explicit > 0) return explicit;
+      const tf = String(signal?.tfKey || signal?.entryMeta?.tfKey || signal?.expiry || '1m').toLowerCase();
+      const tfMs = Number(KILLER_TF_MS?.[tf] || 60000);
+      return Math.floor(Date.now() / tfMs) * tfMs;
+    }
+
+    function annotateSignalTrace(signal, stage = '', detail = '') {
+      if (!signal || typeof signal !== 'object') return;
+      ensureObsStructures();
+      const traceId = String(signal.traceId || buildSignalTraceId(signal));
+      signal.traceId = traceId;
+      const tf = String(signal?.tfKey || signal?.entryMeta?.tfKey || signal?.expiry || '1m').toLowerCase();
+      const shortId = getSignalShortId(traceId);
+      const candleStart = getTraceCandleStart(signal);
+      const nextStage = String(stage || '').trim();
+      if (!nextStage) return;
+
+      const reason = String(detail || '').trim();
+      const normStage = normalizeTraceStage(nextStage);
+      const normReason = normalizeTraceReason(reason);
+      const signature = `${shortId}|${candleStart}|${normStage}|${normReason}`;
+      const now = Date.now();
+      const prev = S.signalTraceLastEventById[traceId] || { sig: '', at: 0 };
+      const sameEvent = prev.sig === signature;
+      const cooldownMs = 2500;
+      if (sameEvent && (now - Number(prev.at || 0)) < cooldownMs) {
+        return;
+      }
+
+      // TRACE remains helper-only: log only high-value lifecycle states.
+      const majorStages = new Set(['СИГНАЛ','ПРЕЧЕК СТОП','PRECALC ПРЕХВЪРЛЯНЕ','COMMIT БЛОК','COMMIT ПРОПУСК','ВХОД','БЛОК']);
+      if (!majorStages.has(normStage)) {
+        return;
+      }
+
+      // During PRECALC window, keep TRACE helper-only by suppressing noisy signal/precheck trace lines.
+      if (!S.debugEnabled && S.proPrecalcEnabled && (normStage === 'СИГНАЛ' || normStage === 'ПРЕЧЕК СТОП')) {
+        const tfMs = Number(KILLER_TF_MS?.[tf] || 0);
+        const t = Number(getTimeInCandleSec(tfMs));
+        const tfSec = tfMs > 0 ? Math.round(tfMs / 1000) : 0;
+        const inPrecalcWindow = tfSec > 10 && Number.isFinite(t) && t >= (tfSec - 5) && t <= (tfSec - 1);
+        if (inPrecalcWindow) return;
+      }
+
+      // Per-candle semantic dedupe (shortId + candle + stage + normalizedReason).
+      const candleKey = `${shortId}|${candleStart}|${normStage}|${normReason}`;
+      const strictPerCandle = normStage === 'СИГНАЛ' || normStage === 'ПРЕЧЕК СТОП';
+      const seen = S.signalTraceSeenByCandle[candleKey] || null;
+      if (strictPerCandle && seen) return;
+      if (!strictPerCandle && seen && (now - Number(seen.at || 0)) < cooldownMs) return;
+      S.signalTraceSeenByCandle[candleKey] = { at: now };
+
+      // Fallback semantic dedupe per TF+candle+stage+reason to prevent flood when shortId rotates.
+      const tfCandleKey = `${tf}|${candleStart}|${normStage}|${normReason}`;
+      const tfSeen = S.signalTraceSeenByCandle[`TF:${tfCandleKey}`] || null;
+      if (strictPerCandle && tfSeen) return;
+      if (!strictPerCandle && tfSeen && (now - Number(tfSeen.at || 0)) < cooldownMs) return;
+      S.signalTraceSeenByCandle[`TF:${tfCandleKey}`] = { at: now };
+
+      // SIGNAL is allowed once per shortId per candle.
+      if (normStage === 'СИГНАЛ') {
+        const onceKey = `${shortId}|${candleStart}|СИГНАЛ|ONCE`;
+        if (S.signalTraceSeenByCandle[onceKey]) return;
+        S.signalTraceSeenByCandle[onceKey] = { at: now };
+      }
+      if (normStage === 'ПРЕЧЕК СТОП') {
+        const stopOnceKey = `${shortId}|${candleStart}|ПРЕЧЕК СТОП|${normReason}`;
+        if (S.signalTraceSeenByCandle[stopOnceKey]) return;
+        S.signalTraceSeenByCandle[stopOnceKey] = { at: now };
+      }
+
+      S.signalTraceStageById[traceId] = normStage;
+      S.signalTraceLastEventById[traceId] = { sig: signature, at: now };
+      const msg = `🧭 СЛЕДА | ${tf} | #${shortId} | ${normStage}${normReason ? ` | ${normReason}` : ''}`;
+      logConsoleLine(msg);
+    }
+
+    function trackDeterministicDecision(tf, candleStart, decision) {
+      ensureObsStructures();
+      const tfKey = String(tf || '1m').toLowerCase();
+      const candle = Number(candleStart || 0) || 0;
+      if (!tfKey || !candle || !decision) return;
+      const key = `${tfKey}|${candle}`;
+      const fingerprint = JSON.stringify({
+        dir: String(decision?.direction || ''),
+        strategy: String(decision?.strategyKey || ''),
+        conf: Number.isFinite(Number(decision?.confidence)) ? Number(decision.confidence).toFixed(4) : 'na',
+        regime: String(decision?.regime?.state || ''),
+        bias: Number.isFinite(Number(decision?.biasDir)) ? Number(decision.biasDir).toFixed(3) : 'na'
+      });
+      const prev = S.deterministicDecisionByTfCandle[key];
+      const summary = S.deterministicSummaryState[key] || { count: 0, lastLogAt: 0, lastLogCount: 0 };
+      if (prev && prev.fingerprint !== fingerprint) {
+        incrementObsMetric('deterministicFlip', 1);
+        summary.count += 1;
+        const now = Date.now();
+        const shouldLog = summary.count === 1
+          || (summary.count - Number(summary.lastLogCount || 0) >= 3 && (now - Number(summary.lastLogAt || 0)) >= 8000);
+        if (shouldLog) {
+          logConsoleLine(`🟣 СТАБИЛНОСТ | ${tfKey} | ${summary.count} промени в свещта`);
+          summary.lastLogAt = now;
+          summary.lastLogCount = summary.count;
+        }
+      }
+      S.deterministicDecisionByTfCandle[key] = { fingerprint, at: Date.now() };
+      S.deterministicSummaryState[key] = summary;
+    }
+
+    function maybeLogBaselineSnapshot() {
+      ensureObsStructures();
+      const now = Date.now();
+      const minuteKey = Math.floor(now / 60000);
+      if (S.lastObsBaselineMinuteKey === minuteKey) return;
+      S.lastObsBaselineMinuteKey = minuteKey;
+      const m = S.obsMetrics || {};
+      const signals = Number(m.detected || 0);
+      const stop = Number(m.precheckStop || 0) + Number(m.commitBlock || 0) + Number(m.executeFail || 0);
+      const input = Number(m.executePass || 0);
+      const unstable = Number(m.deterministicFlip || 0);
+      logConsoleLine(`📊 СТАТУС | сигнали=${signals} | стоп=${stop} | вход=${input} | нестабилни=${unstable}`);
     }
 
 
@@ -3351,11 +3695,23 @@ async function logTradeOutcome(trade, outcome, profitCents = null) {
   };
 
   const tfLabel = (trade.tfLabel || trade.tf || trade.expiryLabel || trade.expiry || '1m').toString().toLowerCase();
+  const dedupeKey = (() => {
+    const wsId = String(trade.wsDealId || trade.dealId || trade.id || '').trim();
+    if (wsId) return `ws:${wsId}`;
+    const started = Number(trade.startTime || 0);
+    const direction = String(trade.direction || '').toUpperCase();
+    const asset = String(trade.asset || '').toUpperCase();
+    const expiry = String(trade.expiry || trade.tf || trade.tfLabel || '').toLowerCase();
+    return `fallback:${asset}|${direction}|${expiry}|${started}`;
+  })();
+  S.outcomeLogSeen = S.outcomeLogSeen || Object.create(null);
+  if (dedupeKey && S.outcomeLogSeen[dedupeKey]) return;
+  if (dedupeKey) S.outcomeLogSeen[dedupeKey] = Date.now();
 
   if (out === 'ПЕЧАЛБИ') {
-    if (!S.running) { /* bot not running */ } else if (S.wsDealPnLEnabled) { /* skip legacy */ } else logConsoleLine(`✅ ПЕЧАЛБА | ${String(tfLabel||'1m').toLowerCase()} | +$${(Math.abs(Number(pc||0))/100).toFixed(2)}`);
+    logConsoleLine(`✅ ПЕЧАЛБА | ${String(tfLabel||'1m').toLowerCase()} | +$${(Math.abs(Number(pc||0))/100).toFixed(2)}`);
   } else if (out === 'ЗАГУБИ') {
-    if (!S.running) { } else if (S.wsDealPnLEnabled) { } else logConsoleLine(`❌ ЗАГУБА | ${String(tfLabel||'1m').toLowerCase()} | -$${(Math.abs(Number(pc||0))/100).toFixed(2)}`);
+    logConsoleLine(`❌ ЗАГУБА | ${String(tfLabel||'1m').toLowerCase()} | -$${(Math.abs(Number(pc||0))/100).toFixed(2)}`);
   } else if (out === 'EVEN') {
     logConsoleLine(`⚪ НЕУТРАЛНО | ${String(tfLabel||'1m').toLowerCase()} | $0.00`);
   } else {
@@ -5477,7 +5833,8 @@ function getMinHistoryWindowForReadinessMs() {
       const dir = String(signal?.direction || '').toUpperCase() || '-';
       const confRaw = Number.isFinite(Number(confidenceOverride)) ? Number(confidenceOverride) : Number(signal?.confidence || 0);
       const confPct = Math.round(confRaw > 1 ? confRaw : confRaw * 100);
-      logConsoleLine(`🧾 COMMIT | ${tf} | ${dir} | conf=${confPct}% | stops=0 | waits=0`);
+      const strategy = String(signal?.strategyKey || signal?.entryMeta?.strategyKey || 'strategy').toLowerCase();
+      logConsoleLine(`🧾 ОК | ${tf} ${dir} | ${confPct}% | ${strategy}`);
     }
 
 
@@ -5486,20 +5843,27 @@ function getMinHistoryWindowForReadinessMs() {
       if (S.executing) return false;
       const __commitCheck = __canCommitTrade(signal);
       if (!__commitCheck.pass) {
+        incrementObsMetric('commitBlock', 1);
+        annotateSignalTrace(signal, 'COMMIT_BLOCK', String(__commitCheck.reason || 'commit_block'));
         setSkipReason(__commitCheck.reason || 'commit_block');
         const tfLbl = __normalizeCommitTf(signal);
         const dirLbl = String(signal?.direction || '').toUpperCase() || '-';
         const reasonTxt = String(__commitCheck.reason || 'commit_block');
         const detailTxt = String(__commitCheck?.gate?.details || __commitCheck?.tfStatus?.detail || '').trim();
         const detailSuffix = detailTxt ? ` | ${detailTxt}` : '';
-        logConsoleLine(`🔴🧾 COMMIT БЛОК | ${tfLbl} | ${dirLbl} | ${reasonTxt}${detailSuffix}`);
+        logConsoleLine(`🔴🧾 БЛОК | ${tfLbl} ${dirLbl} | ${reasonTxt}${detailSuffix}`);
         return false;
       }
       if (__isDuplicateTrade(signal)) {
+        incrementObsMetric('commitBlock', 1);
+        annotateSignalTrace(signal, 'COMMIT_DUPLICATE', 'duplicate_trade');
         setSkipReason('duplicate_trade');
-        logConsoleLine(`🔵🧾 COMMIT ПРОПУСК | ${__normalizeCommitTf(signal)} | ${String(signal?.direction || '').toUpperCase()} | дубликат`);
+        const strategy = String(signal?.strategyKey || signal?.entryMeta?.strategyKey || 'strategy').toLowerCase();
+        logConsoleLine(`🔵🧾 ПРОПУСК | ${__normalizeCommitTf(signal)} ${String(signal?.direction || '').toUpperCase()} | дубликат | ${strategy}`);
         return false;
       }
+      incrementObsMetric('commitPass', 1);
+      annotateSignalTrace(signal, 'COMMIT_PASS', __normalizeCommitTf(signal));
       __logCommit(signal, signal?.confidence || signal?.analysisConfidence);
       if (S.tradeMutex?.active) return false;
       if (iaaDirectionBlocked(signal.direction)) {
@@ -7568,37 +7932,8 @@ if (!weights.length) return 0;
       const adx = calcAdxProxy(regime, decision);
       const trendDir = decision.trendDir || calcTrendDirection(tfMs);
       const strict = evaluateStrictDecision(tf, decision, regime);
-      if (!strict.pass) {
-        return {
-          tf,
-          direction: dir,
-          confluence: 0,
-          effectivePoints: 0,
-          supportingBonus: 0,
-          supportingDetails: [],
-          minConfluence: 1,
-          threshold: 1,
-          maxPoints: 1,
-          longPct: 50,
-          shortPct: 50,
-          dominance: 0,
-          dominanceThreshold: getKillerDominanceThreshold(adx),
-          adx,
-          checks: [{ key: 'STRICT', ok: false, points: 0 }],
-          strategyVotes: { buy: 0, sell: 0 },
-          strategyAgreement: 0,
-          stabilityState: 'STRICT',
-          candleAgainst: false,
-          passConfluence: false,
-          passDominance: false,
-          nearMiss: false,
-          confOkNear: false,
-          strictReason: strict.reason || 'Strict veto',
-          strictPass: false,
-          rsi: Number.isFinite(strict.rsi) ? Number(strict.rsi.toFixed(1)) : null,
-          momentumWindow: Number.isFinite(strict.rsi) ? `${strict.buyMin}/${strict.sellMax}` : '—'
-        };
-      }
+      const threshold = getScoreThresholdPoints();
+      const maxPoints = 11;
 
       const strategyVotes = { buy: 0, sell: 0 };
       for (const st of strategyDecisions || []) {
@@ -7617,41 +7952,69 @@ if (!weights.length) return 0;
       const dominanceThreshold = getKillerDominanceThreshold(adx);
       const passDominance = dominance >= dominanceThreshold;
 
-      const checks = [
-        { key: 'TREND', ok: strict.pass || !String(strict.reason || '').includes('Trend'), points: strict.pass ? 1 : 0 },
-        { key: 'RSI', ok: strict.pass || !String(strict.reason || '').includes('Momentum'), points: strict.pass ? 1 : 0 },
-        { key: 'DOM', ok: passDominance, points: passDominance ? 1 : 0 }
+      const dirSign = dir === 'BUY' ? 1 : -1;
+      const biasDir = Number(decision?.biasDir || 0);
+      const confirmationMatched = Number(confirmation?.matched ?? decision?.confirmation?.matched ?? 0);
+      const confidence = Number(decision?.confidence || 0);
+
+      const strategyPoints = Math.max(0, Math.min(2, Number(strategyAgreement || 0)));
+      const filterChecks = [
+        { key: 'STRICT', ok: !!strict.pass, points: strict.pass ? 1 : 0 },
+        { key: 'DOM', ok: passDominance, points: passDominance ? 1 : 0 },
+        { key: 'CONF', ok: confirmationMatched >= 1, points: confirmationMatched >= 1 ? 1 : 0 },
+        { key: 'TREND', ok: trendDir === 0 || Math.sign(trendDir) === dirSign, points: (trendDir === 0 || Math.sign(trendDir) === dirSign) ? 1 : 0 },
+        { key: 'BIAS', ok: biasDir === 0 || Math.sign(biasDir) === dirSign, points: (biasDir === 0 || Math.sign(biasDir) === dirSign) ? 1 : 0 },
+        { key: 'REGIME', ok: String(regime?.state || '').toLowerCase() !== 'chop', points: String(regime?.state || '').toLowerCase() !== 'chop' ? 1 : 0 },
+        { key: 'CONF_LVL', ok: confidence >= 0.55, points: confidence >= 0.55 ? 1 : 0 },
+        { key: 'VOTES', ok: (strategyVotes.buy + strategyVotes.sell) >= 2, points: (strategyVotes.buy + strategyVotes.sell) >= 2 ? 1 : 0 },
+        { key: 'DIR', ok: !!dir, points: dir ? 1 : 0 }
       ];
-      const passConfluence = !!strict.pass;
+
+      const filterPoints = filterChecks.reduce((sum, c) => sum + Number(c.points || 0), 0);
+      const totalPoints = strategyPoints + filterPoints;
+      const confluence = Number(totalPoints.toFixed(1));
+      const supportingBonus = 0;
+      const effectivePoints = Number((confluence + supportingBonus).toFixed(1));
+      const passConfluence = !!strict.pass && effectivePoints >= threshold;
+
+      const breakdown = [
+        `STRATEGIES: ${strategyPoints.toFixed(1)}/2`,
+        ...filterChecks.map((c) => `${c.key}: ${c.points ? '1' : '0'}/1`),
+        `TOTAL: ${effectivePoints.toFixed(1)}/${maxPoints} | праг ${threshold}`
+      ];
 
       return {
         tf,
         direction: dir,
-        confluence: passConfluence ? 1 : 0,
-        effectivePoints: passConfluence ? 1 : 0,
-        supportingBonus: 0,
+        confluence,
+        effectivePoints,
+        supportingBonus,
         supportingDetails: [],
-        minConfluence: 1,
-        threshold: 1,
-        maxPoints: 1,
+        minConfluence: threshold,
+        threshold,
+        maxPoints,
         longPct,
         shortPct,
         dominance,
         dominanceThreshold,
         adx,
-        checks,
+        checks: [
+          { key: 'STRATEGY', ok: strategyPoints >= 1, points: strategyPoints },
+          ...filterChecks
+        ],
         strategyVotes,
         strategyAgreement,
-        stabilityState: 'STRICT',
+        stabilityState: strict.pass ? 'STRICT_PASS' : 'STRICT_FAIL',
         candleAgainst: false,
         passConfluence,
         passDominance,
-        nearMiss: false,
-        confOkNear: false,
+        nearMiss: !!strict.pass && !passConfluence && effectivePoints >= Math.max(0, threshold - 1),
+        confOkNear: confidence >= Math.max(0, (threshold - 1) / maxPoints),
         strictReason: strict.reason || '',
         strictPass: !!strict.pass,
         rsi: Number.isFinite(strict.rsi) ? Number(strict.rsi.toFixed(1)) : null,
-        momentumWindow: Number.isFinite(strict.rsi) ? `${strict.buyMin}/${strict.sellMax}` : '—'
+        momentumWindow: Number.isFinite(strict.rsi) ? `${strict.buyMin}/${strict.sellMax}` : '—',
+        breakdown
       };
     }
 
@@ -8389,6 +8752,33 @@ if (!weights.length) return 0;
       logConsoleLine(message);
     }
 
+    function shouldLogPrecalcVerbose() {
+      return !!S.debugEnabled;
+    }
+
+    function formatPrecalcWindowCtx(tSec, tfSec, inWindow) {
+      const left = Math.max(0, tfSec - 5);
+      const right = Math.max(0, tfSec - 1);
+      const tLabel = Number.isFinite(tSec) ? tSec.toFixed(1) : '—';
+      return `t=${tLabel}s | w=${left}-${right} | ${inWindow ? 'inside_window' : 'outside_window'}`;
+    }
+
+    function derivePrecalcNoSignalReason(snapshot, tfMs, candleStart, nowTs) {
+      const candReason = String(snapshot?.candidateReason || '').toLowerCase();
+      if (candReason === 'no_strategy_data') return 'no_raw_data:no_decision';
+      if (candReason === 'no_direction') return 'no_raw_data:no_candidate';
+      const rawCount = Number(snapshot?.rawCount || 0);
+      if (rawCount > 0) return 'no_raw_data:no_decision';
+      const sameCandle = Number(snapshot?.candleStart || 0) === Number(candleStart || 0);
+      if (!sameCandle) return 'no_raw_data:candle_mismatch';
+      if (!snapshot?.candidate) return 'no_raw_data:no_candidate';
+      const lastRawAt = Number(snapshot?.lastRawAt || 0);
+      if (!Number.isFinite(lastRawAt) || lastRawAt <= 0) return 'no_raw_data:no_raw_at';
+      const ageMs = Math.max(0, Number(nowTs || Date.now()) - lastRawAt);
+      if (ageMs > Math.max(5000, Number(tfMs || 0))) return 'no_raw_data:stale_raw';
+      return 'no_raw_data';
+    }
+
     function upsertPrecalcSourceSnapshot(tf, patch = {}) {
       S.precalcSourceSnapshots = S.precalcSourceSnapshots || {};
       const key = String(tf || '1m').toLowerCase();
@@ -8419,43 +8809,57 @@ if (!weights.length) return 0;
         const tfSec = Math.round(tfMs / 1000);
         const t = Number(getTimeInCandleSec(tfMs));
         const inPreCalcWindow = tfSec > 10 && Number.isFinite(t) && t >= (tfSec - 5) && t <= (tfSec - 1);
-        if (!inPreCalcWindow) continue;
-
-        const candleStart = getCandleStart(tfMs);
         const tfLabel = String(tf || '1m').toLowerCase();
         const baseSpamKey = `precalc:${tfLabel}`;
+        const outsideCtx = formatPrecalcWindowCtx(t, tfSec, false);
+        if (!inPreCalcWindow) {
+          if (shouldLogPrecalcVerbose()) {
+            const outsideState = `${getCandleStart(tfMs)}:outside-window`;
+            logPrecalcConsole(`🕒 PRECALC ИЗЧАКВАНЕ | ${tfLabel} | ${outsideCtx}`, `${baseSpamKey}:outside`, outsideState, 15000);
+          }
+          continue;
+        }
+
+        const candleStart = getCandleStart(tfMs);
         const snapshot = getPrecalcSourceSnapshot(tfLabel);
         const startedAt = Number(snapshot?.windowStartedAt || snapshot?.updatedAt || Date.now());
         const elapsedMs = Math.max(0, Date.now() - startedAt);
-        logPrecalcConsole(`🕒 PRECALC СТАРТ | ${tfLabel} | t=${Number.isFinite(t) ? t.toFixed(1) : '—'}s | budget=4.0s`, `${baseSpamKey}:start`, `${candleStart}:start`, 1000);
-
-        let d = decisionsByTf?.[tf] || null;
-        if (!d && snapshot?.candidate && Number(snapshot.candleStart || 0) === candleStart) {
-          d = snapshot.candidate;
+        const windowCtx = formatPrecalcWindowCtx(t, tfSec, true);
+        if (shouldLogPrecalcVerbose()) {
+          logPrecalcConsole(`🕒 PRECALC СТАРТ | ${tfLabel} | ${windowCtx} | budget=4.0s`, `${baseSpamKey}:start:${candleStart}`, `${candleStart}:start`, 60000);
         }
 
+        const snapshotCandidate = (snapshot?.candidate && Number(snapshot.candleStart || 0) === candleStart)
+          ? snapshot.candidate
+          : null;
+        let d = decisionsByTf?.[tf] || snapshotCandidate || null;
+
         if (!d) {
-          const rawCount = Number(snapshot?.rawCount || 0);
-          const missingReason = rawCount > 0 ? 'no_strategy_data' : 'no_raw_data';
-          logPrecalcConsole(`🟡 PRECALC ПРОПУСК | ${tfLabel} | ${missingReason} | elapsed=${elapsedMs}ms`, `${baseSpamKey}:no-signal`, `${candleStart}:${missingReason}`, 15000);
+          const missingReason = derivePrecalcNoSignalReason(snapshot, tfMs, candleStart, Date.now());
+          logPrecalcConsole(`🟡 PRECALC ПРОПУСК | ${tfLabel} | ${missingReason} | ${windowCtx} | age=${elapsedMs}ms`, `${baseSpamKey}:no-signal:${candleStart}:${missingReason}`, `${candleStart}:${missingReason}`, 60000);
           continue;
         }
 
         if (!d.direction) {
-          logPrecalcConsole(`🟠 PRECALC ПРОПУСК | ${tfLabel} | няма посока | elapsed=${elapsedMs}ms`, `${baseSpamKey}:no-direction`, `${candleStart}:no-direction`, 15000);
+          logPrecalcConsole(`🟠 PRECALC ПРОПУСК | ${tfLabel} | няма посока | ${windowCtx} | age=${elapsedMs}ms`, `${baseSpamKey}:no-direction:${candleStart}`, `${candleStart}:no-direction`, 60000);
           continue;
         }
 
-        const gate = evaluatePrecheckGate(tf, d, d.regime, requiredThreshold);
-        if (!gate?.pass) {
-          const gateState = `${candleStart}:${String(gate?.reason || 'gate-fail')}`;
-          logPrecalcConsole(`🔴 PRECALC БЛОК | ${tfLabel} | ${String(gate?.reason || 'филтър отказ')} | elapsed=${elapsedMs}ms`, `${baseSpamKey}:gate-fail`, gateState, 15000);
-          continue;
+        // PRECALC is candidate-capture only.
+        // Do not run strict precheck gating here; strict checks are execution-only.
+        const snapshotConf = Number(snapshotCandidate?.confidence || 0);
+        const currentConf = Number(d?.confidence || 0);
+        if (snapshotCandidate && snapshotConf >= currentConf) {
+          d = snapshotCandidate;
         }
 
         const signalTfKey = String(d.tfKey || tf).toLowerCase();
-        if (S.preCalculatedSignal && String(S.preCalculatedSignal.tfKey || '').toLowerCase() === signalTfKey && S.preCalculatedSignal.candleStart === candleStart) {
-          logPrecalcConsole(`🔵 PRECALC ПРОПУСК | ${tfLabel} | вече записан | elapsed=${elapsedMs}ms`, `${baseSpamKey}:duplicate`, `${candleStart}:duplicate`, 15000);
+        const existingPrecalc = S.preCalculatedSignal;
+        const existingSameCandle = existingPrecalc && Number(existingPrecalc.candleStart || 0) === candleStart;
+        const existingConf = Number(existingPrecalc?.confidence || 0);
+        if (existingSameCandle && existingConf >= Number(d?.confidence || 0)) {
+          const reason = existingConf > Number(d?.confidence || 0) ? 'по-слаб кандидат' : 'вече записан';
+          logPrecalcConsole(`🔵 PRECALC ПРОПУСК | ${tfLabel} | ${reason} | ${windowCtx} | age=${elapsedMs}ms`, `${baseSpamKey}:skip-weaker:${candleStart}:${reason}`, `${candleStart}:${reason}`, 60000);
           continue;
         }
 
@@ -8464,12 +8868,17 @@ if (!weights.length) return 0;
           tfKey: signalTfKey,
           preCalculatedAt: Date.now(),
           candleStart,
-          priceAtDecision: Number(S.currentAssetPrice)
+          priceAtDecision: Number(S.currentAssetPrice),
+          traceId: String(d?.traceId || buildSignalTraceId({ ...d, tfKey: signalTfKey, candleStart })),
+          precalcCandidateKey: buildPrecalcCandidateKey({ tfKey: signalTfKey, candleStart, direction: d?.direction })
         };
+        incrementObsMetric('precalcReady', 1);
+        annotateSignalTrace(S.preCalculatedSignal, 'PRECALC_READY', `${signalTfKey}|${String(d.direction || '').toUpperCase()}`);
         const confPct = Math.round(Number(d.confidence || 0) * 100);
-        logPrecalcConsole(`🕒 PRECALC FINAL CHECK | ${signalTfKey} | t=${Number.isFinite(t) ? t.toFixed(1) : '—'}s | conf=${confPct}%`, `${baseSpamKey}:final`, `${candleStart}:${confPct}:final`, 1500);
-        logPrecalcConsole(`⏱️⏭️ PRECALC ГОТОВ | ${signalTfKey} | ${String(d.direction || '').toUpperCase()} | conf=${confPct}% | elapsed=${elapsedMs}ms | слот=55-59s`, `${baseSpamKey}:ready`, `${candleStart}:${String(d.direction || '')}:${confPct}`, 15000);
-        break;
+        if (shouldLogPrecalcVerbose()) {
+          logPrecalcConsole(`🕒 PRECALC FINAL CHECK | ${signalTfKey} | ${windowCtx} | conf=${confPct}%`, `${baseSpamKey}:final:${candleStart}`, `${candleStart}:${confPct}:final`, 60000);
+        }
+        logPrecalcConsole(`⏱️⏭️ PRECALC ГОТОВ | ${signalTfKey} | ${String(d.direction || '').toUpperCase()} | conf=${confPct}% | ${windowCtx} | age=${elapsedMs}ms`, `${baseSpamKey}:ready:${candleStart}:${signalTfKey}`, `${candleStart}:${signalTfKey}:${String(d.direction || '')}`, 60000);
       }
     }
 
@@ -8586,6 +8995,7 @@ if (!weights.length) return 0;
       S.precheckSuccessLatch = S.precheckSuccessLatch || {};
       const allowLateEntries = requiredThreshold === 0;
       const tfStatus = {};
+      let hasPrecalcOwnedFlow = false;
       S.lastScoreSnapshot = null;
       S._entryWindowClosedByTf = S._entryWindowClosedByTf || {};
       for (const tf of timeframes) {
@@ -8600,6 +9010,33 @@ if (!weights.length) return 0;
           entryWindowLimit = Math.min(999, Math.max(0, Math.round(baseLimit)));
         }
         const candleStart = getCandleStart(windowMs);  
+        const precalcLock = getPrecalcCandleLock(tf, candleStart);
+        const precalcLockActive = isCandleLockedByPrecalc(tf, candleStart);
+        const precalcSignal = S.preCalculatedSignal;
+        const precalcOwnedFlow = precalcLockActive
+          && !!S.proPrecalcEnabled
+          && !!precalcSignal
+          && String(precalcSignal.tfKey || '1m').toLowerCase() === String(tf || '1m').toLowerCase()
+          && (
+            Number(precalcSignal.handoffPendingCandle || 0) === Number(candleStart || 0)
+            || Number(precalcSignal.handoffAttemptedCandle || 0) === Number(candleStart || 0)
+          )
+          && String(precalcLock?.status || '').toUpperCase() === 'HANDOFF';
+        if (precalcLockActive && !precalcOwnedFlow) {
+          upsertPrecalcSourceSnapshot(tf, {
+            candleStart,
+            candidate: null,
+            candidateAt: Date.now(),
+            candidateReason: 'precalc_candle_lock'
+          });
+          tfStatus[tf] = { state: 'precalc_lock', detail: 'precalc lock', confidence: null, direction: null };
+          continue;
+        }
+        if (precalcOwnedFlow) {
+          hasPrecalcOwnedFlow = true;
+          tfStatus[tf] = { state: 'precalc_handoff', detail: 'precalc handoff', confidence: null, direction: null };
+          continue;
+        }
         const prevWin = S._entryWindowClosedByTf[tf] || { candleStart: null, closed: false, logged: false };
         if (prevWin.candleStart !== candleStart) {
           S._entryWindowClosedByTf[tf] = { candleStart, closed: false, logged: false };
@@ -8664,6 +9101,12 @@ if (!weights.length) return 0;
           candleStart
         });
         if (decision) decision.priceAtSignal = Number(S.currentAssetPrice);
+        if (decision) {
+          decision.traceId = String(decision.traceId || buildSignalTraceId({ ...decision, tfKey: tf, candleStart }));
+          incrementObsMetric('detected', 1);
+          annotateSignalTrace(decision, 'DETECTED', `${String(tf||'1m').toLowerCase()}|${String(decision.direction||'').toUpperCase()}`);
+          trackDeterministicDecision(tf, candleStart, decision);
+        }
         decisionsByTf[tf] = decision;
         if (!decision) {
           upsertPrecalcSourceSnapshot(tf, {
@@ -8694,13 +9137,18 @@ if (!weights.length) return 0;
         const confirmation = decision.confirmation || { total: 0, matched: 0, details: [] };
         const pre = evaluatePrecheckGate(tf, decision, regime, requiredThreshold);
         if (!pre.pass) {
+          incrementObsMetric('precheckStop', 1);
+          annotateSignalTrace(decision, 'PRECHECK_STOP', String(pre.reason || 'stop'));
           const reasonTxt = String(pre.reason || '');
           const isPenaltyOnly = ['IMPULSE_EXTENSION', 'MICRO_NOISE', 'DIR_STABILIZER'].includes(reasonTxt);
           if (!isPenaltyOnly) {
             tfStatus[tf] = { state: 'precheck_stop', detail: pre.reason, confidence: decision.confidence, direction: decision.direction };
             const preStopKey = `precheck-stop:${String(tf||'1m').toLowerCase()}:${String(pre.reason||'').toLowerCase()}`;
+            const preStopCandleKey = `precheck-stop-candle:${String(tf||'1m').toLowerCase()}:${Number(candleStart || 0)}:${String(pre.reason||'').toLowerCase()}`;
             const stopBurstKey = `precheck-burst-stop:${String(tf||'1m').toLowerCase()}`;
-            if (logSpamControlled(stopBurstKey, String(pre.reason||'').toLowerCase(), 1200) && logSpamControlled(preStopKey, `STOP|${String(pre.reason||'').toLowerCase()}`, 30000)) {
+            if (logSpamControlled(stopBurstKey, String(pre.reason||'').toLowerCase(), 1200)
+              && logSpamControlled(preStopKey, `STOP|${String(pre.reason||'').toLowerCase()}`, 30000)
+              && logSpamControlled(preStopCandleKey, `STOP|${String(pre.reason||'').toLowerCase()}`, 59000)) {
               const detailsTxt = String(pre.details || '').trim();
               const detailSuffix = detailsTxt ? ` | ${detailsTxt}` : '';
               logConsoleLine(`🔴🧭 ПРЕЧЕК СТОП | ${String(tf||'1m').toLowerCase()} | ${decision.direction} | ${pre.reason}${detailSuffix}`);
@@ -8712,13 +9160,18 @@ if (!weights.length) return 0;
           tfStatus[tf] = { state: 'precheck_penalty', detail: pre.reason, confidence: decision.confidence, direction: decision.direction };
           const stopBurstKey = `precheck-burst-stop:${String(tf||'1m').toLowerCase()}`;
           const preStopKey = `precheck-stop:${String(tf||'1m').toLowerCase()}:${String(pre.reason||'').toLowerCase()}`;
-          if (logSpamControlled(stopBurstKey, String(pre.reason||'').toLowerCase(), 1200) && logSpamControlled(preStopKey, `STOP|${String(pre.reason||'').toLowerCase()}`, 30000)) {
+          const preStopCandleKey = `precheck-stop-candle:${String(tf||'1m').toLowerCase()}:${Number(candleStart || 0)}:${String(pre.reason||'').toLowerCase()}`;
+          if (logSpamControlled(stopBurstKey, String(pre.reason||'').toLowerCase(), 1200)
+            && logSpamControlled(preStopKey, `STOP|${String(pre.reason||'').toLowerCase()}`, 30000)
+            && logSpamControlled(preStopCandleKey, `STOP|${String(pre.reason||'').toLowerCase()}`, 59000)) {
             const detailsTxt = String(pre.details || '').trim();
             const bgReason = reasonTxt === 'IMPULSE_EXTENSION' ? 'ИМПУЛС' : reasonTxt === 'MICRO_NOISE' ? 'ШУМ' : 'СТАБИЛИЗАТОР';
             const detailSuffix = detailsTxt ? ` | ${detailsTxt}` : '';
             logConsoleLine(`🧭 [ENGINE_GUARD] [${String(tf||'1m').toLowerCase()}] [${String(decision.direction||'').toUpperCase()}] [${bgReason}]${detailSuffix}`);
           }
         }
+        incrementObsMetric('precheckPass', 1);
+        annotateSignalTrace(decision, 'PRECHECK_PASS', String(tf || '1m').toLowerCase());
         upsertPrecalcSourceSnapshot(tf, {
           candleStart,
           candidate: {
@@ -8864,7 +9317,9 @@ if (!weights.length) return 0;
           maxPoints: Number(killerSnapshotTf?.maxPoints || 11),
           threshold: killerThreshold,
           hardFailReason: '',
-          breakdown: ['KILLER_ONLY_RUNTIME']
+          breakdown: Array.isArray(killerSnapshotTf?.breakdown) && killerSnapshotTf.breakdown.length
+            ? killerSnapshotTf.breakdown.slice(0, 12)
+            : ['KILLER_ONLY_RUNTIME']
         };
         decision.scoreCard = scoreCard;
         if (!killerGatePass) {
@@ -8882,6 +9337,8 @@ if (!weights.length) return 0;
           tfStatus[tf] = { state: 'risk', confidence: decision.confidence, direction: displayDir };
           continue;
         }
+
+        try { sessionRecordKiller(tf, killerSnapshotTf, 'PASS', 'READY'); } catch (_) {}
 
         S.lastScoreSnapshot = {
           result: 'READY(KILLER)',
@@ -8969,7 +9426,7 @@ if (!weights.length) return 0;
       renderPendingTrades();
       renderKillerHud();
       runPrecalcStage(timeframes, decisionsByTf, evaluatePrecheckGate, requiredThreshold);
-      if (!best) {
+      if (!best && !hasPrecalcOwnedFlow) {
         S.analysisConfidence = bestCandidate ? bestCandidate.confidence : 0;
         S.analysisDirection = bestCandidate ? bestCandidate.direction : null;
         S.tradeQualityScore = bestCandidate ? Math.round((bestCandidate.confidence || 0) * 100) : 0;
@@ -8988,28 +9445,28 @@ if (!weights.length) return 0;
         return;
       }
 
-      if (S.lastStrategyDirection && best.direction && S.lastStrategyDirection !== best.direction) {
+      if (S.lastStrategyDirection && best?.direction && S.lastStrategyDirection !== best.direction) {
         const sinceFlip = now - (S.lastStrategyDirectionAt || 0);
         if (sinceFlip < Math.max(500, S.strategyFlipCooldownMs || 2500)) {
           best.direction = S.lastStrategyDirection;
           best.confidence = Math.max(0, (best.confidence || 0) - 0.08);
         }
       }
-      if (best.direction) {
+      if (best?.direction) {
         S.lastStrategyDirection = best.direction;
         S.lastStrategyDirectionAt = now;
       }
-      S.analysisConfidence = best.confidence;
-      S.analysisDirection = best.direction;
+      S.analysisConfidence = Number(best?.confidence || 0);
+      S.analysisDirection = best?.direction || null;
       S.analysisUpdatedAt = now;
-      S.tradeQualityScore = Math.round((best.confidence || 0) * 100);
-      S.killerLastDecision = best;
-      S.currentStrategyKey = best.strategyKey || null;
+      S.tradeQualityScore = Math.round((Number(best?.confidence || 0)) * 100);
+      S.killerLastDecision = best || null;
+      S.currentStrategyKey = best?.strategyKey || null;
       S.lastDecisionSnapshot = {
         at: now,
-        direction: best.direction || null,
-        confidence: Number(best.confidence || 0),
-        strategyKey: best.strategyKey || null,
+        direction: best?.direction || null,
+        confidence: Number(best?.confidence || 0),
+        strategyKey: best?.strategyKey || null,
         tfStatus: { ...tfStatus }
       };
 
@@ -9040,6 +9497,8 @@ if (!weights.length) return 0;
     S.lastGlobalBuyAvg = buyAvg;
     S.lastGlobalSellAvg = sellAvg;
     S.lastGlobalSpread = spreadPct;
+      cleanupPrecalcCandleLocks(timeframes);
+
 const readySignals = Object.keys(tfStatus)
         .filter(tf => ['ready'].includes(tfStatus[tf]?.state))
         .map(tf => {
@@ -9070,12 +9529,8 @@ const readySignals = Object.keys(tfStatus)
 
       const maxConcurrentKillerTrades = Math.max(1, Math.round(S.maxOpenTrades || timeframes.length));
       const availableSlots = Math.max(0, maxConcurrentKillerTrades - S.activeTrades.length);
-      if (!availableSlots) {
-        setStatusOverlay('Снайпер: изчакване', '', false);
-        return;
-      }
 
-      let signalsToExecute = readySignals.slice(0, availableSlots);
+      let precalcHandoffSignal = null;
       if (!S.proPrecalcEnabled && S.preCalculatedSignal) {
         S.preCalculatedSignal = null;
       }
@@ -9083,17 +9538,75 @@ const readySignals = Object.keys(tfStatus)
         const tfKey = String(S.preCalculatedSignal.tfKey || '1m').toLowerCase();
         const tfMs = KILLER_TF_MS[tfKey] || 60_000;
         const t = Number(getTimeInCandleSec(tfMs));
-        const limit = tfKey === '1m' ? Number(S.entryWindowSec1m || 15)
-          : tfKey === '3m' ? Number(S.entryWindowSec3m || 35)
-          : Number(S.entryWindowSec5m || 150);
+        const precalcEarlyEntrySec = 2;
         const currentCandleStart = getCandleStart(tfMs);
         const preparedPrevCandle = Number(S.preCalculatedSignal.candleStart || 0) < currentCandleStart;
-        if (preparedPrevCandle && t >= 0 && t <= limit) {
-          signalsToExecute = [{ ...S.preCalculatedSignal, _fromPreCalc: true, windowMs: tfMs }];
-        } else if (t > limit || currentCandleStart > Number(S.preCalculatedSignal.candleStart || 0) + tfMs) {
+        const inEarlyWindow = t >= 0 && t <= precalcEarlyEntrySec;
+
+        if (preparedPrevCandle && Number(S.preCalculatedSignal.handoffPendingCandle || 0) !== Number(currentCandleStart || 0)) {
+          S.preCalculatedSignal = {
+            ...S.preCalculatedSignal,
+            handoffPendingAt: Date.now(),
+            handoffPendingCandle: currentCandleStart
+          };
+          setPrecalcCandleLock(tfKey, currentCandleStart, {
+            source: 'PRECALC',
+            candidateKey: String(S.preCalculatedSignal.precalcCandidateKey || buildPrecalcCandidateKey(S.preCalculatedSignal)),
+            status: 'HANDOFF',
+            reason: 'pending_handoff'
+          });
+        }
+
+        const pendingForCurrent = Number(S.preCalculatedSignal.handoffPendingCandle || 0) === Number(currentCandleStart || 0);
+        if (pendingForCurrent) {
+          const alreadyAttempted = Number(S.preCalculatedSignal.handoffAttemptedCandle || 0) === Number(currentCandleStart || 0);
+          if (inEarlyWindow && !alreadyAttempted) {
+            const preSignal = {
+              ...S.preCalculatedSignal,
+              _fromPreCalc: true,
+              _fromPreCalcHandoff: true,
+              windowMs: tfMs,
+              tfKey,
+              candleStart: currentCandleStart
+            };
+            preSignal.traceId = String(S.preCalculatedSignal.traceId || buildSignalTraceId(preSignal));
+            preSignal.precalcCandidateKey = String(S.preCalculatedSignal.precalcCandidateKey || buildPrecalcCandidateKey(preSignal));
+            S.preCalculatedSignal = {
+              ...S.preCalculatedSignal,
+              handoffAttemptedAt: Date.now(),
+              handoffAttemptedCandle: currentCandleStart,
+              handoffCandidateKey: preSignal.precalcCandidateKey
+            };
+            annotateSignalTrace(preSignal, 'PRECALC_HANDOFF', `${tfKey}|t=${Number.isFinite(t) ? t.toFixed(1) : 'na'}`);
+            const handoffConf = Math.round(Number(preSignal?.confidence || 0) * 100);
+            logConsoleLine(`⏩ PRECALC ПРЕХВЪРЛЯНЕ | ${tfKey} | ${String(preSignal.direction || '').toUpperCase()} | conf=${handoffConf}% | key=${preSignal.precalcCandidateKey} | t=${Number.isFinite(t) ? t.toFixed(1) : '—'}s`);
+            precalcHandoffSignal = preSignal;
+          } else if (!inEarlyWindow && !alreadyAttempted) {
+            const droppedSignal = {
+              ...S.preCalculatedSignal,
+              _fromPreCalc: true,
+              _fromPreCalcHandoff: true,
+              windowMs: tfMs,
+              tfKey,
+              candleStart: currentCandleStart,
+              precalcCandidateKey: String(S.preCalculatedSignal.precalcCandidateKey || buildPrecalcCandidateKey({ ...S.preCalculatedSignal, tfKey, candleStart: currentCandleStart }))
+            };
+            finalizePrecalcOutcome(droppedSignal, 'dropped', 'handoff_window_missed');
+          }
+        } else if (currentCandleStart > Number(S.preCalculatedSignal.candleStart || 0) + tfMs) {
           S.preCalculatedSignal = null;
         }
       }
+
+      if (!availableSlots) {
+        if (precalcHandoffSignal) {
+          finalizePrecalcOutcome(precalcHandoffSignal, 'dropped', 'no_slot');
+        }
+        setStatusOverlay('Снайпер: изчакване', '', false);
+        return;
+      }
+
+      let signalsToExecute = precalcHandoffSignal ? [precalcHandoffSignal] : readySignals.slice(0, availableSlots);
 
       for (let i = 0; i < signalsToExecute.length; i += 1) {
         const decision = signalsToExecute[i];
@@ -9114,70 +9627,87 @@ const readySignals = Object.keys(tfStatus)
         const assetSearch = assetLabel.replace(/\(OTC\)/i, '').replace(/\//g, '').trim();
         
       // --- NEW FILTERS (Advanced) ---
-      // Spread filter (global BUY vs SELL bias)
-      if (S.filterSpreadEnabled && typeof S.filterSpreadThreshold === 'number') {
-        const sp = (typeof S.lastGlobalSpread === 'number') ? S.lastGlobalSpread : 0;
-        if (sp < S.filterSpreadThreshold) {
-          setSkipReason('spread_low');
-          continue;
-        }
-      }
+      const evalCtx = {
+        nowTs: Date.now(),
+        tf: decision.tfKey || decision.timeframe,
+        direction: decision.direction,
+        spreadValue: (typeof S.lastGlobalSpread === 'number') ? S.lastGlobalSpread : 0,
+        tfConfSeries: (S._tfConfSeries && (decision.tfKey || decision.timeframe) && S._tfConfSeries[decision.tfKey || decision.timeframe]) ? S._tfConfSeries[decision.tfKey || decision.timeframe] : [],
+        ticks: Array.isArray(S.priceHistory) ? S.priceHistory : [],
+        wsTs: Number(S.wsLastPriceAt || 0),
+        domTs: Number(S.lastPriceAt || 0),
+        biasDir: Number(decision?.biasDir || 0),
+        trendDirRaw: Number(decision?.trendDir || decision?.biasDir || 0)
+      };
+      const filterResults = {
+        precheck_gate: { pass: true, reason: '', details: '' }
+      };
+      const filterOrder = ['spread', 'flip_delay', 'drift', 'impulse_cap', 'dead_market', 'csea_se', 'chop_hard_stop', 'spike_protection'];
 
-      // Flip delay: block immediate opposite direction after a recent trade
-      if (S.filterFlipDelayEnabled && S.lastTradeDirection && decision.direction && decision.direction !== S.lastTradeDirection) {
-        const dt = Date.now() - (S.lastTradeAt || 0);
-        if (dt >= 0 && dt < (S.filterFlipDelaySec * 1000)) {
-          setSkipReason('flip_delay');
-          continue;
-        }
-      }
+      // Phase 1: evaluation (single-pass, no execution continue)
+      const spreadFail = S.filterSpreadEnabled && typeof S.filterSpreadThreshold === 'number' && evalCtx.spreadValue < S.filterSpreadThreshold;
+      filterResults.spread = {
+        pass: !spreadFail,
+        reason: spreadFail ? 'spread_low' : '',
+        details: spreadFail ? `${evalCtx.spreadValue} < ${Number(S.filterSpreadThreshold || 0)}` : ''
+      };
 
-      // Drift detector: if confidence is sliding down (last 4 ticks) on this TF, skip
+      const flipDelayFail = S.filterFlipDelayEnabled && S.lastTradeDirection && decision.direction && decision.direction !== S.lastTradeDirection
+        && ((evalCtx.nowTs - (S.lastTradeAt || 0)) >= 0)
+        && ((evalCtx.nowTs - (S.lastTradeAt || 0)) < (S.filterFlipDelaySec * 1000));
+      filterResults.flip_delay = {
+        pass: !flipDelayFail,
+        reason: flipDelayFail ? 'flip_delay' : '',
+        details: flipDelayFail ? `${evalCtx.nowTs - (S.lastTradeAt || 0)}ms < ${S.filterFlipDelaySec * 1000}ms` : ''
+      };
+
+      let driftFail = false;
       if (S.filterDriftEnabled) {
-        const tf = decision.tfKey || decision.timeframe;
-        const arr = (S._tfConfSeries && tf && S._tfConfSeries[tf]) ? S._tfConfSeries[tf] : [];
+        const arr = evalCtx.tfConfSeries;
         if (arr.length >= 4) {
           const a = arr.slice(-4);
           const isDown = (a[0] > a[1]) && (a[1] > a[2]) && (a[2] > a[3]);
           const drop = a[0] - a[3];
           const driftThreshold = Math.max(0, (Number(S.filterDriftThreshold) || 0) / 100);
-          if (driftThreshold > 0 && isDown && drop >= driftThreshold) {
-            setSkipReason('drift');
-            continue;
-          }
+          driftFail = driftThreshold > 0 && isDown && drop >= driftThreshold;
         }
       }
+      filterResults.drift = {
+        pass: !driftFail,
+        reason: driftFail ? 'drift' : '',
+        details: driftFail ? 'confidence sliding down' : ''
+      };
 
-      // Impulse Entry Cap: per TF + direction per candle (1m/3m/5m)
+      let impulseCapFail = false;
       if (S.impulseCapEnabled) {
-        const tf = decision.tfKey || decision.timeframe;
+        const tf = evalCtx.tf;
         const tfMs = (tf === '1m') ? 60_000 : (tf === '3m') ? 180_000 : (tf === '5m') ? 300_000 : 0;
         if (tfMs) {
-          const candleId = Math.floor(Date.now() / tfMs);
+          const candleId = Math.floor(evalCtx.nowTs / tfMs);
           S._impulseCap = S._impulseCap || {};
           const key = tf + '|' + decision.direction;
           const obj = (S._impulseCap[key] = S._impulseCap[key] || { candleId, count: 0 });
           if (obj.candleId !== candleId) { obj.candleId = candleId; obj.count = 0; }
-          if (obj.count >= S.impulseCapMaxPerCandle) {
-            setSkipReason('impulse_cap');
-            continue;
-          }
+          impulseCapFail = obj.count >= S.impulseCapMaxPerCandle;
           // slot increment is applied only at real execution start.
         }
       }
+      filterResults.impulse_cap = {
+        pass: !impulseCapFail,
+        reason: impulseCapFail ? 'impulse_cap' : '',
+        details: impulseCapFail ? `max=${S.impulseCapMaxPerCandle}` : ''
+      };
 
+      let deadMarketFailReason = '';
       if (S.deadMarketEnabled) {
-        const nowTs = Date.now();
-        const ticks = Array.isArray(S.priceHistory) ? S.priceHistory : [];
+        const ticks = evalCtx.ticks;
         const histTs = ticks.length ? Number(ticks[ticks.length - 1]?.timestamp || 0) : 0;
-        const wsTs = Number(S.wsLastPriceAt || 0);
-        const domTs = Number(S.lastPriceAt || 0);
-        const lastTickTs = Math.max(wsTs, domTs, histTs);
-        const lastTickAgeMs = lastTickTs > 0 ? Math.max(0, nowTs - lastTickTs) : Number.POSITIVE_INFINITY;
+        const lastTickTs = Math.max(evalCtx.wsTs, evalCtx.domTs, histTs);
+        const lastTickAgeMs = lastTickTs > 0 ? Math.max(0, evalCtx.nowTs - lastTickTs) : Number.POSITIVE_INFINITY;
         const minMove = Math.max(0, Number(S.deadMarketMinMove || 0.00010));
         const minLatency = Math.max(200, Math.round(Number(S.deadMarketMinLatencyMs || 1500)));
         const windowMs = Math.max(1000, minLatency);
-        const cutoff = nowTs - windowMs;
+        const cutoff = evalCtx.nowTs - windowMs;
         const recent = ticks.filter(x => Number(x?.timestamp || 0) >= cutoff);
         const ticksLastWindow = recent.length;
         const first = recent.length ? Number(recent[0]?.price || 0) : 0;
@@ -9195,23 +9725,23 @@ const readySignals = Object.keys(tfStatus)
           minMove,
           windowMs,
           lastTickTs,
-          wsTs,
-          domTs,
+          wsTs: evalCtx.wsTs,
+          domTs: evalCtx.domTs,
           histTs
         };
-        if (staleFeed) {
-          setSkipReason('dead_market_stale');
-          continue;
-        }
-        if (lowMovement) {
-          setSkipReason('dead_market_low_movement');
-          continue;
-        }
+        if (staleFeed) deadMarketFailReason = 'dead_market_stale';
+        else if (lowMovement) deadMarketFailReason = 'dead_market_low_movement';
       }
+      filterResults.dead_market = {
+        pass: !deadMarketFailReason,
+        reason: deadMarketFailReason,
+        details: deadMarketFailReason ? 'feed/movement guard' : ''
+      };
 
+      let cseaSeFail = false;
       if (S.cseaSeFilterEnabled) {
         const dirSign = decision.direction === 'BUY' ? 1 : -1;
-        const trendDir = Number(decision?.trendDir || decision?.biasDir || 0);
+        const trendDir = evalCtx.trendDirRaw;
         const csOk = Math.abs(trendDir) >= 0.25 && Math.sign(trendDir) === dirSign;
         const emaAligned = (decision?.trendAligned === true)
           || ((Number(decision?.biasDir || 0) !== 0) && Math.sign(Number(decision?.biasDir || 0)) === dirSign);
@@ -9219,26 +9749,60 @@ const readySignals = Object.keys(tfStatus)
         const seOk = Number.isFinite(stochRaw)
           ? ((decision.direction === 'BUY' && stochRaw <= 85) || (decision.direction === 'SELL' && stochRaw >= 15))
           : true;
-        if (!(csOk && emaAligned && seOk)) {
-          setSkipReason('csea_se');
-          continue;
-        }
+        cseaSeFail = !(csOk && emaAligned && seOk);
       }
+      filterResults.csea_se = {
+        pass: !cseaSeFail,
+        reason: cseaSeFail ? 'csea_se' : '',
+        details: cseaSeFail ? 'cs/ema/se mismatch' : ''
+      };
 
+      let chopHardFail = false;
       if (S.chopV5HardStopEnabled) {
         const rg = String(decision?.regime?.state || '').toLowerCase();
         const isChop = rg === 'chop' || ((Number(decision?.regime?.rangePct || 0) < 0.0035) && Number(decision?.regime?.trendScore || 0) < 0.4);
-        if (isChop) {
-          setSkipReason('chop_hard_stop');
-          continue;
-        }
+        chopHardFail = !!isChop;
       }
+      filterResults.chop_hard_stop = {
+        pass: !chopHardFail,
+        reason: chopHardFail ? 'chop_hard_stop' : '',
+        details: chopHardFail ? 'chop regime' : ''
+      };
 
-      if (S.spikeProtectionEnabled) {
-        if ((decision.direction === 'BUY' && S.blockBuy) || (decision.direction === 'SELL' && S.blockSell)) {
-          setSkipReason('Spike trend-follow only');
-          continue;
-        }
+      const spikeFail = S.spikeProtectionEnabled
+        && ((decision.direction === 'BUY' && S.blockBuy) || (decision.direction === 'SELL' && S.blockSell));
+      filterResults.spike_protection = {
+        pass: !spikeFail,
+        reason: spikeFail ? 'Spike trend-follow only' : '',
+        details: spikeFail ? 'spike block active' : ''
+      };
+
+      // persist shared runtime filter snapshot for scoring/execution phases
+      decision.filterResults = filterResults;
+
+      // Phase 2: scoring (uses evaluated filterResults only)
+      const sharedFilterResults = decision.filterResults || filterResults;
+      const strategyPoints = (decision?.strategyKey && isStrategyEnabled(decision.strategyKey)) ? 2 : 0;
+      const filterPoints = filterOrder.reduce((sum, key) => sum + (sharedFilterResults[key]?.pass ? 1 : 0), 0);
+      const runtimePoints = strategyPoints + filterPoints;
+      const runtimeThreshold = getScoreThresholdPoints();
+      decision.scoreCard = {
+        points: Number(runtimePoints.toFixed(1)),
+        maxPoints: 11,
+        threshold: runtimeThreshold,
+        hardFailReason: '',
+        breakdown: [
+          `STRATEGY_SOURCE: ${strategyPoints}/2`,
+          ...filterOrder.map((key) => `${key}: ${sharedFilterResults[key]?.pass ? 'PASS' : 'SKIP'}${sharedFilterResults[key]?.reason ? ` (${sharedFilterResults[key].reason})` : ''}`),
+          `TOTAL: ${Number(runtimePoints.toFixed(1))}/11 | праг ${runtimeThreshold}`
+        ]
+      };
+
+      // Phase 3: execution decision (no recalculation; consume shared filterResults only)
+      const firstFailedFilter = filterOrder.find((key) => !sharedFilterResults[key]?.pass);
+      if (firstFailedFilter) {
+        setSkipReason(sharedFilterResults[firstFailedFilter].reason || firstFailedFilter);
+        continue;
       }
 const frozenSignal = {
           asset: assetLabel,
@@ -9258,7 +9822,8 @@ const frozenSignal = {
           scoreCard: decision.scoreCard || null,
           frozenAt: Date.now(),
           priceAtDecision: Number(S.currentAssetPrice),
-          rawText: `[killer:${decision.tfKey}]`
+          rawText: `[killer:${decision.tfKey}]`,
+          traceId: String(decision.traceId || buildSignalTraceId(decision))
         };
         const signal = {
           asset: frozenSignal.asset,
@@ -9291,6 +9856,8 @@ const frozenSignal = {
           targetTsMs: now,
           rawText: frozenSignal.rawText
         };
+        signal.traceId = String(frozenSignal.traceId || buildSignalTraceId(signal));
+        annotateSignalTrace(signal, 'COMMIT_CANDIDATE', `${String(decision.tfKey || '1m').toLowerCase()}|${String(signal.direction || '').toUpperCase()}`);
         if (S.dynamicPreCalcEnabled && shouldUseDynamicExpiry(signal, getExpiryScopeFromAsset(signal.asset)) && signal.isOTC) {
           try {
             const prePlan = getCachedDynamicPlan(signal.expiry || decision.tfKey, signal.confidence, 'OTC', { signal });
@@ -9308,7 +9875,11 @@ const frozenSignal = {
         S.assetSelectionAttempted = true;
 
         const inFlightKey = `${signal.asset}|${decision.tfKey}|${signal.direction}|${decision.candleStart}|${signal.expiry}`;
+        if (!decision._fromPreCalc && isCandleLockedByPrecalc(decision.tfKey, decision.candleStart)) {
+          continue;
+        }
         if (S.killerInFlightKey === inFlightKey && Date.now() < (S.killerInFlightUntil || 0)) {
+          finalizePrecalcOutcome(decision, 'dropped', 'in_flight_duplicate');
           continue;
         }
         S.killerInFlightKey = inFlightKey;
@@ -9319,6 +9890,7 @@ const frozenSignal = {
         // 1) Quick stability: streak (default 1 tick to reduce over-filtering latency)
         const minStreak = Math.max(1, Number.isFinite(S.confirmStreakMin) ? S.confirmStreakMin : 1);
         if ((decision._dirStreak || 0) < minStreak) {
+          finalizePrecalcOutcome(decision, 'dropped', 'dir_streak');
           S.killerInFlightUntil = 0;
           S.baseAmount = prevBase;
           S.assetSelectedForSignal = false;
@@ -9408,9 +9980,18 @@ const frozenSignal = {
             obj.count++;
           }
         }
+        annotateSignalTrace(signal, 'COMMIT_ATTEMPT', `${String(signal.expiry || '1m').toLowerCase()}|${String(signal.direction || '').toUpperCase()}`);
 const ok = await executeTradeOrder(signal);
+        if (ok) {
+          incrementObsMetric('executePass', 1);
+          annotateSignalTrace(signal, 'EXECUTE_PASS', String(signal.expiry || '1m').toLowerCase());
+        } else {
+          incrementObsMetric('executeFail', 1);
+          annotateSignalTrace(signal, 'EXECUTE_FAIL', String(S.lastSkipReason || 'blocked'));
+        }
         if (decision._fromPreCalc) {
-          S.preCalculatedSignal = null;
+          const dropReason = String(S.lastSkipReason || 'blocked');
+          finalizePrecalcOutcome(decision, ok ? 'executed' : 'dropped', dropReason);
         }
         S.killerInFlightUntil = 0;
         S.baseAmount = prevBase;
@@ -9656,6 +10237,7 @@ const ok = await executeTradeOrder(signal);
       updateProfitDisplay();
     
       } finally {
+        try { maybeLogBaselineSnapshot(); } catch (_) {}
         S.__tickBusy = false;
         S.__tickBusyAt = 0;
       }
@@ -13804,20 +14386,9 @@ if (KILLER_VOLUME_THRESHOLD) {
   }
 
   function logOutcome(isWin, pnl, tf, tradeId){
-    const sign = pnl >= 0 ? "+" : "-";
-    const abs = Math.abs(pnl);
-    const emoji = isWin ? "✅" : "❌";
-    const word = isWin ? "ПЕЧАЛБА !!!" : "ЗАГУБА";
-    const id = tradeId ? String(tradeId) : "";
-    try{
-      const line = `${emoji} ${word}  ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${id ? " | #"+id : ""}`;
-      const logger = (window.InfinityBot && typeof window.InfinityBot.log === 'function')
-        ? window.InfinityBot.log
-        : (window.InfinityBot && window.InfinityBot.api && typeof window.InfinityBot.api.log === 'function')
-          ? window.InfinityBot.api.log
-          : null;
-      if (logger) logger(line);
-    }catch(e){}
+    // Final outcome console owner: finalizeTradeOutcome -> logTradeOutcome.
+    // WS bridge keeps stats/dedupe only.
+    return;
   }
 
   function toArray(payload){
@@ -13986,18 +14557,8 @@ if (KILLER_VOLUME_THRESHOLD) {
         if (S.wsOutcomeHistory.length > 5000) S.wsOutcomeHistory.splice(0, S.wsOutcomeHistory.length - 5000);
       }catch(e){}
 
-      // Console log (use bot logger if exists)
-      try{
-        const sign = pnl >= 0 ? "+" : "-";
-        const abs = Math.abs(pnl);
-        const icon = isWin ? "✅" : (isLoss ? "❌" : "⚪");
-        const word = isWin ? "ПЕЧАЛБА !!!" : (isLoss ? "ЗАГУБА" : "РАВНО");
-        const line = `${icon} ${word} ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${tradeId ? " | #"+tradeId : ""}`;
-        const logger = (window.InfinityBot && typeof window.InfinityBot.log === "function") ? window.InfinityBot.log
-                     : (window.InfinityBot && window.InfinityBot.api && typeof window.InfinityBot.api.log === "function") ? window.InfinityBot.api.log
-                     : null;
-        if (logger) logger(line);
-      }catch(e){}
+      // Final outcome console owner: finalizeTradeOutcome -> logTradeOutcome.
+      // WS bridge keeps stats/dedupe only.
 }
   }, false);
 })();
@@ -14015,20 +14576,9 @@ if (KILLER_VOLUME_THRESHOLD) {
     return (Math.round(n*100)/100).toFixed(2);
   }
   function logOutcome(isWin, pnl, tf, tradeId){
-    const sign = pnl >= 0 ? "+" : "-";
-    const abs = Math.abs(pnl);
-    const emoji = isWin ? "✅" : "❌";
-    const word = isWin ? "ПЕЧАЛБА !!!" : "ЗАГУБА";
-    const id = tradeId ? String(tradeId) : "";
-    try{
-      const line = `${emoji} ${word}  ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${id ? " | #"+id : ""}`;
-      const logger = (window.InfinityBot && typeof window.InfinityBot.log === 'function')
-        ? window.InfinityBot.log
-        : (window.InfinityBot && window.InfinityBot.api && typeof window.InfinityBot.api.log === 'function')
-          ? window.InfinityBot.api.log
-          : null;
-      if (logger) logger(line);
-    }catch(e){}
+    // Final outcome console owner: finalizeTradeOutcome -> logTradeOutcome.
+    // WS bridge keeps stats/dedupe only.
+    return;
   }
 
   function tfFromDeal(d){
@@ -14135,20 +14685,9 @@ if (KILLER_VOLUME_THRESHOLD) {
     return v ? String(v) : "?";
   }
   function logOutcome(isWin, pnl, tf, tradeId){
-    const sign = pnl >= 0 ? "+" : "-";
-    const abs = Math.abs(pnl);
-    const emoji = isWin ? "✅" : "❌";
-    const word = isWin ? "ПЕЧАЛБА !!!" : "ЗАГУБА";
-    const id = tradeId ? String(tradeId) : "";
-    try{
-      const line = `${emoji} ${word}  ${sign}$${fmtMoney(abs)} | TF:${tf || "?"}${id ? " | #"+id : ""}`;
-      const logger = (window.InfinityBot && typeof window.InfinityBot.log === 'function')
-        ? window.InfinityBot.log
-        : (window.InfinityBot && window.InfinityBot.api && typeof window.InfinityBot.api.log === 'function')
-          ? window.InfinityBot.api.log
-          : null;
-      if (logger) logger(line);
-    }catch(e){}
+    // Final outcome console owner: finalizeTradeOutcome -> logTradeOutcome.
+    // WS bridge keeps stats/dedupe only.
+    return;
   }
 
   function normalizeDeals(payload){
