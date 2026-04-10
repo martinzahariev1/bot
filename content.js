@@ -7881,10 +7881,27 @@ if (!weights.length) return 0;
       if (S.filterDojiEnabled) {
         const candle = getCandleAt(Date.now(), windowMs);
         if (candle && Number.isFinite(candle.open) && Number.isFinite(candle.close) && Number.isFinite(candle.high) && Number.isFinite(candle.low)) {
+          const body = Math.abs(candle.close - candle.open);
           const range = Math.max(1e-9, Math.abs(candle.high - candle.low));
+          const threshold = Math.max(0.01, Math.min(0.5, Number(S.dojiSensitivity || 0.15)));
+          const ratio = body / range;
+          const sensitivityPct = Math.round(threshold * 100);
           const isDoji = Math.abs(candle.close - candle.open) < range * Math.max(0.01, Math.min(0.5, Number(S.dojiSensitivity || 0.15)));
           if (isDoji) {
-            return { pass: false, reason: 'Doji detected' };
+            const details = `body=${body.toFixed(6)} | range=${range.toFixed(6)} | ratio=${ratio.toFixed(2)} | threshold=${threshold.toFixed(2)} | sensitivity=${sensitivityPct}%`;
+            logConsoleLine(`⚠️ DOJI BLOCKED → ratio ${ratio.toFixed(2)} / ${threshold.toFixed(2)} | sens ${sensitivityPct}% | body ${body.toFixed(6)} | range ${range.toFixed(6)}`);
+            return {
+              pass: false,
+              reason: 'Doji detected',
+              details,
+              doji: {
+                body: Number(body),
+                range: Number(range),
+                ratio: Number(ratio),
+                threshold: Number(threshold),
+                sensitivityPct: Number(sensitivityPct)
+              }
+            };
           }
         }
       }
@@ -7977,6 +7994,15 @@ if (!weights.length) return 0;
       const effectivePoints = Number((confluence + supportingBonus).toFixed(1));
       const passConfluence = !!strict.pass && effectivePoints >= threshold;
 
+      const snapshotCandle = getCandleAt(Date.now(), tfMs);
+      const candleOpen = Number(snapshotCandle?.open);
+      const candleClose = Number(snapshotCandle?.close);
+      let candleAgainst = false;
+      if (Number.isFinite(candleOpen) && Number.isFinite(candleClose) && candleOpen !== candleClose) {
+        if (dir === 'BUY') candleAgainst = candleClose < candleOpen;
+        if (dir === 'SELL') candleAgainst = candleClose > candleOpen;
+      }
+
       const breakdown = [
         `STRATEGIES: ${strategyPoints.toFixed(1)}/2`,
         ...filterChecks.map((c) => `${c.key}: ${c.points ? '1' : '0'}/1`),
@@ -8005,7 +8031,7 @@ if (!weights.length) return 0;
         strategyVotes,
         strategyAgreement,
         stabilityState: strict.pass ? 'STRICT_PASS' : 'STRICT_FAIL',
-        candleAgainst: false,
+        candleAgainst,
         passConfluence,
         passDominance,
         nearMiss: !!strict.pass && !passConfluence && effectivePoints >= Math.max(0, threshold - 1),
@@ -8134,6 +8160,7 @@ if (!weights.length) return 0;
       const curr = getCandleAtOffset(windowMs, 0);
       const prev = getCandleAtOffset(windowMs, 1);
       if (!curr || !prev) return null;
+      const prev2 = getCandleAtOffset(windowMs, 2);
       const trendDir = calcTrendDirection(windowMs);
       const currBody = Math.abs(curr.close - curr.open);
       const currRange = Math.max(curr.high - curr.low, 0);
@@ -8143,6 +8170,12 @@ if (!weights.length) return 0;
       const currBull = curr.close > curr.open;
       const prevBull = prev.close > prev.open;
       const patterns = [];
+      const rangePct = curr.open ? currRange / curr.open : 0;
+      const bodyRatio = currRange > 0 ? currBody / currRange : 1;
+
+      // Noise reject: micro/noisy candles should not trigger pattern signals.
+      if (currRange <= 0 || rangePct < 0.00016) return null;
+      if (bodyRatio < 0.025 && (currUpperWick + currLowerWick) / Math.max(currRange, 1e-9) > 0.9) return null;
 
       const isBullEngulf = !prevBull && currBull
         && curr.close >= prev.open
@@ -8156,15 +8189,36 @@ if (!weights.length) return 0;
         && currBody > prevBody * 0.9;
       if (isBearEngulf) patterns.push({ direction: 'SELL', confidence: 0.75 });
 
-      const isHammer = currLowerWick > currBody * 2 && currUpperWick <= currBody * 0.6;
+      const localLowRef = Math.min(prev.low, Number.isFinite(prev2?.low) ? prev2.low : prev.low);
+      const localHighRef = Math.max(prev.high, Number.isFinite(prev2?.high) ? prev2.high : prev.high);
+      const nearLocalLow = curr.low <= localLowRef + currRange * 0.2;
+      const nearLocalHigh = curr.high >= localHighRef - currRange * 0.2;
+      const sweepLowRejection = curr.low < prev.low && curr.close > prev.low;
+      const sweepHighRejection = curr.high > prev.high && curr.close < prev.high;
+      const lowerWickRatio = currRange > 0 ? currLowerWick / currRange : 0;
+      const upperWickRatio = currRange > 0 ? currUpperWick / currRange : 0;
+      const hammerBodyNearTop = Math.min(curr.open, curr.close) >= curr.low + currRange * 0.42;
+      const starBodyNearBottom = Math.max(curr.open, curr.close) <= curr.low + currRange * 0.58;
+
+      const isHammer = currLowerWick > currBody * 2.2
+        && currUpperWick <= currBody * 0.45
+        && lowerWickRatio >= 0.5
+        && hammerBodyNearTop
+        && (nearLocalLow || sweepLowRejection);
       if (isHammer) {
-        const conf = trendDir <= 0 ? 0.7 : 0.55;
+        const contextBoost = (nearLocalLow ? 0.04 : 0) + (sweepLowRejection ? 0.04 : 0);
+        const conf = Math.min(0.85, (trendDir <= 0 ? 0.68 : 0.54) + contextBoost);
         patterns.push({ direction: 'BUY', confidence: conf });
       }
 
-      const isShootingStar = currUpperWick > currBody * 2 && currLowerWick <= currBody * 0.6;
+      const isShootingStar = currUpperWick > currBody * 2.2
+        && currLowerWick <= currBody * 0.45
+        && upperWickRatio >= 0.5
+        && starBodyNearBottom
+        && (nearLocalHigh || sweepHighRejection);
       if (isShootingStar) {
-        const conf = trendDir >= 0 ? 0.7 : 0.55;
+        const contextBoost = (nearLocalHigh ? 0.04 : 0) + (sweepHighRejection ? 0.04 : 0);
+        const conf = Math.min(0.85, (trendDir >= 0 ? 0.68 : 0.54) + contextBoost);
         patterns.push({ direction: 'SELL', confidence: conf });
       }
 
@@ -8175,12 +8229,30 @@ if (!weights.length) return 0;
       }
 
       if (!patterns.length) return null;
+      const buyPatterns = patterns.filter((p) => p.direction === 'BUY');
+      const sellPatterns = patterns.filter((p) => p.direction === 'SELL');
+      if (buyPatterns.length && sellPatterns.length) {
+        const buyBest = buyPatterns.reduce((best, p) => ((p.confidence || 0) > (best.confidence || 0) ? p : best), buyPatterns[0]);
+        const sellBest = sellPatterns.reduce((best, p) => ((p.confidence || 0) > (best.confidence || 0) ? p : best), sellPatterns[0]);
+        const buyConf = Number.isFinite(buyBest?.confidence) ? buyBest.confidence : 0;
+        const sellConf = Number.isFinite(sellBest?.confidence) ? sellBest.confidence : 0;
+        const confidenceGap = Math.abs(buyConf - sellConf);
+        const maxConf = Math.max(buyConf, sellConf);
+        const dominant = buyConf >= sellConf ? { ...buyBest } : { ...sellBest };
+        const highlyAmbiguous = confidenceGap < 0.03 && maxConf < 0.62;
+        if (highlyAmbiguous) return null;
+        if (confidenceGap < 0.1) {
+          dominant.confidence = Math.max(0, (Number(dominant.confidence) || 0) - 0.07);
+        }
+        patterns.length = 0;
+        patterns.push(dominant);
+      }
       const best = patterns.sort((a, b) => b.confidence - a.confidence)[0];
       return {
         strategyKey: 'candlestick',
         direction: best.direction,
         confidence: best.confidence,
-        rangePct: curr.open ? currRange / curr.open : 0,
+        rangePct,
         trendDir,
         trendAligned: trendDir === 0 || (best.direction === 'BUY' ? trendDir >= 0 : trendDir <= 0),
         volumeOk: true
@@ -8263,69 +8335,86 @@ if (!weights.length) return 0;
       const trendDir = calcTrendDirection(windowMs);
       const candle = getCandleAt(Date.now(), windowMs);
       const rangePct = candle?.open ? (candle.high - candle.low) / candle.open : 0;
+      const last = prices[prices.length - 1];
+      let signal = null;
 
       if (emaFastVal > emaSlowVal && rsi <= oversold) {
-        const confidence = clamp01(0.55 + (oversold - rsi) / Math.max(oversold, 1) * 0.35);
-        return {
-          strategyKey: 'ema_rsi_pullback',
-          setupType: 'true_pullback',
-          direction: 'BUY',
-          confidence,
-          rangePct,
-          trendDir,
-          trendAligned: trendDir === 0 || trendDir >= 0,
-          volumeOk: true
-        };
+        const distPct = Math.abs(last - emaFastVal) / Math.max(last, 1e-8);
+        const pullbackOk = distPct <= Math.max(0.001, rangePct * 0.9);
+        if (pullbackOk) {
+          const confidence = clamp01(0.55 + (oversold - rsi) / Math.max(oversold, 1) * 0.35);
+          signal = {
+            strategyKey: 'ema_rsi_pullback',
+            setupType: 'true_pullback',
+            direction: 'BUY',
+            confidence,
+            rangePct,
+            trendDir,
+            trendAligned: trendDir === 0 || trendDir >= 0,
+            volumeOk: true
+          };
+        }
       }
-      if (emaFastVal < emaSlowVal && rsi >= overbought) {
-        const confidence = clamp01(0.55 + (rsi - overbought) / Math.max(100 - overbought, 1) * 0.35);
-        return {
-          strategyKey: 'ema_rsi_pullback',
-          setupType: 'true_pullback',
-          direction: 'SELL',
-          confidence,
-          rangePct,
-          trendDir,
-          trendAligned: trendDir === 0 || trendDir <= 0,
-          volumeOk: true
-        };
+      if (!signal && emaFastVal < emaSlowVal && rsi >= overbought) {
+        const distPct = Math.abs(last - emaFastVal) / Math.max(last, 1e-8);
+        const pullbackOk = distPct <= Math.max(0.001, rangePct * 0.9);
+        if (pullbackOk) {
+          const confidence = clamp01(0.55 + (rsi - overbought) / Math.max(100 - overbought, 1) * 0.35);
+          signal = {
+            strategyKey: 'ema_rsi_pullback',
+            setupType: 'true_pullback',
+            direction: 'SELL',
+            confidence,
+            rangePct,
+            trendDir,
+            trendAligned: trendDir === 0 || trendDir <= 0,
+            volumeOk: true
+          };
+        }
       }
       const momentum = prices[prices.length - 1] - prices[Math.max(0, prices.length - 4)];
-      if (emaFastVal > emaSlowVal && rsi >= 52 && momentum > 0) {
-        const last = prices[prices.length - 1];
+      if (!signal && emaFastVal > emaSlowVal && rsi >= 52 && momentum > 0) {
         const distPct = Math.abs(last - emaFastVal) / Math.max(last, 1e-8);
-        const pullbackOk = distPct <= Math.max(0.0006, rangePct * 0.6);
-        if (!pullbackOk) return null;
-
-        return {
-          strategyKey: 'ema_rsi_pullback',
-          setupType: 'continuation_variant',
-          direction: 'BUY',
-          confidence: clamp01(0.5 + (rsi - 50) / 100 + Math.min(0.15, Math.abs(momentum) / Math.max(prices[prices.length - 1], 1e-8) * 90)),
-          rangePct,
-          trendDir,
-          trendAligned: trendDir === 0 || trendDir >= 0,
-          volumeOk: true
-        };
+        const pullbackOk = distPct <= Math.max(0.0008, rangePct * 0.5);
+        if (pullbackOk) {
+          signal = {
+            strategyKey: 'ema_rsi_pullback',
+            setupType: 'continuation_variant',
+            direction: 'BUY',
+            confidence: clamp01(0.5 + (rsi - 50) / 100 + Math.min(0.15, Math.abs(momentum) / Math.max(prices[prices.length - 1], 1e-8) * 90)),
+            rangePct,
+            trendDir,
+            trendAligned: trendDir === 0 || trendDir >= 0,
+            volumeOk: true
+          };
+        }
       }
-      if (emaFastVal < emaSlowVal && rsi <= 48 && momentum < 0) {
-        const last = prices[prices.length - 1];
+      if (!signal && emaFastVal < emaSlowVal && rsi <= 48 && momentum < 0) {
         const distPct = Math.abs(last - emaFastVal) / Math.max(last, 1e-8);
-        const pullbackOk = distPct <= Math.max(0.0006, rangePct * 0.6);
-        if (!pullbackOk) return null;
-
-        return {
-          strategyKey: 'ema_rsi_pullback',
-          setupType: 'continuation_variant',
-          direction: 'SELL',
-          confidence: clamp01(0.5 + (50 - rsi) / 100 + Math.min(0.15, Math.abs(momentum) / Math.max(prices[prices.length - 1], 1e-8) * 90)),
-          rangePct,
-          trendDir,
-          trendAligned: trendDir === 0 || trendDir <= 0,
-          volumeOk: true
-        };
+        const pullbackOk = distPct <= Math.max(0.0008, rangePct * 0.5);
+        if (pullbackOk) {
+          signal = {
+            strategyKey: 'ema_rsi_pullback',
+            setupType: 'continuation_variant',
+            direction: 'SELL',
+            confidence: clamp01(0.5 + (50 - rsi) / 100 + Math.min(0.15, Math.abs(momentum) / Math.max(prices[prices.length - 1], 1e-8) * 90)),
+            rangePct,
+            trendDir,
+            trendAligned: trendDir === 0 || trendDir <= 0,
+            volumeOk: true
+          };
+        }
       }
-      return null;
+      if (!signal) return null;
+
+      if (trendDir !== 0) {
+        const signalSign = signal.direction === 'BUY' ? 1 : -1;
+        if (signalSign !== trendDir) {
+          signal.confidence = clamp01(signal.confidence - 0.04);
+        }
+      }
+
+      return signal;
     }
 
     function calcStochDecision(windowMs) {
@@ -8442,25 +8531,46 @@ if (!weights.length) return 0;
       const last = prices[prices.length - 1];
       const trendDir = calcTrendDirection(windowMs);
       const rangePct = (nowCandle.high - nowCandle.low) / nowCandle.open;
+      const emaSpreadRatio = Math.abs(emaFastVal - emaSlowVal) / Math.max(last, 1e-8);
+      const trendStrength = emaSpreadRatio;
+      const momentum = prices[prices.length - 1] - prices[Math.max(0, prices.length - 4)];
+      const momentumAbsPct = Math.abs(momentum) / Math.max(last, 1e-8);
+      const rangeRevertTrendCap = 0.00075;
+      const trendFollowMinMomentumPct = 0.00012;
+      const trendFollowStochBuy = 54;
+      const trendFollowStochSell = 46;
       let direction = null;
       let reason = 'RangeRevert';
       let confidence = 0;
       const prev = prices[prices.length - 2];
-      if (prev <= bb.lower && last >= bb.lower && last > prev && stoch <= 30) {
+      const rangeRevertBuySetup = prev <= bb.lower && last >= bb.lower && last > prev && stoch <= 30;
+      const rangeRevertSellSetup = prev >= bb.upper && last <= bb.upper && last < prev && stoch >= 70;
+      const rangeRevertAllowed = trendStrength <= rangeRevertTrendCap;
+
+      if (rangeRevertBuySetup && rangeRevertAllowed) {
         direction = 'BUY';
         confidence = Math.min(0.98, 0.72 + ((bb.lower - last) / Math.max(last, 1e-8)) * 45 + (30 - stoch) / 100);
         reason = 'RangeRevert(LowerBB)';
-      } else if (prev >= bb.upper && last <= bb.upper && last < prev && stoch >= 70) {
+      } else if (rangeRevertSellSetup && rangeRevertAllowed) {
         direction = 'SELL';
         confidence = Math.min(0.98, 0.72 + ((last - bb.upper) / Math.max(last, 1e-8)) * 45 + (stoch - 70) / 100);
         reason = 'RangeRevert(UpperBB)';
       } else {
-        const momentum = prices[prices.length - 1] - prices[Math.max(0, prices.length - 4)];
-        if (emaFastVal > emaSlowVal && stoch >= 52 && momentum > 0) {
+        const trendFollowBuySetup = emaFastVal > emaSlowVal
+          && stoch >= trendFollowStochBuy
+          && momentum > 0
+          && momentumAbsPct >= trendFollowMinMomentumPct
+          && rangePct >= 0.0002;
+        const trendFollowSellSetup = emaFastVal < emaSlowVal
+          && stoch <= trendFollowStochSell
+          && momentum < 0
+          && momentumAbsPct >= trendFollowMinMomentumPct
+          && rangePct >= 0.0002;
+        if (trendFollowBuySetup) {
           direction = 'BUY';
           confidence = 0.54 + Math.min(0.18, Math.abs(momentum) / Math.max(last, 1e-8) * 80);
           reason = 'MicroTrendFollow(BUY)';
-        } else if (emaFastVal < emaSlowVal && stoch <= 48 && momentum < 0) {
+        } else if (trendFollowSellSetup) {
           direction = 'SELL';
           confidence = 0.54 + Math.min(0.18, Math.abs(momentum) / Math.max(last, 1e-8) * 80);
           reason = 'MicroTrendFollow(SELL)';
@@ -8480,7 +8590,6 @@ if (!weights.length) return 0;
         if (!vwapAligned) confidence = Math.max(0, confidence - 0.05);
       }
       // Trend gate: ако има ясен тренд срещу RangeRevert посоката, пропускаме.
-      const trendStrength = Math.abs(emaFastVal - emaSlowVal) / Math.max(last, 1e-8);
       const strongTrend = trendStrength > 0.00055;
       if (reason.startsWith('RangeRevert') && strongTrend) {
         if (direction === 'BUY' && emaFastVal < emaSlowVal) return null;
@@ -8510,6 +8619,13 @@ if (!weights.length) return 0;
       const slow = calcEma(prices, Math.max(5, Math.round(S.killerEmaSlow || 16)));
       if (!Number.isFinite(fast) || !Number.isFinite(slow) || fast === slow) return null;
       const direction = fast > slow ? 'BUY' : 'SELL';
+
+      const momentum = prices[prices.length - 1] - prices[Math.max(0, prices.length - 4)];
+      const last = prices[prices.length - 1];
+      const momentumAbsPct = Math.abs(momentum) / Math.max(last, 1e-8);
+      if (direction === 'BUY' && (momentum <= 0 || momentumAbsPct < 0.0001)) return null;
+      if (direction === 'SELL' && (momentum >= 0 || momentumAbsPct < 0.0001)) return null;
+
       const rsiVal = calcRsi(prices, Math.max(5, Math.round(S.killerRsiWindow || 10)));
       if (!Number.isFinite(rsiVal)) return null;
       const maturity = Math.max(0, Math.min(100, Math.abs(rsiVal - 50) * 2));
@@ -9234,7 +9350,9 @@ if (!weights.length) return 0;
           const osc = (confirmation?.details || []).find((d) => typeof d === 'string' && d.startsWith('osc:'));
           const oscDir = osc ? osc.split(':')[1] : null;
           if (oscDir && decision.direction && oscDir !== decision.direction) {
-            decision.confidence = Math.max(0, decision.confidence - (S.rangeOscPenaltyEnabled ? (clamp(parseNumberFlexible(S.rangeOscPenaltyPct) || 0, 0, 50) / 100) : 0));
+            const rangeOscPenalty = (S.rangeOscPenaltyEnabled ? (clamp(parseNumberFlexible(S.rangeOscPenaltyPct) || 0, 0, 50) / 100) : 0);
+            decision.confidence = Math.max(0, decision.confidence - rangeOscPenalty);
+            decision.rangeOscPenaltyDebug = `range_osc_penalty:${Math.round(rangeOscPenalty * 100)}pp (osc:${oscDir} vs dir:${decision.direction})`;
           }
           if (regime.trendDir !== 0) {
             const regimePref = regime.trendDir > 0 ? 'SELL' : 'BUY';
@@ -9538,7 +9656,7 @@ const readySignals = Object.keys(tfStatus)
         const tfKey = String(S.preCalculatedSignal.tfKey || '1m').toLowerCase();
         const tfMs = KILLER_TF_MS[tfKey] || 60_000;
         const t = Number(getTimeInCandleSec(tfMs));
-        const precalcEarlyEntrySec = 2;
+        const precalcEarlyEntrySec = 5;
         const currentCandleStart = getCandleStart(tfMs);
         const preparedPrevCandle = Number(S.preCalculatedSignal.candleStart || 0) < currentCandleStart;
         const inEarlyWindow = t >= 0 && t <= precalcEarlyEntrySec;
@@ -9645,11 +9763,12 @@ const readySignals = Object.keys(tfStatus)
       const filterOrder = ['spread', 'flip_delay', 'drift', 'impulse_cap', 'dead_market', 'csea_se', 'chop_hard_stop', 'spike_protection'];
 
       // Phase 1: evaluation (single-pass, no execution continue)
-      const spreadFail = S.filterSpreadEnabled && typeof S.filterSpreadThreshold === 'number' && evalCtx.spreadValue < S.filterSpreadThreshold;
+      const spreadThresholdRatio = Math.max(0, Number(S.filterSpreadThreshold || 0)) / 100;
+      const spreadFail = S.filterSpreadEnabled && typeof S.filterSpreadThreshold === 'number' && evalCtx.spreadValue < spreadThresholdRatio;
       filterResults.spread = {
         pass: !spreadFail,
         reason: spreadFail ? 'spread_low' : '',
-        details: spreadFail ? `${evalCtx.spreadValue} < ${Number(S.filterSpreadThreshold || 0)}` : ''
+        details: spreadFail ? `${(evalCtx.spreadValue * 100).toFixed(2)}% < ${(spreadThresholdRatio * 100).toFixed(2)}%` : ''
       };
 
       const flipDelayFail = S.filterFlipDelayEnabled && S.lastTradeDirection && decision.direction && decision.direction !== S.lastTradeDirection
@@ -9662,21 +9781,63 @@ const readySignals = Object.keys(tfStatus)
       };
 
       let driftFail = false;
+      let driftMeta = null;
       if (S.filterDriftEnabled) {
         const arr = evalCtx.tfConfSeries;
         if (arr.length >= 4) {
-          const a = arr.slice(-4);
-          const isDown = (a[0] > a[1]) && (a[1] > a[2]) && (a[2] > a[3]);
-          const drop = a[0] - a[3];
-          const driftThreshold = Math.max(0, (Number(S.filterDriftThreshold) || 0) / 100);
-          driftFail = driftThreshold > 0 && isDown && drop >= driftThreshold;
+          const a = arr.slice(-4).map((v) => Number(v || 0));
+          const thresholdPp = Math.max(0, Number(S.filterDriftThreshold || 0));
+          const thresholdRatio = thresholdPp / 100;
+          const tolerancePp = Math.max(1, Math.min(3, Math.round(thresholdPp * 0.20)));
+          const toleranceRatio = tolerancePp / 100;
+
+          const d01 = a[0] - a[1];
+          const d12 = a[1] - a[2];
+          const d23 = a[2] - a[3];
+
+          const downs = (d01 > 0 ? 1 : 0) + (d12 > 0 ? 1 : 0) + (d23 > 0 ? 1 : 0);
+          const totalDrop = a[0] - a[3];
+          const bounce01 = Math.max(0, -d01);
+          const bounce12 = Math.max(0, -d12);
+          const bounce23 = Math.max(0, -d23);
+          const maxBounce = Math.max(bounce01, bounce12, bounce23);
+
+          driftFail = thresholdRatio > 0
+            && totalDrop >= thresholdRatio
+            && downs >= 2
+            && maxBounce <= toleranceRatio;
+
+          driftMeta = {
+            values: a,
+            thresholdPp,
+            tolerancePp,
+            totalDropPp: Math.round(totalDrop * 10000) / 100,
+            maxBouncePp: Math.round(maxBounce * 10000) / 100,
+            downs
+          };
         }
       }
+      const fmtPp = (n) => {
+        const v = Math.round(Number(n || 0) * 100) / 100;
+        if (!Number.isFinite(v)) return '0';
+        return Number.isInteger(v) ? String(v) : String(v).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+      };
       filterResults.drift = {
         pass: !driftFail,
         reason: driftFail ? 'drift' : '',
-        details: driftFail ? 'confidence sliding down' : ''
+        details: driftFail && driftMeta
+          ? `drop ${fmtPp(driftMeta.totalDropPp)}pp / ${fmtPp(driftMeta.thresholdPp)}pp | tol ${fmtPp(driftMeta.tolerancePp)}pp | bounce ${fmtPp(driftMeta.maxBouncePp)}pp | downs ${driftMeta.downs}/3`
+          : ''
       };
+      if (driftFail && driftMeta) {
+        const vals = driftMeta.values.map((v) => Number(v).toFixed(2)).join(', ');
+        const driftLine = `📉 DRIFT → [${vals}] | drop ${fmtPp(driftMeta.totalDropPp)}pp / ${fmtPp(driftMeta.thresholdPp)}pp | tol ${fmtPp(driftMeta.tolerancePp)}pp`;
+        const driftLogKey = `${evalCtx.tf}|${vals}|${fmtPp(driftMeta.thresholdPp)}|${fmtPp(driftMeta.tolerancePp)}`;
+        if (S._lastDriftLogKey !== driftLogKey) {
+          S._lastDriftLogKey = driftLogKey;
+          logConsoleLine(driftLine);
+        }
+      }
 
       let impulseCapFail = false;
       if (S.impulseCapEnabled) {
@@ -9739,6 +9900,7 @@ const readySignals = Object.keys(tfStatus)
       };
 
       let cseaSeFail = false;
+      let cseaSeDetails = '';
       if (S.cseaSeFilterEnabled) {
         const dirSign = decision.direction === 'BUY' ? 1 : -1;
         const trendDir = evalCtx.trendDirRaw;
@@ -9750,11 +9912,18 @@ const readySignals = Object.keys(tfStatus)
           ? ((decision.direction === 'BUY' && stochRaw <= 85) || (decision.direction === 'SELL' && stochRaw >= 15))
           : true;
         cseaSeFail = !(csOk && emaAligned && seOk);
+        if (cseaSeFail) {
+          const failed = [];
+          if (!csOk) failed.push('CS');
+          if (!emaAligned) failed.push('EA');
+          if (!seOk) failed.push('SE');
+          cseaSeDetails = `mismatch:${failed.join('+') || 'UNKNOWN'} (cs:${csOk ? 1 : 0},ea:${emaAligned ? 1 : 0},se:${seOk ? 1 : 0})`;
+        }
       }
       filterResults.csea_se = {
         pass: !cseaSeFail,
         reason: cseaSeFail ? 'csea_se' : '',
-        details: cseaSeFail ? 'cs/ema/se mismatch' : ''
+        details: cseaSeFail ? cseaSeDetails : ''
       };
 
       let chopHardFail = false;
@@ -9793,7 +9962,13 @@ const readySignals = Object.keys(tfStatus)
         hardFailReason: '',
         breakdown: [
           `STRATEGY_SOURCE: ${strategyPoints}/2`,
-          ...filterOrder.map((key) => `${key}: ${sharedFilterResults[key]?.pass ? 'PASS' : 'SKIP'}${sharedFilterResults[key]?.reason ? ` (${sharedFilterResults[key].reason})` : ''}`),
+          ...filterOrder.map((key) => {
+            const base = `${key}: ${sharedFilterResults[key]?.pass ? 'PASS' : 'SKIP'}${sharedFilterResults[key]?.reason ? ` (${sharedFilterResults[key].reason})` : ''}`;
+            const details = String(sharedFilterResults[key]?.details || '');
+            if (key === 'drift' && details) return `${base} | ${details}`;
+            return base;
+          }),
+          ...(decision.rangeOscPenaltyDebug ? [decision.rangeOscPenaltyDebug] : []),
           `TOTAL: ${Number(runtimePoints.toFixed(1))}/11 | праг ${runtimeThreshold}`
         ]
       };
