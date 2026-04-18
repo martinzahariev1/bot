@@ -2087,7 +2087,15 @@
         } else if (lower.includes('missing') || lower.includes('липсва')) {
           msgClass += ' iaa-console-msg--warn';
         }
-        return `<div class="iaa-console-line"><span class="iaa-console-time">[${timeText}]</span><span class="${msgClass}">${messageText}</span></div>`;
+        const paintedMessage = String(messageText).replace(/\[(TREND|RANGE|CHOP|VOLATILE|NO INFO)\]/g, (_, badge) => {
+          const cls = badge === 'TREND' ? 'iaa-regime-badge--trend'
+            : badge === 'RANGE' ? 'iaa-regime-badge--range'
+            : badge === 'CHOP' ? 'iaa-regime-badge--chop'
+            : badge === 'VOLATILE' ? 'iaa-regime-badge--volatile'
+            : 'iaa-regime-badge--noinfo';
+          return `<span class="iaa-regime-badge ${cls}">[${badge}]</span>`;
+        });
+        return `<div class="iaa-console-line"><span class="iaa-console-time">[${timeText}]</span><span class="${msgClass}">${paintedMessage}</span></div>`;
       };
       linesEl.innerHTML = S.consoleLines.map(formatLine).join('');
       linesEl.scrollTop = linesEl.scrollHeight;
@@ -5828,13 +5836,76 @@ function getMinHistoryWindowForReadinessMs() {
       try { tradeCommitGuard.delete(__commitGuardKey(signal)); } catch (_) {}
     }
 
+    function __strategyShortLabel(strategyKey) {
+      const key = String(strategyKey || '').toLowerCase();
+      if (key === 'scalp_microtrend') return 'SCALP';
+      if (key === 'ema_rsi_pullback') return 'EMA+RSI';
+      if (key === 'continuation') return 'CONT';
+      if (key === 'candlestick_pattern') return 'CANDLE';
+      return String(strategyKey || 'UNK').toUpperCase();
+    }
+
+    function __normalizeRegimeBadge(state) {
+      const s = String(state || '').toLowerCase();
+      if (s === 'trend') return 'TREND';
+      if (s === 'range') return 'RANGE';
+      if (s === 'chop') return 'CHOP';
+      if (s === 'volatility') return 'VOLATILE';
+      if (s === 'nodata') return 'NO INFO';
+      return 'NO INFO';
+    }
+
+    function __buildOkForensicSnapshot(decision, strategyDecisions = [], regime = null) {
+      const candidates = (Array.isArray(strategyDecisions) ? strategyDecisions : [])
+        .filter((d) => d && d.direction && isStrategyEnabled(d.strategyKey))
+        .map((d) => ({
+          strategyKey: String(d.strategyKey || ''),
+          confidence: Number(d.confidence || 0)
+        }));
+      const winnerKey = String(decision?.strategyKey || '');
+      const scalp = candidates.find((c) => c.strategyKey === 'scalp_microtrend') || null;
+      const losers = candidates
+        .filter((c) => c.strategyKey && c.strategyKey !== winnerKey && c.strategyKey !== 'scalp_microtrend')
+        .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))
+        .slice(0, 2);
+      return {
+        tfKey: String(decision?.tfKey || '').toLowerCase(),
+        candleStart: Number(decision?.candleStart || 0),
+        regimeBadge: __normalizeRegimeBadge(regime?.state || decision?.regime?.state || ''),
+        winnerKey,
+        winnerConfidence: Number(decision?.confidence || 0),
+        scalpPresent: !!scalp,
+        scalpConfidence: Number(scalp?.confidence || 0),
+        losers
+      };
+    }
+
     function __logCommit(signal, confidenceOverride = null) {
       const tf = __normalizeCommitTf(signal);
       const dir = String(signal?.direction || '').toUpperCase() || '-';
       const confRaw = Number.isFinite(Number(confidenceOverride)) ? Number(confidenceOverride) : Number(signal?.confidence || 0);
       const confPct = Math.round(confRaw > 1 ? confRaw : confRaw * 100);
       const strategy = String(signal?.strategyKey || signal?.entryMeta?.strategyKey || 'strategy').toLowerCase();
-      logConsoleLine(`🧾 ОК | ${tf} ${dir} | ${confPct}% | ${strategy}`);
+      const snap = signal?.entryMeta?.okForensicSnapshot || null;
+      const snapTf = String(snap?.tfKey || '').toLowerCase();
+      const signalTf = String(signal?.entryMeta?.tfKey || '').toLowerCase();
+      const snapCandle = Number(snap?.candleStart || 0);
+      const signalCandle = Number(signal?.entryMeta?.candleStart || 0);
+      const sameCycle = !!snap && snapTf && signalTf && snapTf === signalTf && snapCandle > 0 && signalCandle > 0 && snapCandle === signalCandle;
+      const badge = `[${sameCycle ? __normalizeRegimeBadge(snap?.regimeBadge || '') : 'NO INFO'}]`;
+      let scalpSection = 'SCALP: не участва';
+      if (sameCycle && String(snap?.winnerKey || '') === 'scalp_microtrend') {
+        const p = Math.round((Number.isFinite(snap?.winnerConfidence) ? snap.winnerConfidence : confRaw) * 100);
+        scalpSection = `SCALP: избрана ${p}%`;
+      } else if (sameCycle && snap?.scalpPresent) {
+        const p = Math.round(Number(snap?.scalpConfidence || 0) * 100);
+        scalpSection = `SCALP: ${p}% отпадна`;
+      }
+      const loserList = (sameCycle ? (Array.isArray(snap?.losers) ? snap.losers : []) : [])
+        .filter((x) => x && x.strategyKey)
+        .map((x) => `${__strategyShortLabel(x.strategyKey)} ${Math.round(Number(x.confidence || 0) * 100)}%`);
+      const losersSection = `др: ${loserList.length ? loserList.join(', ') : 'няма'}`;
+      logConsoleLine(`🧾 ОК | ${tf} ${dir} | ${confPct}% | ${strategy} | ${badge} | ${scalpSection} | ${losersSection}`);
     }
 
 
@@ -6423,6 +6494,8 @@ function getMinHistoryWindowForReadinessMs() {
             trade.openConfirmedBy = 'BALANCE_DELTA_TOLERANT';
             trade.balanceAfterOpen = now;
             trade.openAt = clickedAt || Date.now();
+            S.lastTradeDirection = String(trade.direction || '').toUpperCase();
+            S.lastTradeAt = Number(trade.openAt || Date.now());
             return true;
           }
           await sleep(130);
@@ -7670,14 +7743,31 @@ function getRecentPrices(count) {
         return;
       }
       const arr = Array.isArray(S.priceHistory) ? S.priceHistory : [];
-      if (arr.length < 2) return;
+      if (arr.length < 2) {
+        const hadBlock = !!S.blockBuy || !!S.blockSell;
+        S.blockBuy = false;
+        S.blockSell = false;
+        if (hadBlock && logSpamControlled('spike:nodata:len', String(arr.length), 3000)) {
+          logConsoleLine('⚪ Spike guard reset: insufficient history.');
+        }
+        return;
+      }
       const now = Date.now();
       const latest = arr[arr.length - 1];
       let old = null;
       for (let i = arr.length - 2; i >= 0; i -= 1) {
         if (now - Number(arr[i]?.timestamp || 0) >= 5000) { old = arr[i]; break; }
       }
-      if (!old || !Number.isFinite(latest?.price) || !Number.isFinite(old?.price)) return;
+      if (!old || !Number.isFinite(latest?.price) || !Number.isFinite(old?.price)) {
+        const hadBlock = !!S.blockBuy || !!S.blockSell;
+        S.blockBuy = false;
+        S.blockSell = false;
+        const reason = !old ? 'missing_5s_anchor' : 'invalid_price';
+        if (hadBlock && logSpamControlled('spike:nodata:anchor', reason, 3000)) {
+          logConsoleLine(`⚪ Spike guard reset: ${reason}.`);
+        }
+        return;
+      }
       const priceDelta = latest.price - old.price;
       const absDelta = Math.abs(priceDelta);
       const threshold = Math.max(0.00001, Number(S.spikeThresholdAbs || 0.00035));
@@ -7886,10 +7976,19 @@ if (!weights.length) return 0;
           const threshold = Math.max(0.01, Math.min(0.5, Number(S.dojiSensitivity || 0.15)));
           const ratio = body / range;
           const sensitivityPct = Math.round(threshold * 100);
-          const isDoji = Math.abs(candle.close - candle.open) < range * Math.max(0.01, Math.min(0.5, Number(S.dojiSensitivity || 0.15)));
-          if (isDoji) {
-            const details = `body=${body.toFixed(6)} | range=${range.toFixed(6)} | ratio=${ratio.toFixed(2)} | threshold=${threshold.toFixed(2)} | sensitivity=${sensitivityPct}%`;
-            logConsoleLine(`⚠️ DOJI BLOCKED → ratio ${ratio.toFixed(2)} / ${threshold.toFixed(2)} | sens ${sensitivityPct}% | body ${body.toFixed(6)} | range ${range.toFixed(6)}`);
+          const isDoji = body < range * threshold;
+          const tfSec = Math.max(1, Math.round(windowMs / 1000));
+          const candleAgeSecRaw = Number.isFinite(decision?.timeInCandle) ? Number(decision.timeInCandle) : Number(getTimeInCandleSec(windowMs));
+          const candleAgeSec = Math.max(0, Math.min(tfSec, Number.isFinite(candleAgeSecRaw) ? candleAgeSecRaw : 0));
+          const progress = candleAgeSec / tfSec;
+          const phase = progress < 0.2 ? 'early' : progress < 0.6 ? 'mid' : 'late';
+          const earlyPhaseGuard = phase === 'early';
+          const earlyStrictRatio = threshold * 0.65;
+          const blockDoji = isDoji && (!earlyPhaseGuard || ratio <= earlyStrictRatio);
+          if (blockDoji) {
+            const vetoMode = earlyPhaseGuard ? `EARLY_STRICT(${earlyStrictRatio.toFixed(2)})` : 'NORMAL';
+            const details = `body=${body.toFixed(6)} | range=${range.toFixed(6)} | ratio=${ratio.toFixed(2)} | threshold=${threshold.toFixed(2)} | sensitivity=${sensitivityPct}% | phase=${phase} ${candleAgeSec.toFixed(1)}/${tfSec}s | mode=${vetoMode}`;
+            logConsoleLine(`⚠️ DOJI BLOCKED → ratio ${ratio.toFixed(2)} / ${threshold.toFixed(2)} | sens ${sensitivityPct}% | body ${body.toFixed(6)} | range ${range.toFixed(6)} | phase ${phase}`);
             return {
               pass: false,
               reason: 'Doji detected',
@@ -7899,7 +7998,11 @@ if (!weights.length) return 0;
                 range: Number(range),
                 ratio: Number(ratio),
                 threshold: Number(threshold),
-                sensitivityPct: Number(sensitivityPct)
+                sensitivityPct: Number(sensitivityPct),
+                phase: String(phase),
+                candleAgeSec: Number(candleAgeSec.toFixed(3)),
+                tfSec: Number(tfSec),
+                mode: earlyPhaseGuard ? 'EARLY_STRICT' : 'NORMAL'
               }
             };
           }
@@ -7925,10 +8028,18 @@ if (!weights.length) return 0;
       const atr = calcAtr(KILLER_TF_MS['1m'], 14);
       const nowPx = Number(S.currentAssetPrice);
       const refPx = Number(decision.priceAtSignal);
+      const driftMult = tf === '5m' ? 0.45 : tf === '3m' ? 0.40 : 0.35;
       if (S.driftProtectionEnabled && Number.isFinite(atr) && atr > 0 && Number.isFinite(nowPx) && Number.isFinite(refPx)) {
         const drift = Math.abs(nowPx - refPx);
-        if (drift > atr * 0.35) {
-          return { pass: false, reason: 'Drift protection triggered', drift, atr };
+        const driftThreshold = atr * driftMult;
+        if (drift > driftThreshold) {
+          return {
+            pass: false,
+            reason: 'Drift protection triggered',
+            details: `drift=${drift.toFixed(6)} > thr=${driftThreshold.toFixed(6)} | atr=${atr.toFixed(6)} | mult=${driftMult.toFixed(2)} | tf=${String(tf || '1m')}`,
+            drift,
+            atr
+          };
         }
       }
 
@@ -9351,8 +9462,10 @@ if (!weights.length) return 0;
           const oscDir = osc ? osc.split(':')[1] : null;
           if (oscDir && decision.direction && oscDir !== decision.direction) {
             const rangeOscPenalty = (S.rangeOscPenaltyEnabled ? (clamp(parseNumberFlexible(S.rangeOscPenaltyPct) || 0, 0, 50) / 100) : 0);
-            decision.confidence = Math.max(0, decision.confidence - rangeOscPenalty);
-            decision.rangeOscPenaltyDebug = `range_osc_penalty:${Math.round(rangeOscPenalty * 100)}pp (osc:${oscDir} vs dir:${decision.direction})`;
+            const confBefore = Number(decision.confidence || 0);
+            const confAfter = Math.max(0, confBefore - rangeOscPenalty);
+            decision.confidence = confAfter;
+            decision.rangeOscPenaltyDebug = `🔶 RANGE | conf -${Math.round(rangeOscPenalty * 100)}pp | ${oscDir} vs ${decision.direction} | ${Math.round(confBefore * 100)}→${Math.round(confAfter * 100)}`;
           }
           if (regime.trendDir !== 0) {
             const regimePref = regime.trendDir > 0 ? 'SELL' : 'BUY';
@@ -9771,13 +9884,23 @@ const readySignals = Object.keys(tfStatus)
         details: spreadFail ? `${(evalCtx.spreadValue * 100).toFixed(2)}% < ${(spreadThresholdRatio * 100).toFixed(2)}%` : ''
       };
 
-      const flipDelayFail = S.filterFlipDelayEnabled && S.lastTradeDirection && decision.direction && decision.direction !== S.lastTradeDirection
-        && ((evalCtx.nowTs - (S.lastTradeAt || 0)) >= 0)
-        && ((evalCtx.nowTs - (S.lastTradeAt || 0)) < (S.filterFlipDelaySec * 1000));
+      const lastTradeDirection = String(S.lastTradeDirection || '').toUpperCase();
+      const currentDirection = String(decision.direction || '').toUpperCase();
+      const lastTradeAt = Number(S.lastTradeAt || 0);
+      const elapsedMs = evalCtx.nowTs - lastTradeAt;
+      const tfKey = String(evalCtx.tf || '').toLowerCase();
+      const tfMult =
+        tfKey === '5m' ? 1.3 :
+        tfKey === '3m' ? 1.15 :
+        1.0;
+      const configuredDelayMs = S.filterFlipDelaySec * 1000 * tfMult;
+      const flipDelayFail = S.filterFlipDelayEnabled && !!lastTradeDirection && !!currentDirection && currentDirection !== lastTradeDirection
+        && (elapsedMs >= 0)
+        && (elapsedMs < configuredDelayMs);
       filterResults.flip_delay = {
         pass: !flipDelayFail,
         reason: flipDelayFail ? 'flip_delay' : '',
-        details: flipDelayFail ? `${evalCtx.nowTs - (S.lastTradeAt || 0)}ms < ${S.filterFlipDelaySec * 1000}ms` : ''
+        details: flipDelayFail ? `last=${lastTradeDirection} -> now=${currentDirection} | elapsed=${elapsedMs}ms (${(elapsedMs / 1000).toFixed(1)}s) < delay=${configuredDelayMs}ms (${S.filterFlipDelaySec}s)` : ''
       };
 
       let driftFail = false;
@@ -9943,7 +10066,7 @@ const readySignals = Object.keys(tfStatus)
       filterResults.spike_protection = {
         pass: !spikeFail,
         reason: spikeFail ? 'Spike trend-follow only' : '',
-        details: spikeFail ? 'spike block active' : ''
+        details: spikeFail ? `spike block active | buy=${S.blockBuy ? 1 : 0} sell=${S.blockSell ? 1 : 0} dir=${decision.direction || '-'}` : ''
       };
 
       // persist shared runtime filter snapshot for scoring/execution phases
@@ -10023,7 +10146,12 @@ const frozenSignal = {
             strategyVotes: frozenSignal.strategyVotes,
             frozenAt: frozenSignal.frozenAt,
             candleStart: frozenSignal.candleStart,
-            priceAtDecision: frozenSignal.priceAtDecision
+            priceAtDecision: frozenSignal.priceAtDecision,
+            okForensicSnapshot: __buildOkForensicSnapshot(
+              decision,
+              strategiesByTf[String(decision?.tfKey || '').toLowerCase()] || [],
+              decision?.regime || null
+            )
           },
           expiry: frozenSignal.tfKey.toUpperCase(),
           minute: getCurrentMinute(),
@@ -10683,6 +10811,12 @@ const ok = await executeTradeOrder(signal);
         .iaa-console-msg--trade{ color:#00ff6a; font-weight:800; }
         .iaa-console-msg--recheck{ color:#9ca3af; }
         .iaa-console-msg--divider{ color:#6b7280; letter-spacing:1px; }
+        .iaa-regime-badge{ display:inline-block; padding:1px 6px; border-radius:999px; font-size:10px; font-weight:800; line-height:1.3; margin:0 2px; border:1px solid rgba(255,255,255,.2); }
+        .iaa-regime-badge--trend{ background:#15803d; color:#ffffff; }
+        .iaa-regime-badge--range{ background:#f59e0b; color:#111827; }
+        .iaa-regime-badge--chop{ background:#dc2626; color:#ffffff; }
+        .iaa-regime-badge--volatile{ background:#7c3aed; color:#ffffff; }
+        .iaa-regime-badge--noinfo{ background:#6b7280; color:#ffffff; }
         .iaa-console-line--compact .iaa-console-msg{ padding-left:2px; }
         .iaa-console-line--divider{ justify-content:center; }
         .iaa-log-buy{ color:#00c853; font-weight:800; }
@@ -11197,7 +11331,7 @@ const ok = await executeTradeOrder(signal);
         </div>
 
 
-        <div class="iaa-field-row iaa-inline-newfilter" title="Наказва увереността в range/chop режим (в проценти).">
+        <div class="iaa-field-row iaa-inline-newfilter" title="Наказва увереността в range режим при осцилаторно разминаване (в проценти).">
           <label class="iaa-checkbox iaa-new-setting"><input type="checkbox" id="iaa-range-osc-penalty-enabled"> Range osc наказание</label>
           <span class="iaa-field-label iaa-new-setting">%</span>
           <input id="iaa-range-osc-penalty" type="number" min="0" max="50" step="1" value="20"/>
